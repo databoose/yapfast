@@ -522,6 +522,7 @@ fn dm_rooms(snapshot: &Snapshot, premium: u8, me: &str) -> Vec<ChatRoom> {
             // Replying waits until the request is accepted.
             read_only: dm.request,
             slowed: false,
+            timed_out_until: None,
             category: match (dm.request, dm.spam) {
                 (_, true) => SPAM,
                 (true, false) => REQUESTS,
@@ -657,6 +658,7 @@ fn server_rooms(
                 join_locked: channel.access != Access::Join,
                 read_only: !server.may_send(channel, me, &server.my_roles),
                 slowed: server.slowed(channel, me, &server.my_roles),
+                timed_out_until: server.my_timeout.as_ref().map(|timeout| timeout.until),
                 category,
                 category_id: category_id.clone(),
                 request: false,
@@ -701,6 +703,7 @@ fn server_rooms(
                 join_locked: false,
                 read_only: channel.access == Access::Locked,
                 slowed: server.slowed(channel, me, &server.my_roles),
+                timed_out_until: server.my_timeout.as_ref().map(|timeout| timeout.until),
                 category,
                 category_id: category_id.clone(),
                 request: false,
@@ -774,6 +777,7 @@ fn thread_room(
         // Locked, or this account may not write in threads here.
         read_only: thread.access == Access::Locked,
         slowed: server.slowed(thread, me, &server.my_roles),
+        timed_out_until: server.my_timeout.as_ref().map(|timeout| timeout.until),
         category: parent.category.clone(),
         category_id: parent.category_id.clone(),
         request: false,

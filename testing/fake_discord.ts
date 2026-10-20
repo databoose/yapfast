@@ -444,7 +444,9 @@ function wireUser(user: User) {
 // DELETE .../members/{user}/roles/{role} give and take roles, DELETE
 // .../members/{user} kicks, and PUT /guilds/{id}/bans/{user} bans, each as
 // far as Alice's roles allow, as Discord checks them. Given Mods, she may
-// delete others' messages in "Server", as she can't otherwise. Staff may also mute,
+// delete others' messages in "Server", as she can't otherwise. POST
+// /_control/timeout-alice with a number of seconds has Bob time her out, which
+// leaves her only reading "Server" as it does in Discord, and 0 ends it. Staff may also mute,
 // deafen and move members in voice: PATCH .../members/{user} with `mute`,
 // `deaf` or `channel_id`, null to disconnect them, changes the voice state
 // of someone in the server's voice, which VOICE_STATE_UPDATE says, and GET
@@ -1656,13 +1658,16 @@ function rank(user: string): number {
   return Math.max(0, ...positions);
 }
 
-/** A member's permissions in "Server", as a BigInt: everything for the owner and administrators. */
+/** A member's permissions in "Server", as a BigInt: everything for the owner and administrators,
+ * and only viewing channels and reading their history for others while timed out. */
 function serverPermissions(user: string): bigint {
   const all = (1n << 53n) - 1n;
   if (user === users.bob.id) return all;
   let held = BigInt(EVERYONE);
   for (const id of memberRoles.get(user) ?? []) held |= BigInt(serverRoles.find((role) => role.id === id)?.permissions ?? "0");
-  return held & (1n << 3n) ? all : held;
+  if (held & (1n << 3n)) return all;
+  const until = timeouts.get(user);
+  return until !== undefined && Date.parse(until) > Date.now() ? held & BigInt(bit(10) + bit(16)) : held;
 }
 
 /** Whether Alice may do what `permission`, a bit number, allows to `user`: she holds it and outranks them. */
@@ -3665,6 +3670,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     }
     if (method === "POST") {
       const body: any = await req.json();
+      if (!privates.has(m[1]!) && !aliceMay(11)) return json({ message: "Missing Permissions", code: 50013 }, 403);
       const thread = threads.get(m[1]!);
       if (thread?.locked) return json({ message: "Thread is locked", code: 50083 }, 400);
       if (thread) {
@@ -5778,6 +5784,14 @@ const server = Bun.serve<SocketData>({
         for (const id of new Set(changed)) memberUpdated(userById.get(id)!);
       });
       return new Response("members as they were\n");
+    }
+    // Bob times Alice out for as many seconds as the body says, or ends it with 0.
+    if (req.method === "POST" && path === "/_control/timeout-alice") {
+      const seconds = Number(await req.text()) || 0;
+      if (seconds > 0) timeouts.set(ALICE, new Date(Date.now() + seconds * 1000).toISOString());
+      else timeouts.delete(ALICE);
+      changeMembers(() => memberUpdated(users.alice));
+      return new Response(seconds > 0 ? `Alice is timed out for ${seconds} s\n` : "Alice's timeout ended\n");
     }
     if (req.method === "POST" && path === "/_control/slow") {
       slowMs = Number(await req.text()) || 0;

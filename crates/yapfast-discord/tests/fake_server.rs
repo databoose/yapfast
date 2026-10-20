@@ -11,7 +11,7 @@ use yapfast_discord::{
     member_list::Presence,
     message::Shown,
     notifications::{Change, Level},
-    ready::{Deletes, PRIVATE},
+    ready::{Access, Deletes, PRIVATE},
     remote_auth::{self, Step},
     rtp::Codec,
     service::{Discord, Live, Snapshot, Status},
@@ -776,6 +776,32 @@ async fn talks_to_the_fake_server() {
             .await;
         }
     }
+
+    // Timed out, Alice only reads "Server" until the timeout ends by
+    // itself.
+    post_control(server, "/_control/timeout-alice", "2");
+    let timed_out = snapshot_where(&discord, |snapshot| {
+        snapshot.servers[0].my_timeout.is_some()
+    })
+    .await;
+    assert_eq!(timed_out.servers[0].text_channels[0].access, Access::Locked);
+    let nonce = yapfast_discord::message::nonce();
+    assert!(
+        discord
+            .send(&guild, &general, "let me in", sending(&nonce, None), vec![])
+            .await
+            .is_err()
+    );
+    let lifted = snapshot_where(&discord, |snapshot| {
+        snapshot.servers[0].my_timeout.is_none()
+    })
+    .await;
+    assert_eq!(lifted.servers[0].text_channels[0].access, Access::Join);
+    let nonce = yapfast_discord::message::nonce();
+    discord
+        .send(&guild, &general, "back", sending(&nonce, None), vec![])
+        .await
+        .unwrap();
 
     // Polls: a vote comes back live, who voted lists by answer, and Alice's
     // own poll ends early with a notice of its winner.

@@ -10,10 +10,11 @@ use crate::{
 };
 
 /// A server as a snapshot published it: marked from `source` with `marks`,
-/// for an account with `roles` there.
+/// for an account with `roles` there, timed out until `timeout`.
 pub(super) struct Published {
     pub(super) source: Arc<Server>,
     pub(super) roles: Vec<String>,
+    pub(super) timeout: Option<u64>,
     pub(super) marks: Marks,
     pub(super) marked: Arc<Server>,
 }

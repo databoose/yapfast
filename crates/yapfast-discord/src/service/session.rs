@@ -249,8 +249,9 @@ struct Session<'a> {
     /// wait for it, after which what shows muted changes by itself.
     mute_end: Option<u64>,
     mutes_end: Pin<Box<Sleep>>,
-    /// When the next thread this account is in goes quiet, in Unix
-    /// milliseconds, and the wait for it, after which it stops listing.
+    /// When the next thread this account is in goes quiet, or its next
+    /// timeout ends, in Unix milliseconds, and the wait for it, after which
+    /// the thread stops listing or the timeout's limits lift.
     quiet: Option<u64>,
     quiets: Pin<Box<Sleep>>,
     /// When being away next changes the presence, in Unix milliseconds,
@@ -649,8 +650,8 @@ impl Session<'_> {
 }
 
 impl Session<'_> {
-    /// Waits for the next thread to go quiet, once a snapshot is out. The
-    /// wait is set only when its end moves.
+    /// Waits for the next thread to go quiet or timeout to end, once a
+    /// snapshot is out. The wait is set only when its end moves.
     fn quiets_changed(&mut self) {
         let quiet = self.tracker.next_quiet(now_ms());
         if quiet != self.quiet {

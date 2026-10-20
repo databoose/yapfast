@@ -1337,22 +1337,31 @@ impl Tracker {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// The account as it is now, but for [`Snapshot::listed`], which the
-    /// member lists know.
-    /// When the next thread this account is in goes quiet after `now`, in
-    /// Unix milliseconds: a snapshot then stops listing it under its channel.
+    /// When the next thread this account is in goes quiet after `now`, or
+    /// its next timeout ends, in Unix milliseconds: a snapshot then stops
+    /// listing the thread under its channel, or gives back what the
+    /// timeout took.
     pub(super) fn next_quiet(&self, now: u64) -> Option<u64> {
+        let names = self.read_names();
+        let timeouts = self
+            .servers
+            .iter()
+            .filter_map(|server| names.timed_out_until(&server.id, &self.me));
         self.servers
             .iter()
             .flat_map(|server| &server.threads)
             .filter_map(|thread| {
                 let details = thread.thread.as_deref()?;
                 let at = details.quiet_at(&thread.id);
-                (details.joined && !details.archived && at > now && at != u64::MAX).then_some(at)
+                (details.joined && !details.archived && at != u64::MAX).then_some(at)
             })
+            .chain(timeouts)
+            .filter(|at| *at > now)
             .min()
     }
 
+    /// The account as it is now, but for [`Snapshot::listed`], which the
+    /// member lists know.
     pub(super) fn snapshot(&mut self) -> Snapshot {
         let names = self
             .names
@@ -1391,19 +1400,32 @@ impl Tracker {
         let now = now_ms();
         for server in &self.servers {
             let roles = self.my_roles.get(&server.id).map_or(&[][..], Vec::as_slice);
-            let last = self
-                .published
-                .remove(&server.id)
-                .filter(|last| Arc::ptr_eq(&last.source, server) && last.roles == roles);
-            // What the account may do stays while the server and its roles do.
+            let timeout = names
+                .timed_out_until(&server.id, &self.me)
+                .filter(|until| *until > now);
+            let last = self.published.remove(&server.id).filter(|last| {
+                Arc::ptr_eq(&last.source, server) && last.roles == roles && last.timeout == timeout
+            });
+            // A timeout in force takes what the account may do away; a
+            // copy of the server carries it while it lasts.
+            let timed_out = timeout.map(|until| Server {
+                my_timeout: Some(ready::Timeout {
+                    user: self.me.clone(),
+                    until,
+                }),
+                ..(**server).clone()
+            });
+            let source = timed_out.as_ref().unwrap_or(server);
+            // What the account may do stays while the server, its roles
+            // and its timeout do.
             let marks = match &last {
-                Some(last) => last.marks.unread(server, &self.unreads, now),
-                None => Marks::new(server, &self.me, roles, &self.unreads, now),
+                Some(last) => last.marks.unread(source, &self.unreads, now),
+                None => Marks::new(source, &self.me, roles, &self.unreads, now),
             };
             let (marked, roles) = match last {
                 Some(last) if last.marks == marks => (last.marked, last.roles),
-                Some(last) => (Arc::new(marks.apply(server)), last.roles),
-                None => (Arc::new(marks.apply(server)), roles.to_vec()),
+                Some(last) => (Arc::new(marks.apply(source)), last.roles),
+                None => (Arc::new(marks.apply(source)), roles.to_vec()),
             };
             servers.push(marked.clone());
             published.insert(
@@ -1411,6 +1433,7 @@ impl Tracker {
                 Published {
                     source: server.clone(),
                     roles,
+                    timeout,
                     marks,
                     marked,
                 },
@@ -2259,6 +2282,56 @@ mod tests {
             &json!({"guild_id": "10", "user": {"id": "1"}, "roles": ["20"]}),
         );
         assert_eq!(channels(&mut tracker), ["Lounge", "Staff"]);
+    }
+
+    #[test]
+    fn a_timeout_leaves_this_account_reading_until_it_ends() {
+        let now = now_ms() / 1000 * 1000;
+        let iso = |ms: u64| {
+            chrono::DateTime::from_timestamp_millis(ms as i64)
+                .unwrap()
+                .to_rfc3339()
+        };
+        let until = now + 3_600_000;
+        let ready = json!({
+            "user": {"id": "1"},
+            "guilds": [{"id": "10", "properties": {"name": "Test", "owner_id": "9"},
+                // Viewing, sending and connecting.
+                "roles": [{"id": "10", "permissions": "1051648"}],
+                "channels": [
+                    {"id": "11", "name": "general", "type": 0, "position": 0},
+                    {"id": "12", "name": "Lounge", "type": 2, "position": 1},
+                ]}],
+            "merged_members": [[{"user_id": "1", "roles": [],
+                "communication_disabled_until": iso(until)}]],
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        let snapshot = tracker.snapshot();
+        let server = &snapshot.servers[0];
+        assert_eq!(
+            server.my_timeout,
+            Some(ready::Timeout {
+                user: "1".into(),
+                until
+            })
+        );
+        assert_eq!(server.text_channels[0].access, ready::Access::Locked);
+        assert_eq!(server.voice_channels[0].access, ready::Access::Locked);
+        assert!(Arc::ptr_eq(server, &tracker.snapshot().servers[0]));
+        assert_eq!(tracker.next_quiet(now), Some(until), "published again then");
+
+        // Once it ends, what it took comes back.
+        tracker.apply(
+            &Event::GuildMemberUpdate,
+            &json!({"guild_id": "10", "user": {"id": "1"}, "roles": [],
+                "communication_disabled_until": iso(now - 1000)}),
+        );
+        let snapshot = tracker.snapshot();
+        let server = &snapshot.servers[0];
+        assert_eq!(server.my_timeout, None);
+        assert_eq!(server.text_channels[0].access, ready::Access::Join);
+        assert_eq!(server.voice_channels[0].access, ready::Access::Join);
+        assert_eq!(tracker.next_quiet(now), None);
     }
 
     #[test]

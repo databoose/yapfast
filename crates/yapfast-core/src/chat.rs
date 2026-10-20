@@ -69,6 +69,9 @@ pub struct ChatRoom {
     /// A Discord channel or thread whose slowmode this account waits out
     /// between messages.
     pub slowed: bool,
+    /// When this account's timeout in the room's Discord server ends, in
+    /// Unix milliseconds, while it lasts.
+    pub timed_out_until: Option<u64>,
     /// The Discord category the channel is listed under, or for a message
     /// request "Message requests" or "Spam"; empty for none.
     pub category: String,

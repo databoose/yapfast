@@ -2323,6 +2323,15 @@ impl Adapter {
         // Without Matrix everything is Discord, so the encryption and key hints
         // say nothing new; what stops sending still shows.
         let discord_only = !cfg!(feature = "matrix");
+        let timed_out = room
+            .and_then(|room| room.timed_out_until)
+            .filter(|_| discord_room)
+            .map(|until| {
+                format!(
+                    "You're timed out in this server until {}.",
+                    super::menus::until(until / 1000, self.layout.twelve_hour_clock)
+                )
+            });
         window.set_composer_hint(
             if room.is_none() {
                 "Choose a DM or server channel to write a message."
@@ -2334,6 +2343,8 @@ impl Adapter {
                 } else {
                     "Discord · not end-to-end encrypted."
                 }
+            } else if let Some(timed_out) = &timed_out {
+                timed_out
             } else if discord_room && room.is_some_and(|room| room.read_only || room.locked) {
                 "You can't send messages in this Discord channel."
             } else if discord_room && !state.discord_online {

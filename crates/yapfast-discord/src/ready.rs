@@ -78,6 +78,16 @@ use permission::{
     SEND_MESSAGES_IN_THREADS, VIEW_CHANNEL,
 };
 
+/// A member's timeout: until it ends, Discord leaves them only viewing
+/// channels and reading their history, unless they own the server or are
+/// administrators.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Timeout {
+    pub user: String,
+    /// When it ends, in Unix milliseconds.
+    pub until: u64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Server {
     pub id: String,
@@ -132,6 +142,10 @@ pub struct Server {
     /// This account's roles here, set when the service publishes it.
     #[serde(default)]
     pub my_roles: Vec<String>,
+    /// This account's timeout here while it lasts, set when the service
+    /// publishes it.
+    #[serde(default)]
+    pub my_timeout: Option<Timeout>,
     /// The account's notification settings here keep @everyone and @here,
     /// and role mentions, from calling on it; set when the service
     /// publishes it.
@@ -833,6 +847,11 @@ impl Server {
     /// @everyone role's permissions and their roles'. The owner and
     /// administrators may do everything.
     pub fn server_permissions(&self, user: &str, roles: &[String]) -> u64 {
+        self.timed_out(user, self.role_permissions(user, roles))
+    }
+
+    /// What `user`'s roles give them, before a timeout takes it away.
+    fn role_permissions(&self, user: &str, roles: &[String]) -> u64 {
         if self.owner_id.as_deref() == Some(user) {
             return permission::ALL;
         }
@@ -876,7 +895,7 @@ impl Server {
     /// [`Self::server_permissions`] with a channel's or category's
     /// overwrites applied: @everyone's, the roles', then the member's.
     fn overwritten(&self, overwrites: &[Overwrite], user: &str, roles: &[String]) -> u64 {
-        let mut permissions = self.server_permissions(user, roles);
+        let mut permissions = self.role_permissions(user, roles);
         if permissions == permission::ALL {
             return permissions;
         }
@@ -903,7 +922,19 @@ impl Server {
         {
             apply(member.allow, member.deny);
         }
-        permissions
+        self.timed_out(user, permissions)
+    }
+
+    /// `permissions` as a timeout of `user`'s leaves them: viewing channels
+    /// and reading their history, unless the owner or an administrator,
+    /// as Discord's client works it out after the overwrites.
+    fn timed_out(&self, user: &str, permissions: u64) -> u64 {
+        match &self.my_timeout {
+            Some(timeout) if timeout.user == user && permissions != permission::ALL => {
+                permissions & (VIEW_CHANNEL | permission::READ_MESSAGE_HISTORY)
+            }
+            _ => permissions,
+        }
     }
 
     /// The position of the highest of `roles`, which decides whom a member
@@ -1556,6 +1587,62 @@ mod tests {
             ..Default::default()
         };
         assert!(!server.forwards_from(&unread, "1", &[]));
+    }
+
+    #[test]
+    fn a_timeout_leaves_its_member_viewing_and_reading() {
+        use permission::{MANAGE_MESSAGES, READ_MESSAGE_HISTORY, SEND_MESSAGES};
+        let mut server = Server {
+            id: "10".into(),
+            owner_id: Some("99".into()),
+            roles: HashMap::from([
+                (
+                    "10".into(),
+                    VIEW_CHANNEL | READ_MESSAGE_HISTORY | SEND_MESSAGES,
+                ),
+                ("20".into(), MANAGE_MESSAGES | permission::KICK_MEMBERS),
+                ("30".into(), ADMINISTRATOR),
+            ])
+            .into(),
+            my_timeout: Some(Timeout {
+                user: "1".into(),
+                until: u64::MAX,
+            }),
+            ..Default::default()
+        };
+        // Even a member's own overwrite doesn't give back what it takes.
+        let general = Channel {
+            overwrites: vec![Overwrite {
+                id: "1".into(),
+                member: true,
+                allow: SEND_MESSAGES,
+                deny: 0,
+            }]
+            .into(),
+            ..Default::default()
+        };
+        let mods = ["20".to_owned()];
+        assert_eq!(
+            server.channel_permissions(&general, "1", &mods),
+            VIEW_CHANNEL | READ_MESSAGE_HISTORY
+        );
+        assert_eq!(
+            server.server_permissions("1", &mods),
+            VIEW_CHANNEL | READ_MESSAGE_HISTORY
+        );
+        assert!(!server.may_send(&general, "1", &mods));
+        assert_eq!(server.deletes(&general, "1", &mods), Deletes::Own);
+        assert!(
+            server.may_send(&general, "2", &mods),
+            "only the one timed out"
+        );
+        assert_eq!(
+            server.server_permissions("1", &["30".into()]),
+            permission::ALL,
+            "nor administrators"
+        );
+        server.my_timeout.as_mut().unwrap().user = "99".into();
+        assert!(server.may_send(&general, "99", &[]), "nor the owner");
     }
 
     #[test]

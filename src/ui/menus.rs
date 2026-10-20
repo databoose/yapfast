@@ -570,15 +570,20 @@ fn notification_rows(app: &Application, server: &str) -> Vec<MenuRow> {
 const SUPPRESS_EVERYONE: &str = "suppress-everyone";
 const SUPPRESS_ROLES: &str = "suppress-roles";
 
-/// When a mute ends, as its Unmute row says it: the time today, or the day too.
+/// When a mute ends, as its Unmute row says it.
 fn muted_until(seconds: u64, twelve_hour: bool) -> String {
+    format!("Muted until {}", until(seconds, twelve_hour))
+}
+
+/// When something ends, a Unix time: the time today, or the day too.
+pub(super) fn until(seconds: u64, twelve_hour: bool) -> String {
     let now = yapfast_core::clock::now_ms() / 1000;
     let time = yapfast_core::clock::time_on(seconds, twelve_hour);
     let on = yapfast_core::clock::day(seconds);
     if on == yapfast_core::clock::day(now) {
-        format!("Muted until {time}")
+        time
     } else {
-        format!("Muted until {on}, {time}")
+        format!("{on}, {time}")
     }
 }
 
