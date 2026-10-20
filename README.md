@@ -14,6 +14,8 @@
   &nbsp;·&nbsp;
   <a href="https://yapfast.com">yapfast.com</a>
   &nbsp;·&nbsp;
+  <a href="https://yapfast.com/discord-invite">Discord server</a>
+  &nbsp;·&nbsp;
   <a href="#features">Features</a>
   &nbsp;·&nbsp;
   <a href="#build-it-yourself">Build it yourself</a>
@@ -49,10 +51,11 @@ you have. [How I measure](docs/measurements/README.md).
 
 It's a 0.1 beta, and it's what I use for Discord every day, so it had better
 be usable. Still, there are rough edges; when you hit one,
-[open an issue](https://github.com/yapfast/yapfast/issues) and I'll fix it. The
-connection drops every now and then (no more often than Vesktop's or the
-official app's does for me), and the noise suppression could be better. Know an
-open source one that does a better job? PLEASE tell me.
+[open an issue](https://github.com/yapfast/yapfast/issues) and I'll fix it, or
+come hang out on the [Yapfast Discord server](https://yapfast.com/discord-invite)
+and tell me there. The connection drops every now and then (no more often than
+Vesktop's or the official app's does for me), and the noise suppression could
+be better. Know an open source one that does a better job? PLEASE tell me.
 
 ## Will Discord ban me?
 
