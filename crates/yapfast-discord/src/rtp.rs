@@ -65,15 +65,16 @@ pub const STREAM_RID: &str = "100";
 /// One-byte extension ids in the numbering a Discord client sends with,
 /// which isn't the numbering in Discord's WebRTC SDP: there id 5 is playout
 /// delay, here it's the transport-wide sequence number, and a packet with a
-/// malformed one is dropped.
+/// malformed one is dropped. Discord's own clients also send a playout
+/// delay of 0/0 as id 6; from Yapfast, Discord's iOS app shows that stream
+/// black, so Yapfast leaves it out.
 const TRANSPORT_SEQUENCE: u8 = 5;
-const PLAYOUT_DELAY: u8 = 6;
 const CONTENT_TYPE: u8 = 7;
 const RID: u8 = 11;
 /// The stream id on a retransmission, in place of [`RID`].
 const REPAIRED_RID: u8 = 12;
-/// The extension block's size: its preamble, then four words of elements.
-const EXTENSIONS: usize = 4 + 16;
+/// The extension block's size: its preamble, then three words of elements.
+const EXTENSIONS: usize = 4 + 12;
 
 /// An RTP packet carrying one Opus frame from `ssrc`, with `timestamp` in
 /// 48 kHz samples and no extensions, as a call's audio goes. The marker
@@ -189,8 +190,6 @@ impl Packetizer {
             packet.extend_from_slice(value);
         };
         extension(TRANSPORT_SEQUENCE, &self.transport.to_be_bytes());
-        // No buffering at the receiver.
-        extension(PLAYOUT_DELAY, &[0, 0, 0]);
         // Screen content.
         extension(CONTENT_TYPE, &[1]);
         extension(rid, STREAM_RID.as_bytes());
@@ -1184,24 +1183,23 @@ mod tests {
             assert_eq!(&packet[4..8], &9000u32.to_be_bytes());
             assert_eq!(&packet[8..12], &77u32.to_be_bytes());
             assert_eq!(rtp_clear_len(packet), Some(16));
-            // Transport sequence, playout delay, screen content, then the
-            // stream id, padded to whole words.
+            // Transport sequence, screen content, then the stream id,
+            // padded to whole words.
             let transport = (index + 1) as u8;
             assert_eq!(
-                &packet[12..32],
+                &packet[12..28],
                 &[
-                    0xbe, 0xde, 0, 4, 0x51, 0, transport, 0x62, 0, 0, 0, 0x70, 1, 0xb2, b'1', b'0',
-                    b'0', 0, 0, 0
+                    0xbe, 0xde, 0, 3, 0x51, 0, transport, 0x70, 1, 0xb2, b'1', b'0', b'0', 0, 0, 0
                 ]
             );
-            let descriptor = &packet[32..36];
+            let descriptor = &packet[28..32];
             assert_eq!(descriptor[0], if index == 0 { 0x90 } else { 0x80 });
-            joined.extend_from_slice(&packet[36..]);
+            joined.extend_from_slice(&packet[32..]);
         }
         assert_eq!(joined, frame);
         let sequence = |packet: &Vec<u8>| u16::from_be_bytes([packet[2], packet[3]]);
         assert_eq!(sequence(&packets[1]), sequence(&packets[0]).wrapping_add(1));
-        let picture = |packet: &Vec<u8>| u16::from_be_bytes([packet[34], packet[35]]) & 0x7fff;
+        let picture = |packet: &Vec<u8>| u16::from_be_bytes([packet[30], packet[31]]) & 0x7fff;
         let next = packetizer.packets(&[1], 12000);
         assert_eq!(picture(&next[0]), (picture(&packets[0]) + 1) & 0x7fff);
     }
@@ -1480,9 +1478,9 @@ mod tests {
             if index == 0 {
                 // The parameter sets alone, then the slice in three fragments.
                 assert_eq!(sent.len(), 5);
-                assert_eq!(sent[2][32], (0x65 & 0xe0) | 28, "an FU-A indicator");
-                assert_eq!(sent[2][33], 0x80 | 5, "starting an IDR slice");
-                assert_eq!(sent[4][33], 0x40 | 5, "ending it");
+                assert_eq!(sent[2][28], (0x65 & 0xe0) | 28, "an FU-A indicator");
+                assert_eq!(sent[2][29], 0x80 | 5, "starting an IDR slice");
+                assert_eq!(sent[4][29], 0x40 | 5, "ending it");
             }
             for packet in &sent {
                 let packet = parse(packet).unwrap();
@@ -1627,7 +1625,7 @@ mod tests {
         );
         assert_eq!(&resent.payload[..2], &lost[1].to_be_bytes());
         assert_eq!(&resent.payload[2..], original.payload);
-        assert_eq!(again[25], 0xc2, "the repaired stream id, not the stream id");
+        assert_eq!(again[21], 0xc2, "the repaired stream id, not the stream id");
         assert!(history.get(first.wrapping_sub(1)).is_none(), "never sent");
         assert!(packetizer.retransmit(&again, 79).is_none(), "not video");
     }
