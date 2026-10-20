@@ -7800,3 +7800,181 @@ fn a_forum_post_needs_a_title_a_message_and_a_tag_the_forum_requires() {
     assert!(app.state.new_post().is_some());
     assert_eq!(app.state.staged().len(), 1);
 }
+
+#[cfg(feature = "discord")]
+fn invite_to(code: &str, guild: &str, channel: &str) -> chat::InvitePreview {
+    chat::InvitePreview {
+        code: code.into(),
+        server: format!("discord:{guild}"),
+        name: "Builders".into(),
+        icon: None,
+        room: format!("discord:{guild}:{channel}"),
+        channel: "general".into(),
+        channel_type: 0,
+        voice: false,
+        members: Some(42),
+        online: Some(7),
+    }
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn join_a_server_shows_the_invite_and_joins_on_the_click() {
+    let mut app = discord_server();
+    app.dispatch(Action::OpenJoinServer);
+    assert!(
+        app.dispatch(Action::FindInvite("two words".into()))
+            .is_empty()
+    );
+    assert!(app.state.join.as_ref().unwrap().error.is_some());
+
+    let effects = app.dispatch(Action::FindInvite(" https://discord.gg/abc ".into()));
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::ResolveInvite { code, typed: Some(typed) }))]
+            if code == "abc" && typed == " https://discord.gg/abc "
+    ));
+    let join = app.state.join.clone().unwrap();
+    assert!(join.resolving && join.error.is_none());
+    // An answer about another invite, typed before, changes nothing.
+    app.apply(Event::InviteResolved {
+        code: "old".into(),
+        result: Ok(invite_to("old", "30", "31")),
+    });
+    assert!(app.state.join.as_ref().unwrap().preview.is_none());
+    app.apply(Event::InviteResolved {
+        code: "abc".into(),
+        result: Ok(invite_to("abc", "20", "21")),
+    });
+    let join = app.state.join.clone().unwrap();
+    assert!(!join.resolving && !join.member);
+    assert_eq!(join.preview.unwrap().name, "Builders");
+
+    let effects = app.dispatch(Action::JoinServer);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::JoinServer { preview, from_link: false }))]
+            if preview.code == "abc"
+    ));
+    assert!(
+        app.dispatch(Action::JoinServer).is_empty(),
+        "one join at a time"
+    );
+    let effects = app.apply(Event::JoinCaptcha {
+        code: "abc".into(),
+        page: "http://127.0.0.1:1/captcha/x".into(),
+    });
+    assert!(matches!(effects.as_slice(), [Effect::OpenPage(page)] if page.ends_with("/x")));
+    assert!(matches!(
+        app.dispatch(Action::OpenJoinCaptcha).as_slice(),
+        [Effect::OpenPage(_)]
+    ));
+
+    // Joined: the dialog closes, and the invite's channel opens once
+    // Discord lists the server.
+    app.apply(Event::ServerJoined {
+        code: "abc".into(),
+        result: Ok(chat::JoinedServer {
+            server: "discord:20".into(),
+            room: "discord:20:21".into(),
+            form: false,
+        }),
+    });
+    assert!(app.state.join.is_none());
+    let mut snapshot = yapfast_discord::service::Snapshot::clone(app.discord.as_ref().unwrap());
+    let joined = yapfast_discord::ready::server(&serde_json::json!({
+        "id": "20", "owner_id": "99",
+        "properties": {"name": "Builders"},
+        "roles": [{"id": "20", "name": "@everyone", "position": 0,
+                   "permissions": yapfast_discord::ready::permission::VIEW_CHANNEL.to_string()}],
+        "channels": [{"id": "21", "type": 0, "name": "general", "position": 0}],
+    }))
+    .unwrap();
+    snapshot.servers.push(Arc::new(joined));
+    app.apply(discord_event(snapshot));
+    assert_eq!(app.state.selected.as_deref(), Some("discord:20:21"));
+    assert_eq!(
+        app.state.navigation,
+        Navigation::Server("discord:20".into())
+    );
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn an_invite_link_opens_the_server_or_the_dialog() {
+    let mut app = discord_server();
+    // A link to a server she's in goes straight there.
+    let effects = app.dispatch(Action::OpenInviteLink("in".into()));
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::Backend(Command::Discord(
+            DiscordCommand::ResolveInvite { typed: None, .. }
+        ))]
+    ));
+    app.apply(Event::InviteResolved {
+        code: "in".into(),
+        result: Ok(invite_to("in", "10", "13")),
+    });
+    assert!(app.state.join.is_none());
+    assert_eq!(app.state.selected.as_deref(), Some("discord:10:13"));
+
+    // One she isn't in shows it, and Discord's refusal stays in the dialog.
+    app.dispatch(Action::OpenInviteLink("new".into()));
+    app.apply(Event::InviteResolved {
+        code: "new".into(),
+        result: Ok(invite_to("new", "30", "31")),
+    });
+    let effects = app.dispatch(Action::JoinServer);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::Backend(Command::Discord(
+            DiscordCommand::JoinServer {
+                from_link: true,
+                ..
+            }
+        ))]
+    ));
+    app.apply(Event::ServerJoined {
+        code: "new".into(),
+        result: Err("Couldn't join the server: This server is full.".into()),
+    });
+    let join = app.state.join.clone().unwrap();
+    assert!(!join.joining);
+    assert!(join.error.unwrap().ends_with("full."));
+
+    // A server with a form to fill in sends it to Discord's web app.
+    app.dispatch(Action::JoinServer);
+    app.apply(Event::ServerJoined {
+        code: "new".into(),
+        result: Ok(chat::JoinedServer {
+            server: "discord:30".into(),
+            room: "discord:30:31".into(),
+            form: true,
+        }),
+    });
+    assert!(app.dispatch(Action::JoinServer).is_empty());
+    let effects = app.dispatch(Action::OpenJoinForm);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::OpenPage(page)] if page == "https://discord.com/channels/30/31"
+    ));
+    assert!(app.state.join.is_none());
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn an_unknown_invite_says_so() {
+    let mut app = discord_server();
+    app.dispatch(Action::OpenJoinServer);
+    app.dispatch(Action::FindInvite("gone".into()));
+    app.apply(Event::InviteResolved {
+        code: "gone".into(),
+        result: Err("This invite is invalid or has expired.".into()),
+    });
+    let join = app.state.join.clone().unwrap();
+    assert!(join.preview.is_none() && !join.resolving);
+    assert_eq!(
+        join.error.as_deref(),
+        Some("This invite is invalid or has expired.")
+    );
+}

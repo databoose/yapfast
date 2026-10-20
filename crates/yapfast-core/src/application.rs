@@ -24,6 +24,7 @@ mod forum;
 mod forward_places;
 mod gifs;
 mod header;
+mod join;
 mod members;
 mod messages;
 mod new_post;
@@ -40,6 +41,7 @@ mod threads;
 
 pub use forum::{ForumInfo, ForumPost, ForumPosts, ForumView};
 pub use gifs::{GifPicker, GifPicture, GifView};
+pub use join::JoinDialog;
 pub use members::{BAN_HISTORY, RoleChoice, TIMEOUT_TIMES};
 #[cfg(all(feature = "discord", any(test, feature = "test-fixtures")))]
 pub use members::{member_server, with_clubs};
@@ -375,6 +377,8 @@ pub struct AppState {
     pub person_dialog: Option<PersonDialog>,
     /// The invite dialog of a Discord server or channel, while it's open.
     pub invite: Option<InviteDialog>,
+    /// Join a Server, while it's open.
+    pub join: Option<JoinDialog>,
     /// The dialog that makes, changes or deletes a Discord channel or
     /// category, while it's open.
     pub channel_dialog: Option<ChannelDialog>,
@@ -1392,6 +1396,18 @@ pub enum Action {
         user: String,
         server: String,
     },
+    /// Open Join a Server; look up the invite in what was typed or pasted
+    /// into it; open it for a clicked invite link, by its code; join by
+    /// the invite it shows, or open the server for a member; open the
+    /// captcha Discord asked for again; open the server's form in the
+    /// browser; or close it.
+    OpenJoinServer,
+    FindInvite(String),
+    OpenInviteLink(String),
+    JoinServer,
+    OpenJoinCaptcha,
+    OpenJoinForm,
+    CloseJoin,
     /// Open the dialog that makes a channel of this kind, from a Discord
     /// server's menu, by its server id, or one like a channel in its
     /// category, from the channel's menu, by its room id.
@@ -2287,6 +2303,16 @@ impl Application {
                 vec![]
             }
             Action::InviteToServer { user, server } => self.invite_to_server(user, server),
+            Action::OpenJoinServer => self.open_join(),
+            Action::FindInvite(typed) => self.find_invite(typed),
+            Action::OpenInviteLink(code) => self.open_invite_link(code),
+            Action::JoinServer => self.join_server(),
+            Action::OpenJoinCaptcha => self.open_join_captcha(),
+            Action::OpenJoinForm => self.open_join_form(),
+            Action::CloseJoin => {
+                self.state.join = None;
+                vec![]
+            }
             Action::NewChannel { place, kind } => self.new_channel(place, kind),
             Action::AskChannel(ask) => self.ask_channel(ask),
             Action::SaveChannel { kind, settings } => self.save_channel(kind, settings),
@@ -2726,6 +2752,9 @@ impl Application {
             Event::GroupChanged(result) => self.group_changed(result),
             Event::InviteMade { room, result } => self.invite_made(room, result),
             Event::InviteSent { result, .. } => self.invite_sent(result),
+            Event::InviteResolved { code, result } => return self.invite_resolved(code, result),
+            Event::JoinCaptcha { code, page } => return self.join_captcha(code, page),
+            Event::ServerJoined { code, result } => return self.server_joined(code, result),
             Event::ChannelLoaded { room, result } => self.channel_loaded(room, result),
             Event::ChannelSaved(result) => self.channel_saved(result),
             Event::LeftServer { server, result } => self.left_server(server, result),

@@ -391,6 +391,12 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     bind!(on_close_add_friend, Action::CloseAddFriend);
     bind!(on_close_person, Action::ClosePersonDialog);
     bind!(on_close_invite, Action::CloseInvite);
+    bind!(on_open_join_server, Action::OpenJoinServer);
+    bind!(on_join_server, Action::JoinServer);
+    bind!(on_open_join_captcha, Action::OpenJoinCaptcha);
+    bind!(on_open_join_form, Action::OpenJoinForm);
+    bind!(on_close_join, Action::CloseJoin);
+    bind_item!(on_find_invite, Action::FindInvite);
     bind_item!(on_open_invite, Action::OpenInvite);
     {
         let adapter = adapter.clone();
@@ -945,6 +951,19 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
                 mention::Target::Role(role) => Action::ShowRole(role),
             };
             state.borrow_mut().action(&window, action);
+            return;
+        }
+        // An invite to a Discord server shows the server, and joins only
+        // when asked, whatever the link's text says.
+        #[cfg(feature = "discord")]
+        if let Some(code) =
+            yapfast_core::discord::invite_code(links::masked(&link).unwrap_or(&link))
+        {
+            if let Some(window) = weak.upgrade() {
+                state
+                    .borrow_mut()
+                    .action(&window, Action::OpenInviteLink(code.to_owned()));
+            }
             return;
         }
         // A link whose text shows something else asks first.

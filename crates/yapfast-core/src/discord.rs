@@ -99,6 +99,13 @@ pub fn parse_room(id: &str) -> Option<(&str, &str)> {
     id.strip_prefix(PREFIX)?.split_once(':')
 }
 
+/// The code of an invite link to a Discord server, as Discord's client
+/// finds them in messages.
+#[cfg(feature = "discord")]
+pub fn invite_code(link: &str) -> Option<&str> {
+    yapfast_discord::invite::link_code(link)
+}
+
 /// The Discord server a server id names, as [`server_id`] makes it.
 pub fn parse_server(id: &str) -> Option<&str> {
     id.strip_prefix(PREFIX).filter(|guild| !guild.contains(':'))

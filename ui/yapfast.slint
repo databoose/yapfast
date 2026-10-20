@@ -32,7 +32,7 @@ import { SettingsScreen, AccountSettings, AppearanceSettings, ThemeCard, ThemeCo
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { RequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
 import { ContactRow, ForwardRow, ReactionPill, ReactorRow, StatusDialog, NewDmDialog, ForwardDialog, ReactionsDialog, StatusMenu, PersonPrompt, PersonDialog, LeavingDialog, PollAnswerDraft, PollDialog } from "dialogs.slint";
-import { InvitePrompt, InviteDialog, ChannelPrompt, ChannelDialog, ProfileEditorPrompt, ProfileEditorDialog } from "server.slint";
+import { InvitePrompt, InviteDialog, JoinPrompt, JoinDialog, ChannelPrompt, ChannelDialog, ProfileEditorPrompt, ProfileEditorDialog } from "server.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
 import { FoundRow, PickRow, ThreadRow, HeaderSearch, PinsPopover, ThreadsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
 import { ThreadPanel, NewThreadPanel } from "thread.slint";
@@ -140,6 +140,18 @@ export component YapfastWindow inherits Window {
     callback open-invite(string);
     callback make-invite(int, int);
     callback close-invite;
+    // Join a Server, from the "+" at the foot of the server rail or a
+    // clicked invite link; see JoinDialog.
+    in property <bool> can-join-server;
+    in property <bool> join-open;
+    in property <JoinPrompt> join-prompt;
+    in-out property <string> join-link;
+    callback open-join-server;
+    callback find-invite(string);
+    callback join-server;
+    callback open-join-captcha;
+    callback open-join-form;
+    callback close-join;
     // A dialog that makes, changes, copies or deletes a Discord channel or
     // category, with what's written in it; see ChannelDialog.
     in property <bool> channel-open;
@@ -1662,6 +1674,8 @@ export component YapfastWindow inherits Window {
                         toggle-folder(id) => { root.toggle-folder(id); }
                         open-dm(id) => { root.open-conversation(id); }
                         open-server-menu(id, x, y) => { root.open-context-menu(id, false, x, y); }
+                        can-join: root.can-join-server;
+                        join-server => { root.open-join-server(); }
                     }
                     // Channel sidebar: a lighter sheet held by the rail and the dock.
                     Rectangle {
@@ -3197,6 +3211,14 @@ export component YapfastWindow inherits Window {
         copy(link) => { root.copy-text(link); }
         remake(age, uses) => { root.make-invite(age, uses); }
         close => { root.close-invite(); }
+    }
+    if root.join-open: JoinDialog {
+        prompt: root.join-prompt; link <=> root.join-link;
+        find(link) => { root.find-invite(link); }
+        join => { root.join-server(); }
+        open-captcha => { root.open-join-captcha(); }
+        open-form => { root.open-join-form(); }
+        close => { root.close-join(); }
     }
     if root.channel-open: ChannelDialog {
         prompt: root.channel-prompt; name <=> root.channel-name; topic <=> root.channel-topic;

@@ -625,6 +625,9 @@ export component ServerRail inherits Rectangle {
     callback open-dm(string);
     /// A server's or DM's menu was asked for: its id, and where in the window.
     callback open-server-menu(string, length, length);
+    /// Whether the "+" at the foot offers to join a Discord server.
+    in property <bool> can-join;
+    callback join-server;
     width: 72px; background: Theme.rail;
     VerticalLayout {
         padding-top: 12px; padding-bottom: 12px; spacing: 8px;
@@ -688,6 +691,11 @@ export component ServerRail inherits Rectangle {
                     context-menu(x, y) => { root.open-server-menu(server.id, x, y); }
                 }
             }
+        }
+        if root.can-join: RailItem {
+            icon: @image-url("icons/circle-plus.svg"); icon-color: Theme.accent; icon-size: 24px;
+            label: "Join a server"; tip: "Join a server";
+            clicked => { root.join-server(); }
         }
     }
 }

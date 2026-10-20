@@ -164,7 +164,8 @@ They're untested between releases, so expect the odd rough edge.
 - Running a server: make and edit channels and categories, invite people, hand
   out roles, change nicknames, time out, kick and ban. In voice, server mute,
   deafen and move people to another channel. Edit your server profile, and
-  leave. Folders show up as they do in Discord.
+  leave. Join a server by invite, from the + under your servers or a link in
+  chat. Folders show up as they do in Discord.
 - Notifications that follow your Discord settings, muting for channels,
   categories and servers, unread markers and member lists.
 - Ten themes, Catppuccin and Tokyo Night among them, and Bonfire, which is
@@ -177,13 +178,15 @@ They're untested between releases, so expect the odd rough edge.
 - Media channels.
 - The soundboard.
 - Activities and server settings.
-- Making and changing server folders, and joining a server by invite.
+- Making and changing server folders.
+- A server's form for new members, such as its rules, when you join. Yapfast
+  sends you to Discord in your browser to fill it in.
 - A list of the people you blocked.
 - Leaving a group DM.
 - Animated custom emoji in messages, which show their first frame.
-- Captchas, sort of. If Discord asks for one while you link, Yapfast opens it
-  in your browser, but I haven't hit one against real Discord yet, so who
-  knows..
+- Captchas, sort of. If Discord asks for one while you link or join a server,
+  Yapfast opens it in your browser, but I haven't hit one against real
+  Discord yet, so who knows..
 
 Use Discord in a browser for these until then; it has all of it, and you have a
 browser open anyway. [The Discord plan](docs/discord.md) has the rest, in the

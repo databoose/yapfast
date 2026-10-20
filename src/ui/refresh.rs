@@ -203,6 +203,7 @@ impl Adapter {
         self.show_new_thread(window);
         self.show_members(window);
         self.show_invite(window);
+        self.show_join(window);
         self.show_channel_dialog(window);
         self.show_leave(window);
         self.show_profile_editor(window);
@@ -1456,6 +1457,81 @@ impl Adapter {
             },
             making: invite.making,
             error: invite.error.as_deref().unwrap_or_default().into(),
+        });
+    }
+
+    /// Join a Server, or the dialog a clicked invite link opens.
+    fn show_join(&self, window: &YapfastWindow) {
+        let state = &self.app.state;
+        window.set_can_join_server(state.discord_online || state.preview);
+        let join = state.join.as_ref();
+        // A dialog opening starts with an empty field.
+        if join.is_some() && !window.get_join_open() {
+            window.set_join_link(SharedString::default());
+        }
+        window.set_join_open(join.is_some());
+        let Some(join) = join else {
+            return;
+        };
+        let preview = join.preview.as_ref();
+        let detail = preview.map(|preview| match (preview.members, preview.online) {
+            (Some(members), Some(online)) if members >= 5 || online > 0 => {
+                format!("{online} online, {members} members")
+            }
+            _ if preview.voice => preview.channel.clone(),
+            _ => format!("#{}", preview.channel),
+        });
+        let confirm = if join.form.is_some() {
+            "Open in browser"
+        } else if join.member {
+            "Open Server"
+        } else if preview.is_some() {
+            "Join Server"
+        } else if join.from_link {
+            ""
+        } else {
+            "Find Invite"
+        };
+        let status = if join.form.is_some() {
+            "You joined. This server asks new members to fill in a form before they can talk, which Yapfast can't show yet. Finish it in Discord's web app."
+        } else if join.captcha.is_some() {
+            "Discord asks for a captcha first. Solve it in your browser."
+        } else if join.joining {
+            "Joining..."
+        } else if join.resolving {
+            "Looking up the invite..."
+        } else if join.member {
+            "You're already in this server."
+        } else {
+            ""
+        };
+        window.set_join_prompt(JoinPrompt {
+            title: if join.from_link {
+                "You've been invited to join a server"
+            } else {
+                "Join a Server"
+            }
+            .into(),
+            field: !join.from_link,
+            found: preview.is_some(),
+            name: preview
+                .map(|preview| preview.name.as_str())
+                .unwrap_or_default()
+                .into(),
+            picture_url: preview
+                .and_then(|preview| preview.icon.as_deref())
+                .unwrap_or_default()
+                .into(),
+            initial: preview
+                .map(|preview| initial(&preview.name))
+                .unwrap_or_default(),
+            detail: detail.unwrap_or_default().into(),
+            confirm: confirm.into(),
+            busy: join.resolving || join.joining,
+            status: status.into(),
+            captcha: join.captcha.is_some(),
+            form: join.form.is_some(),
+            error: join.error.as_deref().unwrap_or_default().into(),
         });
     }
 

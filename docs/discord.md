@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [push-to-talk](#push-to-talk) on a recorded key, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio, cameras and push-to-talk on real Windows, and of push-to-talk on real Wayland desktops; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, making and changing channels, threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, server settings and privacy |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, [joining by invite](#joining-by-invite), making and changing channels, threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, server settings and privacy, membership forms when joining |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, [editing one's profile](#editing-ones-main-profile) and [server profiles](#editing-ones-server-profile), notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored; changing the username |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -161,7 +161,8 @@ Discord doesn't take one. The listener lives only while the page waits, so
 nothing stays loaded afterwards. hCaptcha's site check passed Discord's site
 key for `127.0.0.1` on 2026-10-13; whether Discord takes a solution made this
 way awaits a real captcha. The fake server asks for one after
-`POST /_control/qr-captcha`.
+`POST /_control/qr-captcha`. [Joining by invite](#joining-by-invite) shows
+Discord's captchas the same way.
 
 Store the Discord token in the OS credential store, next to the Matrix session.
 The token gives full control of the account, so it never goes into Matrix, not
@@ -1550,6 +1551,56 @@ URL, and sends that instead; Yapfast doesn't keep servers' vanity codes, so it
 leaves those out. The fake makes invites to "Server"'s channels and its
 `--servers` fillers', and `/_control/invites` lists each with its location.
 
+### Joining by invite
+
+The "+" at the foot of the server rail opens Join a Server, which takes an
+invite link or a bare code, a server's vanity code too, as Discord's dialog
+does: `discord.gg/{code}`, or `/invite/{code}` on discord.com, discordapp.com,
+canary and ptb, with any query left off; otherwise the last part after a `/`
+(`invite.rs`). Clicking an invite link in a message opens the same dialog
+without the field, even when the link's text says something else, instead
+of the browser. Either looks the invite up first and shows its server,
+icon, and how many members it has and how many are online, or the channel
+when it has fewer than five members and none online, as Discord's invite
+card does; nothing joins until the Join Server click. Discord's docs warn
+that accounts joining many servers in a short time get flagged, so Yapfast
+never joins by itself.
+
+- `GET /invites/{code}?with_counts=true&with_expiration=true&with_permissions=true`,
+  as Discord's client resolves an invite, with `&inputValue=` and what was
+  typed into the dialog when it was. An invite that isn't to a server's
+  channel, such as a friend invite, is refused.
+- `POST /invites/{code}` with `{"session_id": ...}`, this gateway session's
+  id from READY, and an `X-Context-Properties` of the location, "Join Guild"
+  from the dialog or "Desktop Invite Modal" from a link, with
+  `location_guild_id`, `location_channel_id` and `location_channel_type`
+  naming the invite's server and channel, as Discord's client sends them.
+
+Discord often asks for a captcha before joining. Yapfast shows it as linking
+does (`captcha::solving`), and the dialog says so and can open it again. The
+server's GUILD_CREATE lists it, and Yapfast opens the invite's channel once
+it's listed. An invite to a server the account is in opens the server
+instead of joining, at once for a link; the dialog says so and its button
+opens it. Discord's refusals come back in the dialog's words: an invalid or
+expired invite (10006, 50020), a ban (40007), too many servers (30001), a
+full server (30019) and paused invites (40069).
+
+When the answer has `show_verification_form`, the server asks new members
+to fill in its form, such as accepting its rules, before they may talk.
+Yapfast doesn't show forms or onboarding questions yet, so the dialog says
+so and opens the channel in Discord's web app, where the form waits. A voice
+channel's invite joins the server and opens the channel without joining the
+call. Discord's client also sends `invite_instance_id` from a message's
+invite card, which Yapfast doesn't show yet, so it leaves that out.
+
+The fake resolves the invites it made and "server", which lands in
+"Server"'s #general as a vanity code would, and joining "Server" after
+leaving it brings Alice back with its GUILD_CREATE. It checks the session
+id is a live session's, lists each join with its context at
+`/_control/invite-joins`, asks for a captcha after
+`POST /_control/invite-captcha`, and answers with a form after
+`POST /_control/invite-form`.
+
 ### Channels and categories
 
 Where the account may manage channels (`MANAGE_CHANNELS`, on the server
@@ -2266,7 +2317,8 @@ In rough order. The browser covers these until then.
   media channels.
 - Pinning and unpinning messages.
 - Making and changing server folders.
-- Joining servers by invite.
+- A server's membership form and onboarding questions when joining by
+  invite, and invite cards in messages.
 - A server's privacy settings: direct messages, message requests and
   activity status from its members.
 - Discord's voice settings beyond those above, and push-to-talk's sounds,

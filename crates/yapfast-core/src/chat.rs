@@ -1670,6 +1670,38 @@ impl FavoriteGif {
     }
 }
 
+/// What an invite to a Discord server shows before joining by it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvitePreview {
+    pub code: String,
+    /// The server, by its server id, its name and the address of its icon.
+    pub server: String,
+    pub name: String,
+    pub icon: Option<String>,
+    /// The channel joining lands in, by its room id, its name, Discord's
+    /// type of it, which joining names, and whether it's a voice channel.
+    pub room: String,
+    pub channel: String,
+    pub channel_type: u64,
+    pub voice: bool,
+    /// How many members the server has, and how many are online, when
+    /// Discord counts them.
+    pub members: Option<u64>,
+    pub online: Option<u64>,
+}
+
+/// A Discord server joined by an invite.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JoinedServer {
+    /// The server, by its server id, and the channel the invite lands in,
+    /// by its room id.
+    pub server: String,
+    pub room: String,
+    /// Whether the server asks new members to fill in its form, such as
+    /// accepting its rules, before they may talk.
+    pub form: bool,
+}
+
 /// Commands only the linked Discord account carries out.
 #[derive(Clone)]
 pub enum DiscordCommand {
@@ -1872,6 +1904,22 @@ pub enum DiscordCommand {
     SendInvite {
         user: String,
         room: String,
+    },
+    /// Look up an invite to a Discord server by its code, before joining
+    /// by it; `typed` is what someone typed into Join a Server, if they
+    /// did. [`Event::InviteResolved`] follows.
+    ResolveInvite {
+        code: String,
+        typed: Option<String>,
+    },
+    /// Join a Discord server by the invite `preview` shows, from Join a
+    /// Server, or from a clicked invite link with `from_link`.
+    /// [`Event::JoinCaptcha`] follows for each captcha Discord asks for
+    /// first, and then [`Event::ServerJoined`].
+    JoinServer {
+        // Boxed: it's the largest command by far.
+        preview: Box<InvitePreview>,
+        from_link: bool,
     },
     /// Make a channel or category in a Discord server, by its server id,
     /// inside the category `parent` names by its room id, or a copy of
@@ -2317,6 +2365,24 @@ pub enum Event {
         user: String,
         room: String,
         result: Result<(), String>,
+    },
+    /// What the invite [`DiscordCommand::ResolveInvite`] looked up by its
+    /// code shows, or why Discord showed nothing.
+    InviteResolved {
+        code: String,
+        result: Result<InvitePreview, String>,
+    },
+    /// The address of the page with a captcha Discord asked for before
+    /// joining by the invite with this code.
+    JoinCaptcha {
+        code: String,
+        page: String,
+    },
+    /// The server [`DiscordCommand::JoinServer`] joined by the invite with
+    /// this code, or why it didn't.
+    ServerJoined {
+        code: String,
+        result: Result<JoinedServer, String>,
     },
     /// The roles and groups a message in a room may mention.
     MentionGroups {

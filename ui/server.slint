@@ -100,6 +100,104 @@ export component InviteDialog inherits Rectangle {
     }
 }
 
+// What Join a Server shows: the field for an invite, the server it's to once
+// Discord found it, and how joining goes.
+export struct JoinPrompt {
+    title: string,
+    /// Whether it has a field for the invite; a clicked link's has none.
+    field: bool,
+    /// The server, once found: its name, picture or initial, and its
+    /// members, or the channel joining lands in.
+    found: bool,
+    name: string,
+    picture-url: string,
+    initial: string,
+    detail: string,
+    /// What the main button does, such as "Join Server"; empty for none.
+    confirm: string,
+    busy: bool,
+    /// How it's going, such as "Joining...".
+    status: string,
+    /// Discord asked for a captcha, which opens again from a button.
+    captcha: bool,
+    /// The server asks for a form, which its button opens in the browser.
+    form: bool,
+    error: string,
+}
+
+// Joins a Discord server by an invite, as Discord's Join a Server and invite
+// dialogs do: the server shows before anyone joins.
+export component JoinDialog inherits Rectangle {
+    in property <JoinPrompt> prompt;
+    in-out property <string> link;
+    callback find(string);
+    callback join;
+    callback open-captcha;
+    callback open-form;
+    callback close;
+    background: #00000099;
+    TouchArea { clicked => { root.close(); } }
+    Rectangle {
+        width: min(440px, root.width - 48px); height: join-content.preferred-height;
+        background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
+        drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
+        accessible-role: groupbox;
+        accessible-label: root.prompt.title;
+        TouchArea { }
+        FocusScope {
+            init => { if !root.prompt.field { self.focus(); } }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.close(); return accept; }
+                return reject;
+            }
+            join-content := VerticalLayout {
+                padding: 20px; spacing: 12px;
+                HorizontalLayout {
+                    Text { text: root.prompt.title; color: Theme.text; font-size: 18px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                    IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; clicked => { root.close(); } }
+                }
+                if root.prompt.field: Label { text: "Paste an invite link or code to join a server you were invited to."; }
+                if root.prompt.field: Text { text: "INVITE LINK"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+                if root.prompt.field: TextField {
+                    init => { self.focus-input(); }
+                    min-height: 36px; text-size: 15px; pad: 10px;
+                    placeholder: "https://discord.gg/yapfast"; label: "Invite link";
+                    text <=> root.link;
+                    accepted => { if !root.prompt.busy { root.find(root.link); } }
+                }
+                if root.prompt.found: Rectangle {
+                    border-radius: 8px; background: Theme.sunken;
+                    height: found-row.preferred-height;
+                    found-row := HorizontalLayout {
+                        padding: 12px; spacing: 12px;
+                        Avatar { size: 48px; picture-url: root.prompt.picture-url; initial: root.prompt.initial; }
+                        VerticalLayout {
+                            alignment: center; spacing: 2px; horizontal-stretch: 1;
+                            Text { text: root.prompt.name; color: Theme.text; font-size: 16px; font-weight: 700; overflow: elide; }
+                            if root.prompt.detail != "": Label { text: root.prompt.detail; }
+                        }
+                    }
+                }
+                if root.prompt.status != "": Label { text: root.prompt.status; }
+                if root.prompt.error != "": Text { text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
+                HorizontalLayout {
+                    alignment: end; spacing: 8px; padding-top: 4px;
+                    ActionButton { text: root.prompt.form || root.prompt.confirm == "" ? "Close" : "Cancel"; ghost: true; clicked => { root.close(); } }
+                    if root.prompt.captcha: ActionButton { text: "Open the captcha again"; clicked => { root.open-captcha(); } }
+                    if root.prompt.confirm != "": ActionButton {
+                        text: root.prompt.confirm; primary: true; enabled: !root.prompt.busy;
+                        clicked => {
+                            if root.prompt.form { root.open-form(); }
+                            else if root.prompt.found { root.join(); }
+                            else { root.find(root.link); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // What a channel dialog asks: to make, change, copy or delete a channel or
 // category, and which of its fields it shows.
 export struct ChannelPrompt {

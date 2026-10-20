@@ -10,7 +10,10 @@ use super::{
     render::{chat_profile, found_in, hits_in, with_previews},
     *,
 };
-use crate::chat::{MemberChange, Muting, NotificationChange, NotifyLevel, RelationshipChange};
+use crate::chat::{
+    InvitePreview, JoinedServer, MemberChange, Muting, NotificationChange, NotifyLevel,
+    RelationshipChange,
+};
 
 /// Carries out a command about the account, or gives back any other.
 pub(super) fn command(
@@ -752,6 +755,89 @@ pub(super) fn command(
         }
         return None;
     }
+    if let Command::Discord(DiscordCommand::ResolveInvite { code, typed }) = command {
+        match discord {
+            Ok(discord) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = discord
+                        .invite(&code, typed.as_deref())
+                        .await
+                        .map(|preview| invite_preview(&preview))
+                        .map_err(|error| {
+                            tracing::warn!(
+                                error = format!("{error:#}"),
+                                "could not look up an invite"
+                            );
+                            error.to_string()
+                        });
+                    let _ = events.send(Event::InviteResolved { code, result });
+                });
+            }
+            Err(error) => {
+                let _ = events.send(Event::InviteResolved {
+                    code,
+                    result: Err(error.into()),
+                });
+            }
+        }
+        return None;
+    }
+    if let Command::Discord(DiscordCommand::JoinServer { preview, from_link }) = command {
+        let code = preview.code.clone();
+        let invite = discord::parse_room(&preview.room).map(|(guild, channel)| {
+            yapfast_discord::invite::Preview {
+                code: preview.code.clone(),
+                guild: guild.to_owned(),
+                name: preview.name.clone(),
+                icon: preview.icon.clone(),
+                channel: channel.to_owned(),
+                channel_name: preview.channel.clone(),
+                channel_type: preview.channel_type,
+                members: preview.members,
+                online: preview.online,
+            }
+        });
+        match (discord, invite) {
+            (Ok(discord), Some(invite)) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    use yapfast_discord::invite::JoinFrom;
+                    let from = if from_link {
+                        JoinFrom::Link
+                    } else {
+                        JoinFrom::Dialog
+                    };
+                    let captchas = events.clone();
+                    let result = discord
+                        .join_invite(&invite, from, |page| {
+                            let _ = captchas.send(Event::JoinCaptcha {
+                                code: invite.code.clone(),
+                                page: page.to_owned(),
+                            });
+                        })
+                        .await
+                        .map(|joined| JoinedServer {
+                            server: discord::server_id(&joined.guild),
+                            room: discord::room_id(&joined.guild, &joined.channel),
+                            form: joined.verification_form,
+                        })
+                        .map_err(|error| {
+                            tracing::warn!(error = format!("{error:#}"), "could not join a server");
+                            format!("Couldn't join the server: {error}")
+                        });
+                    let _ = events.send(Event::ServerJoined { code, result });
+                });
+            }
+            (discord, _) => {
+                let _ = events.send(Event::ServerJoined {
+                    code,
+                    result: Err(discord.err().unwrap_or(NOT_DISCORD).into()),
+                });
+            }
+        }
+        return None;
+    }
     if let Command::Discord(DiscordCommand::OpenThread { room, beside }) = command {
         let place =
             discord::parse_room(&room).map(|(guild, thread)| (guild.to_owned(), thread.to_owned()));
@@ -1220,4 +1306,20 @@ pub(super) fn places_used(
             (id, uses)
         })
         .collect()
+}
+
+/// What an invite shows, as the application keeps it.
+fn invite_preview(preview: &yapfast_discord::invite::Preview) -> InvitePreview {
+    InvitePreview {
+        code: preview.code.clone(),
+        server: discord::server_id(&preview.guild),
+        name: preview.name.clone(),
+        icon: preview.icon.clone(),
+        room: discord::room_id(&preview.guild, &preview.channel),
+        channel: preview.channel_name.clone(),
+        channel_type: preview.channel_type,
+        voice: preview.voice(),
+        members: preview.members,
+        online: preview.online,
+    }
 }

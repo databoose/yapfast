@@ -4393,3 +4393,51 @@ fn requests_list_someone_once_with_their_message() {
         ]
     );
 }
+
+#[test]
+#[cfg(feature = "discord")]
+fn join_a_server_shows_the_invites_server_and_a_link_opens_it() {
+    let (window, adapter, _directory) = discord_server_window();
+    adapter.borrow_mut().refresh(&window);
+    assert!(window.get_can_join_server());
+    // A clicked invite link opens the dialog rather than the browser.
+    window.invoke_open_link("https://discord.gg/abc".into());
+    {
+        let join = adapter.borrow().app.state.join.clone().unwrap();
+        assert!(join.from_link && join.resolving);
+        assert_eq!(join.code.as_deref(), Some("abc"));
+    }
+    assert!(window.get_join_open());
+    let prompt = window.get_join_prompt();
+    assert_eq!(prompt.title, "You've been invited to join a server");
+    assert!(!prompt.field && !prompt.found && prompt.busy);
+    assert_eq!(prompt.status, "Looking up the invite...");
+
+    let mut adapter = adapter.borrow_mut();
+    adapter.app.state.join = Some(yapfast_core::application::JoinDialog {
+        code: Some("abc".into()),
+        preview: Some(yapfast_core::chat::InvitePreview {
+            code: "abc".into(),
+            server: "discord:20".into(),
+            name: "Builders".into(),
+            icon: None,
+            room: "discord:20:21".into(),
+            channel: "general".into(),
+            channel_type: 0,
+            voice: false,
+            members: Some(42),
+            online: Some(7),
+        }),
+        ..Default::default()
+    });
+    adapter.refresh(&window);
+    let prompt = window.get_join_prompt();
+    assert_eq!(prompt.title, "Join a Server");
+    assert!(prompt.field && prompt.found && !prompt.busy);
+    assert_eq!(
+        (prompt.name.as_str(), prompt.initial.as_str()),
+        ("Builders", "B")
+    );
+    assert_eq!(prompt.detail, "7 online, 42 members");
+    assert_eq!(prompt.confirm, "Join Server");
+}
