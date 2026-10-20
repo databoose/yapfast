@@ -64,6 +64,10 @@ rustPlatform.buildRustPackage {
   '';
   # The tests need a display and the fake Discord server.
   doCheck = false;
+  # buildRustPackage turns off the release profile's strip and leaves it to
+  # stdenv, which strips only debug info unless told otherwise; the symbol
+  # tables were 55 MB of the binary.
+  stripAllList = [ "bin" ];
   postInstall = ''
     install -Dm644 packaging/icon.svg "$out/share/icons/hicolor/scalable/apps/${id}.svg"
     install -Dm644 packaging/linux/${id}.desktop -t "$out/share/applications"
