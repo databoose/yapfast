@@ -657,6 +657,7 @@ impl Application {
         self.seeking = None;
         self.focusing = false;
         self.state.first_unread = None;
+        self.state.caught_up = false;
         self.read_marker = read_marker.map(|marker| (marker, false));
         self.state.seen = seen;
         self.placing_seen = true;

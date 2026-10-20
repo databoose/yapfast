@@ -2465,6 +2465,98 @@ fn opening_at_the_new_divider_puts_it_at_the_top_and_the_bar_jumps_back() {
 }
 
 #[test]
+fn reading_the_newest_message_tells_the_application() {
+    i_slint_backend_testing::init_no_event_loop();
+    let window = YapfastWindow::new().unwrap();
+    window.set_workspace(true);
+    window.set_room_selected(true);
+    window.set_room_ready(true);
+    window.set_history_start(true);
+    let rows = |count: usize| -> Vec<MessageRow> {
+        (0..count)
+            .map(|index| {
+                let mut row = message_row_plain(&ChatMessage {
+                    id: format!("m{index}"),
+                    item: format!("i{index}"),
+                    author: "Bob".into(),
+                    body: format!("Message {index}"),
+                    formatted: true,
+                    ..Default::default()
+                });
+                row.first = true;
+                row
+            })
+            .collect()
+    };
+    let told = Rc::new(RefCell::new(Vec::new()));
+    let telling = told.clone();
+    window.on_reading_changed(move |reading| telling.borrow_mut().push(reading));
+    window.show().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1120., 760.));
+    let settle = || {
+        for _ in 0..10 {
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(50));
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+                    position: slint::LogicalPosition::new(1100., 740.),
+                });
+        }
+    };
+    window.set_window_focused(true);
+    settle();
+    assert!(window.invoke_reading(), "an empty conversation is all read");
+
+    // Opened at the divider, the newest message isn't read until the
+    // timeline is scrolled down to it.
+    window.set_messages(ModelRc::new(VecModel::from(rows(100))));
+    messages::show_message(&window, 60, "i60", false);
+    settle();
+    assert!(!window.invoke_reading());
+    assert_eq!(told.borrow().last(), Some(&false));
+    for _ in 0..6 {
+        settle();
+    }
+    assert!(
+        !window.invoke_reading(),
+        "the jump settled away from the end"
+    );
+    for _ in 0..20 {
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(700., 380.),
+                delta_x: 0.,
+                delta_y: -400.,
+            });
+        settle();
+    }
+    assert!(window.invoke_timeline_at_end());
+    assert!(window.invoke_reading());
+    assert_eq!(told.borrow().last(), Some(&true));
+    window.set_window_focused(false);
+    settle();
+    assert_eq!(
+        told.borrow().last(),
+        Some(&false),
+        "nor with the window behind"
+    );
+    window.set_window_focused(true);
+
+    // A conversation too short to scroll is read once the jump settles.
+    window.set_messages(ModelRc::new(VecModel::from(rows(3))));
+    messages::show_message(&window, 1, "i1", false);
+    settle();
+    assert!(!window.invoke_reading());
+    for _ in 0..6 {
+        settle();
+    }
+    assert!(window.invoke_reading());
+}
+
+#[test]
 fn rows_mark_mentions_and_the_new_bar_counts_what_others_sent() {
     let message = |own: bool, mentions_me: bool| ChatMessage {
         own,

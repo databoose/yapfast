@@ -185,13 +185,16 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   restarts. Sending clears the saved draft.
 - Show unread channels in bold with a short pill at the sidebar edge, and the
   same pill beside servers and the DM button that contain them. Mentions show a
-  red count. Opening a conversation marks
-  it read. A conversation opened with unread messages opens at a marigold
+  red count. A conversation is read once its newest message is in view with
+  the window in front, as Discord's client reads one: a Discord channel
+  then, a Matrix room as its timeline loads. A conversation opened with
+  unread messages opens at a marigold
   "New" divider above the first one, sitting at the top of the view rather
   than at the newest message, and the author's name shows again below it. The
   divider stays put while the conversation is open, as newer messages are
   read as they come, and it's gone the next time once the conversation was
-  read. While the divider is out of view, a marigold bar at the top says how
+  read. While the divider is out of view, until the newest message has been
+  in view, a marigold bar at the top says how
   many messages are new and since when ("80 new messages since 14:44"), with
   an arrow toward it, and clicking it scrolls back to the divider. A Discord
   channel places it by message order; when every loaded message is unread,

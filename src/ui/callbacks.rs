@@ -164,6 +164,17 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
         });
     }
     bind!(on_jump_to_unread, Action::JumpToUnread);
+    {
+        let adapter = adapter.clone();
+        let weak = window.as_weak();
+        window.on_reading_changed(move |reading| {
+            if let Some(window) = weak.upgrade() {
+                adapter
+                    .borrow_mut()
+                    .action(&window, Action::Reading(reading));
+            }
+        });
+    }
     bind!(on_accept_request, Action::AnswerRequest(true));
     bind!(on_enlarge_profile, Action::EnlargeProfile);
     bind!(on_close_profile, Action::CloseProfile);

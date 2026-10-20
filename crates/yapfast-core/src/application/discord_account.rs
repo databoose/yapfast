@@ -117,14 +117,18 @@ impl Application {
         }
     }
 
-    /// Showing an unread Discord channel reads it, as Matrix rooms are read
-    /// in the backend.
+    /// Reading the newest messages of an unread Discord channel reads it,
+    /// as Discord's client does: once they're in view with the window in
+    /// front, and the "New" divider is placed, so the view isn't about to
+    /// jump to it. A forum reads on showing it. Matrix rooms are read in the
+    /// backend.
     pub(super) fn mark_discord_read(&self) -> Vec<Effect> {
         match self.state.selected_room() {
             Some(room)
                 // A window of older messages doesn't read the newest.
                 if self.state.room_ready
                     && !self.state.detached
+                    && (room.forum || self.state.reading && self.read_marker.is_none())
                     && room.network == Network::Discord
                     && (room.unread > 0 || room.mentions > 0) =>
             {

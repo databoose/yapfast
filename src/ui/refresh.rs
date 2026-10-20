@@ -2500,6 +2500,7 @@ impl Adapter {
                 .position(|message| &message.item == item)?;
             Some((index, item))
         });
+        window.set_caught_up(state.caught_up);
         if messages_changed || selection_changed || reset {
             window.set_unread_index(
                 unread.map_or(-1, |(index, _)| i32::try_from(index).unwrap_or(i32::MAX)),

@@ -500,6 +500,13 @@ pub struct AppState {
     /// Changes each time the timeline should bring [`Self::first_unread`]
     /// to its top: once when it's found, and on [`Action::JumpToUnread`].
     pub unread_jump: u64,
+    /// The newest message of the selected room is in view, with the window
+    /// in front, as [`Action::Reading`] says; a Discord channel is read only
+    /// then, as Discord's client reads it.
+    pub reading: bool,
+    /// The newest message was read since the "New" divider was placed, so
+    /// the bar that jumps back to it is gone.
+    pub caught_up: bool,
     pub sending: Option<String>,
     /// The selected room's message the user is asked to confirm deleting.
     pub confirm_delete: Option<String>,
@@ -1206,6 +1213,9 @@ pub enum Action {
     /// Show the selected room's first unread message; see
     /// [`AppState::first_unread`].
     JumpToUnread,
+    /// Whether the newest message of the selected room is in view, with the
+    /// window in front and no jump settling; see [`AppState::reading`].
+    Reading(bool),
     /// Load the page after the newest message of a window of older ones,
     /// as the timeline does when scrolled near its end, unless one is on
     /// its way.
@@ -2140,6 +2150,10 @@ impl Application {
                 Some(item) => self.jump(item, true),
                 None => vec![],
             },
+            Action::Reading(reading) => {
+                self.state.reading = reading;
+                self.read_latest()
+            }
             Action::Later => self.later(),
             Action::JumpToPresent => self.jump_to_present(),
             Action::LoadPictures(urls) => self.load_pictures(urls),
@@ -2683,7 +2697,7 @@ impl Application {
                     self.state.messages = self.without_blocked(Arc::new(messages));
                     let mut effects = self.place_unread();
                     effects.extend(self.seek());
-                    effects.extend(self.mark_discord_read());
+                    effects.extend(self.read_latest());
                     return effects;
                 }
             }

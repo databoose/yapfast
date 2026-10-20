@@ -348,6 +348,7 @@ fn watch_window(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
                 if let WindowEvent::Focused(focused) = event {
                     FOCUSED.set(*focused);
                     if let Some(window) = weak.upgrade() {
+                        window.set_window_focused(*focused);
                         show_motion(&window);
                         if *focused {
                             attention(&window, false);

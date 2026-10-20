@@ -400,6 +400,7 @@ pub(super) fn show_message(window: &YapfastWindow, index: usize, item: &str, lit
             && window.get_jump_item() == shown
         {
             window.set_jump_item(SharedString::default());
+            window.invoke_follow_at_end();
         }
     });
 }

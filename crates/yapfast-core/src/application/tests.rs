@@ -3224,7 +3224,7 @@ fn discord_threads_show_beside_their_channel() {
 
 #[test]
 #[cfg(feature = "discord")]
-fn discord_text_channels_write_without_matrix_trust_and_read_when_shown() {
+fn discord_text_channels_write_without_matrix_trust_and_read_once_read() {
     use yapfast_discord::{
         ready::{Access, Channel, Server},
         service::{Snapshot, Status},
@@ -3266,8 +3266,10 @@ fn discord_text_channels_write_without_matrix_trust_and_read_when_shown() {
         room: "discord:10:21".into(),
         messages: timeline(vec![]),
     });
+    assert!(effects.is_empty(), "shown, but not read yet");
+    // Read once its newest message is in view, with the window in front.
     assert!(matches!(
-        effects.as_slice(),
+        app.dispatch(Action::Reading(true)).as_slice(),
         [Effect::Backend(Command::MarkRead { room, sync: true })] if room == "discord:10:21"
     ));
     assert!(app.state.can_write(), "Discord doesn't need Matrix trust");
@@ -3315,7 +3317,7 @@ fn discord_text_channels_write_without_matrix_trust_and_read_when_shown() {
 
 #[test]
 #[cfg(feature = "discord")]
-fn discord_dms_list_with_their_pictures_and_read_when_shown() {
+fn discord_dms_list_with_their_pictures_and_read_once_read() {
     use yapfast_discord::service::{Conversation, Snapshot, Status};
     let mut app = connected();
     app.state.trusted = false;
@@ -3368,14 +3370,18 @@ fn discord_dms_list_with_their_pictures_and_read_when_shown() {
         effects.as_slice(),
         [Effect::Backend(Command::Open(id))] if id == "discord:@me:30"
     ));
+    app.dispatch(Action::Reading(true));
     let effects = app.apply(Event::Timeline {
         room: "discord:@me:30".into(),
         messages: timeline(vec![]),
     });
-    assert!(matches!(
-        effects.as_slice(),
-        [Effect::Backend(Command::MarkRead { room, .. })] if room == "discord:@me:30"
-    ));
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::Backend(Command::MarkRead { room, .. })] if room == "discord:@me:30"
+        ),
+        "read as it shows, its newest message in view"
+    );
     assert!(app.state.can_write(), "Discord DMs don't need Matrix trust");
     assert!(!app.state.lists_members(), "a DM lists no members");
     app.dispatch(Action::SelectRoom("discord:@me:31".into()));
@@ -4490,20 +4496,37 @@ fn the_new_divider_marks_the_first_unread_message_until_the_channel_is_left() {
     app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
     app.dispatch(Action::SelectRoom(general.into()));
     assert_eq!(app.state.first_unread, None);
+    // The view still at the end of what showed before reads nothing: the
+    // divider isn't placed yet.
+    assert!(app.dispatch(Action::Reading(true)).is_empty());
     let effects = app.apply(Event::Timeline {
         room: general.into(),
         messages: timeline(discord_messages(95..=110, &[104])),
     });
     assert!(
-        matches!(
-            effects.as_slice(),
-            [Effect::Backend(Command::MarkRead { .. })]
-        ),
-        "the last read message is loaded, so no earlier history is"
+        effects.is_empty(),
+        "the last read message is loaded, so no earlier history is, and \
+         the view goes to the divider, not reading the channel yet"
     );
     // Alice's own message after the last read one isn't new to her.
     assert_eq!(app.state.first_unread.as_deref(), Some("d:105"));
     assert_eq!(app.state.unread_jump, 1, "shown once");
+    assert!(!app.state.reading && !app.state.caught_up);
+    assert!(
+        !app.apply(unread_channel(true, 103))
+            .iter()
+            .any(|effect| matches!(effect, Effect::Backend(Command::MarkRead { .. }))),
+        "news of the channel doesn't read it either"
+    );
+
+    // Read down to the newest message, the channel is read, and the bar
+    // back to the divider goes.
+    app.dispatch(Action::Reading(false));
+    assert!(matches!(
+        app.dispatch(Action::Reading(true)).as_slice(),
+        [Effect::Backend(Command::MarkRead { room, .. })] if room == general
+    ));
+    assert!(app.state.caught_up);
 
     // Reading the channel and newer messages leave the divider where it is.
     app.apply(unread_channel(false, 110));
@@ -4520,6 +4543,7 @@ fn the_new_divider_marks_the_first_unread_message_until_the_channel_is_left() {
     // Left and read, the channel has no divider when it opens again.
     app.dispatch(Action::SelectRoom("discord:10:22".into()));
     assert_eq!(app.state.first_unread, None);
+    assert!(!app.state.caught_up);
     app.dispatch(Action::SelectRoom(general.into()));
     app.apply(Event::Timeline {
         room: general.into(),

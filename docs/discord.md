@@ -924,8 +924,11 @@ thread opened, by snowflake. A ping reply puts the account in `mentions`,
 so it's a mention only when its `content` names it, `<@id>` or `<@!id>`.
 Each server in the rail shows its mentions as a count, and the DM button
 counts DM mentions and the friend requests waiting for an answer.
-Showing an unread channel marks it read, and with the "Mark messages read on
-Discord" setting, on by default, acknowledges it on Discord within a second.
+Reading an unread channel marks it read, as Discord's client does: once its
+newest message is in view, with the window in front and the "New" divider
+placed, so opening a channel at its divider and leaving it doesn't. With the
+"Mark messages read on Discord" setting, on by default, Yapfast acknowledges
+it on Discord within a second.
 Reads within that second go together: one channel as its own
 acknowledgement, several, as when a server is marked read from its menu, in
 one `POST /read-states/ack-bulk` of up to 100 channels, as the official

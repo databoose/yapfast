@@ -952,6 +952,8 @@ export component YapfastWindow inherits Window {
     callback later;
     callback jump-to-present;
     callback jump-to-unread;
+    // The newest message came into view with the window in front, or left it.
+    callback reading-changed(bool);
     callback join-voice;
     /// Mutes or unmutes the call, or out of one, changes how the next starts.
     callback toggle-mute;
@@ -1099,6 +1101,17 @@ export component YapfastWindow inherits Window {
     property <int> sign-in-focus;
     public function focus-sign-in() { root.sign-in-focus += 1; }
     public function timeline-at-end() -> bool { return root.follow-latest; }
+    // Yapfast's window has the keyboard focus.
+    in property <bool> window-focused;
+    // The newest message was read since the "New" divider was placed, so the bar
+    // that jumps back to it is gone.
+    in property <bool> caught-up;
+    // The newest message is in view, with the window in front and no jump settling,
+    // which reads the conversation.
+    property <bool> reading-latest: root.room-selected && !root.requests-open && !root.friends-open
+        && root.follow-latest && root.window-focused && root.jump-item == "";
+    changed reading-latest => { root.reading-changed(self.reading-latest); }
+    public function reading() -> bool { return root.reading-latest; }
     // How far the newest message is below the view; zero at the end.
     public function timeline-below() -> length { return max(0px, timeline.content-y - min(0px, timeline.height - timeline.content-height)); }
     public function timeline-extent() -> length { return timeline.content-height; }
@@ -1159,7 +1172,10 @@ export component YapfastWindow inherits Window {
     function settle-lead() { root.lead = max(0px, timeline.height - (timeline.content-height - root.lead)); }
     changed timeline-viewport => { root.settle-lead(); if root.follow-latest { root.scroll-to-latest(); } }
     // The end of a window of older messages isn't the newest, so it isn't followed.
-    changed timeline-position => {
+    changed timeline-position => { root.follow-at-end(); }
+    // At the end of the newest messages, the list follows them. A jump that settles
+    // there, in a conversation too short to scroll, doesn't move the list.
+    public function follow-at-end() {
         if !root.detached && timeline.content-y <= min(0px, timeline.height - timeline.content-height) + 0.5px { root.follow-latest = true; }
     }
     changed detached => { if self.detached { root.follow-latest = false; } }
@@ -2475,8 +2491,9 @@ export component YapfastWindow inherits Window {
                                     }
                                 }
                             }
-                            // While the "New" divider is out of view, a bar at the top jumps to it.
-                            if root.room-selected && !root.requests-open && !root.friends-open
+                            // While the "New" divider is out of view, until the newest message is
+                            // read, a bar at the top jumps to it.
+                            if root.room-selected && !root.requests-open && !root.friends-open && !root.caught-up
                                 && (root.unread-above || root.unread-below): UnreadBar {
                                 x: (parent.width - self.width) / 2; y: 12px;
                                 label: root.unread-label; above: root.unread-above;

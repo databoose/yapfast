@@ -724,6 +724,20 @@ impl Application {
         }
     }
 
+    /// The newest message came into view or left it. Once it's read past
+    /// the "New" divider, the bar back to the divider goes, and an unread
+    /// Discord channel is read.
+    pub(super) fn read_latest(&mut self) -> Vec<Effect> {
+        if self.state.reading
+            && self.state.room_ready
+            && !self.state.detached
+            && self.read_marker.is_none()
+        {
+            self.state.caught_up = true;
+        }
+        self.mark_discord_read()
+    }
+
     /// Puts the "New" divider above the first message after the one last
     /// read when the room was opened, once the timeline has it. Discord's
     /// messages are ordered by their snowflakes, so the divider goes in even
@@ -778,6 +792,9 @@ impl Application {
                 if !jumping {
                     self.state.unread_jump += 1;
                 }
+                // The view leaves the newest message for the divider, or a
+                // message asked for; it says so once it's back.
+                self.state.reading = false;
             }
             // Not loaded yet, or nothing is unread after all; newer messages
             // may still come with the rest of the timeline.
