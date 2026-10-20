@@ -432,6 +432,33 @@ pub enum Access {
     Hidden,
 }
 
+/// Whose messages an account may delete in a channel, as Discord's client
+/// offers it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Deletes {
+    /// Its own, as in a DM.
+    #[default]
+    Own,
+    /// Anyone's, with Manage Messages.
+    Any,
+    /// None: the channel is an archived thread it may not open again.
+    None,
+}
+
+impl Deletes {
+    /// Whether `me` may delete `message`: it's theirs, or answers their
+    /// command, unless they may delete anyone's; and Discord lets it be
+    /// deleted at all.
+    pub fn allow(self, message: &crate::message::Message, me: &str) -> bool {
+        !message.undeletable
+            && match self {
+                Deletes::Any => true,
+                Deletes::Own => message.author_id == me || message.invoker.as_deref() == Some(me),
+                Deletes::None => false,
+            }
+    }
+}
+
 /// Where DMs and group DMs sit in place of a server, as in Discord's links.
 pub const PRIVATE: &str = "@me";
 
@@ -616,6 +643,26 @@ impl Server {
                 || self.channel_permissions(channel, user, roles)
                     & permission::READ_MESSAGE_HISTORY
                     != 0)
+    }
+
+    /// Whose messages `user`, holding `roles`, may delete in `channel`, as
+    /// Discord's client decides: anyone's with Manage Messages, and none in
+    /// an archived thread that's locked, or that they couldn't open again
+    /// by sending in it. Without the server's roles, their own.
+    pub fn deletes(&self, channel: &Channel, user: &str, roles: &[String]) -> Deletes {
+        let permissions = self.channel_permissions(channel, user, roles);
+        let reopens = SEND_MESSAGES | SEND_MESSAGES_IN_THREADS;
+        match &channel.thread {
+            Some(thread)
+                if thread.archived
+                    && (thread.locked
+                        || !self.roles.is_empty() && permissions & reopens != reopens) =>
+            {
+                Deletes::None
+            }
+            _ if permissions & permission::MANAGE_MESSAGES != 0 => Deletes::Any,
+            _ => Deletes::Own,
+        }
     }
 
     /// Adds or replaces a channel or thread from a channel object.
@@ -1509,6 +1556,83 @@ mod tests {
             ..Default::default()
         };
         assert!(!server.forwards_from(&unread, "1", &[]));
+    }
+
+    #[test]
+    fn deletes_follow_manage_messages_and_archived_threads() {
+        use permission::{MANAGE_MESSAGES, SEND_MESSAGES};
+        let mut server = Server {
+            id: "10".into(),
+            ..Default::default()
+        };
+        let general = Channel::default();
+        assert_eq!(
+            server.deletes(&general, "1", &["20".into()]),
+            Deletes::Own,
+            "without the roles"
+        );
+        server.roles = HashMap::from([
+            (
+                "10".into(),
+                VIEW_CHANNEL | SEND_MESSAGES | SEND_MESSAGES_IN_THREADS,
+            ),
+            ("20".into(), MANAGE_MESSAGES),
+        ])
+        .into();
+        assert_eq!(server.deletes(&general, "1", &[]), Deletes::Own);
+        assert_eq!(server.deletes(&general, "1", &["20".into()]), Deletes::Any);
+        let thread = |archived, locked| Channel {
+            thread: Some(Box::new(Thread {
+                archived,
+                locked,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert_eq!(
+            server.deletes(&thread(false, true), "1", &["20".into()]),
+            Deletes::Any,
+            "an open thread, even locked"
+        );
+        assert_eq!(server.deletes(&thread(true, false), "1", &[]), Deletes::Own);
+        assert_eq!(
+            server.deletes(&thread(true, true), "1", &["20".into()]),
+            Deletes::None
+        );
+        let quiet = Channel {
+            overwrites: vec![Overwrite {
+                id: "10".into(),
+                member: false,
+                allow: 0,
+                deny: SEND_MESSAGES_IN_THREADS,
+            }]
+            .into(),
+            ..thread(true, false)
+        };
+        assert_eq!(
+            server.deletes(&quiet, "1", &["20".into()]),
+            Deletes::None,
+            "one it may not open again"
+        );
+        let message = |author: &str, invoker: Option<&str>| crate::message::Message {
+            author_id: author.into(),
+            invoker: invoker.map(str::to_owned),
+            ..Default::default()
+        };
+        assert!(Deletes::Own.allow(&message("1", None), "1"));
+        assert!(!Deletes::Own.allow(&message("2", None), "1"));
+        assert!(
+            Deletes::Own.allow(&message("2", Some("1")), "1"),
+            "an app's answer to its command"
+        );
+        assert!(!Deletes::Own.allow(&message("2", Some("3")), "1"));
+        assert!(Deletes::Any.allow(&message("2", None), "1"));
+        assert!(!Deletes::None.allow(&message("1", None), "1"));
+        let call = crate::message::Message {
+            undeletable: true,
+            ..message("1", None)
+        };
+        assert!(!Deletes::Any.allow(&call, "1"));
     }
 
     #[test]

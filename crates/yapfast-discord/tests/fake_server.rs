@@ -11,7 +11,7 @@ use yapfast_discord::{
     member_list::Presence,
     message::Shown,
     notifications::{Change, Level},
-    ready::PRIVATE,
+    ready::{Deletes, PRIVATE},
     remote_auth::{self, Step},
     rtp::Codec,
     service::{Discord, Live, Snapshot, Status},
@@ -741,6 +741,41 @@ async fn talks_to_the_fake_server() {
     // Deleting one Discord no longer has, as from a timeline that still
     // showed it, does what was asked.
     discord.delete(&general, &sent.id).await.unwrap();
+
+    // Someone else's message goes only with Manage Messages, which Mods
+    // gives.
+    post_control(server, "/_control/mention", "");
+    let bobs = live_where(&mut live, |event| match event {
+        Live::Created(message) if message.content.contains("co-op tonight") => Some(message),
+        _ => None,
+    })
+    .await;
+    assert!(discord.delete(&general, &bobs.id).await.is_err());
+    let alice = discord.snapshots().borrow().user_id.clone().unwrap();
+    let mods = "1400000000000000110";
+    for add in [true, false] {
+        discord
+            .member_role(&guild, &alice, mods, add)
+            .await
+            .unwrap();
+        let snapshot = snapshot_where(&discord, |snapshot| {
+            snapshot.servers[0].my_roles.iter().any(|role| role == mods) == add
+        })
+        .await;
+        let joined = &snapshot.servers[0];
+        assert_eq!(
+            joined.deletes(&joined.text_channels[0], &alice, &joined.my_roles),
+            if add { Deletes::Any } else { Deletes::Own }
+        );
+        if add {
+            discord.delete(&general, &bobs.id).await.unwrap();
+            live_where(&mut live, |event| match event {
+                Live::Deleted { id, .. } if id == bobs.id => Some(()),
+                _ => None,
+            })
+            .await;
+        }
+    }
 
     // Polls: a vote comes back live, who voted lists by answer, and Alice's
     // own poll ends early with a notice of its winner.

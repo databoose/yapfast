@@ -443,7 +443,8 @@ function wireUser(user: User) {
 // /guilds/{id}/members/{user} renames others or times them out; PUT and
 // DELETE .../members/{user}/roles/{role} give and take roles, DELETE
 // .../members/{user} kicks, and PUT /guilds/{id}/bans/{user} bans, each as
-// far as Alice's roles allow, as Discord checks them. Staff may also mute,
+// far as Alice's roles allow, as Discord checks them. Given Mods, she may
+// delete others' messages in "Server", as she can't otherwise. Staff may also mute,
 // deafen and move members in voice: PATCH .../members/{user} with `mute`,
 // `deaf` or `channel_id`, null to disconnect them, changes the voice state
 // of someone in the server's voice, which VOICE_STATE_UPDATE says, and GET
@@ -3769,8 +3770,16 @@ async function api(req: Request, path: string, origin: string): Promise<Response
   if ((m = path.match(/^\/channels\/(\d+)\/messages\/(\d+)$/))) {
     const message = byId.get(m[2]!);
     if (!message || message.channel !== m[1]) return notFound("Unknown Message", 10008);
-    if (message.author.id !== ALICE) {
-      return json({ message: "Cannot edit a message authored by another user", code: 50005 }, 403);
+    // Calls' notices and threads' first messages stay; others' messages
+    // go only for those who may manage messages, never in a DM.
+    if (method === "DELETE" && (message.type === 3 || message.type === 21)) {
+      return json({ message: "Cannot execute action on a system message", code: 50021 }, 400);
+    }
+    const others = method === "DELETE" && !privates.has(message.channel) && aliceMay(13);
+    if (message.author.id !== ALICE && !others) {
+      return method === "PATCH"
+        ? json({ message: "Cannot edit a message authored by another user", code: 50005 }, 403)
+        : json({ message: "Missing Permissions", code: 50013 }, 403);
     }
     if (method === "PATCH") {
       const body: any = await req.json();

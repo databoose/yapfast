@@ -1,7 +1,7 @@
 //! The open channel: its loaded messages, sends waiting for Discord, and
 //! the messages as the timeline last showed them.
 
-use yapfast_discord::api::Span;
+use yapfast_discord::{api::Span, ready::Deletes};
 
 use crate::chat::SendOptions;
 
@@ -778,7 +778,7 @@ impl OpenChannel {
             let result = discord
                 .delete(&channel, &id)
                 .await
-                .map_err(|error| error.to_string());
+                .map_err(|error| format!("Could not delete the message: {error}"));
             let _ = done.send(Done::Deleted { room, id, result });
         });
     }
@@ -1278,6 +1278,13 @@ impl OpenChannel {
                 .channel(&self.channel)
                 .is_some_and(|channel| server.forwards_from(channel, &me, &server.my_roles))
         });
+        let deletes = server.as_deref().map_or(Deletes::Own, |server| {
+            server
+                .channel(&self.channel)
+                .map_or(Deletes::Own, |channel| {
+                    server.deletes(channel, &me, &server.my_roles)
+                })
+        });
         let rendering = Rendering {
             names: discord.names_version(),
             me: me.clone(),
@@ -1285,6 +1292,7 @@ impl OpenChannel {
             server: server.clone(),
             may_pin,
             may_forward,
+            deletes,
         };
         if !rendering.alike(&self.rendered_with) {
             self.rendered.clear();
@@ -1517,7 +1525,7 @@ impl OpenChannel {
             emoji: custom_emoji(message),
             can_reply: ordinary,
             can_edit: own && message.editable,
-            can_delete: own,
+            can_delete: self.rendered_with.deletes.allow(message, me),
             can_react: ordinary,
             can_forward: message.forwardable && self.rendered_with.may_forward,
             pinned: message.pinned,
@@ -1595,6 +1603,8 @@ pub(super) struct Rendering {
     pub(super) may_pin: bool,
     /// This account may forward messages from here: anyone may from a DM.
     pub(super) may_forward: bool,
+    /// Whose messages this account may delete here.
+    pub(super) deletes: Deletes,
 }
 
 impl Rendering {
@@ -1627,6 +1637,7 @@ impl Rendering {
             && self.blocked == other.blocked
             && self.may_pin == other.may_pin
             && self.may_forward == other.may_forward
+            && self.deletes == other.deletes
             && server
     }
 }

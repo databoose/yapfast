@@ -35,6 +35,10 @@ const POLL_RESULT: u64 = 46;
 /// forwards in `message_snapshots`.
 const FORWARD: u64 = 1;
 
+/// The key of `authorizing_integration_owners` for an app installed on a
+/// user's account rather than in a server.
+const USER_INSTALL: &str = "1";
+
 /// The message flag that hides its embeds.
 const SUPPRESS_EMBEDS: u64 = 1 << 2;
 /// The message flags Discord's client forwards a message with: crossposts,
@@ -140,6 +144,14 @@ pub struct Message {
     /// alone: written, and without a poll, a call or an activity.
     #[serde(default)]
     pub forwardable: bool,
+    /// Not even its author may delete it: a call's notice, or a thread's
+    /// first message, which shows the one it was started from.
+    #[serde(default)]
+    pub undeletable: bool,
+    /// Who ran the command it answers, for an app installed on their
+    /// account, who may delete it as their own.
+    #[serde(default)]
+    pub invoker: Option<String>,
     /// The poll it asks, if it's one.
     #[serde(default)]
     pub poll: Option<Poll>,
@@ -522,6 +534,8 @@ pub fn parse(value: &Value) -> Option<Message> {
         message.nonce = None;
         message.editable = false;
         message.forwardable = false;
+        message.undeletable = true;
+        message.invoker = None;
         message.thread = None;
         return Some(message);
     }
@@ -734,8 +748,21 @@ pub fn parse(value: &Value) -> Option<Message> {
             ]
             .iter()
             .all(|field| value[*field].is_null()),
+        undeletable: kind == CALL,
+        invoker: invoker(&value["interaction_metadata"]),
         poll: Poll::of(&shown["poll"]),
     })
+}
+
+/// Who ran the command an app's message answers, when the app answered
+/// as installed on their account alone, as Discord's client lets them
+/// delete it.
+fn invoker(interaction: &Value) -> Option<String> {
+    let owners = interaction["authorizing_integration_owners"].as_object()?;
+    if owners.len() != 1 || !owners.contains_key(USER_INSTALL) {
+        return None;
+    }
+    interaction["user"]["id"].as_str().map(str::to_owned)
 }
 
 /// The notice of a closed poll, from the fields of its embed, said after
@@ -1585,7 +1612,7 @@ mod tests {
             ("501", "500")
         );
         assert_eq!(first.content, "Who's in?");
-        assert!(first.thread.is_none() && !first.editable);
+        assert!(first.thread.is_none() && !first.editable && first.undeletable);
         assert!(
             parse(&json!({"id": "502", "type": 21, "channel_id": "500",
             "author": {"id": "2"}, "referenced_message": null}))
@@ -1598,6 +1625,31 @@ mod tests {
             "thread": {"id": "800", "name": "Idea"}}))
         .unwrap();
         assert!(post.thread.is_none());
+    }
+
+    #[test]
+    fn knows_who_may_delete_an_apps_answer_and_a_call() {
+        let answer = |owners: Value| {
+            parse(&json!({"id": "900", "type": 20, "channel_id": "11",
+                "author": {"id": "5", "username": "app", "bot": true}, "content": "Pong",
+                "interaction_metadata": {"id": "901", "type": 2,
+                    "user": {"id": "1", "username": "me"},
+                    "authorizing_integration_owners": owners}}))
+            .unwrap()
+        };
+        let mine = answer(json!({"1": "1"}));
+        assert_eq!(mine.invoker.as_deref(), Some("1"));
+        assert!(!mine.undeletable);
+        assert_eq!(
+            answer(json!({"0": "10", "1": "1"})).invoker,
+            None,
+            "installed in the server too"
+        );
+        assert_eq!(answer(json!({"0": "10"})).invoker, None);
+        let call = parse(&json!({"id": "902", "type": 3, "channel_id": "11",
+            "author": {"id": "1"}, "call": {"participants": ["1"]}}))
+        .unwrap();
+        assert!(call.undeletable && call.invoker.is_none());
     }
 
     #[test]

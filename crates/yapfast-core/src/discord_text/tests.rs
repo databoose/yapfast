@@ -1,5 +1,6 @@
 use super::{open_channel::*, render::*, *};
 use crate::chat::ForwardFailure;
+use yapfast_discord::ready::Deletes;
 
 fn message(id: &str, nonce: Option<&str>) -> Message {
     Message {
@@ -406,6 +407,7 @@ fn messages_render_again_once_what_they_show_changes() {
         server,
         may_pin: false,
         may_forward: false,
+        deletes: Deletes::Own,
     };
     let shown = rendering(1, server("general", false));
     assert!(
@@ -437,6 +439,13 @@ fn messages_render_again_once_what_they_show_changes() {
             ..rendering(1, server("general", false))
         }),
         "may forward"
+    );
+    assert!(
+        !shown.alike(&Rendering {
+            deletes: Deletes::Any,
+            ..rendering(1, server("general", false))
+        }),
+        "may delete others' messages"
     );
 }
 
