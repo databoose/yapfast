@@ -102,4 +102,9 @@ def dependency_notices(metadata, package, licenses, skia_archive, skia_source, w
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(notice, destination)
     shutil.copy2(webrtc / "LICENSE.md", licenses / "libwebrtc-LICENSE.md")
+    # Some crates ship a license only their owner may read (fnv's are 0600),
+    # and the AppImage's files all belong to root.
+    for path in licenses.rglob("*"):
+        if path.is_file():
+            path.chmod(0o644)
     return dependencies
