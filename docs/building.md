@@ -415,6 +415,36 @@ distribution's libpulse; Bob's stream played; text typed on X11 went out; and
 the tray icon, its menu and reopening from it worked on the session's bus.
 Screen sharing hasn't been tried from the AppImage.
 
+## Arch Linux packages
+
+`packaging/arch/PKGBUILD` builds the Discord-only release from source with
+Arch's toolchain, as `nix/package.nix` builds it: `cd packaging/arch && makepkg
+-si`. It clones the tag of its `pkgver`, which `scripts/set-version` sets to a
+stable version, so run `scripts/set-version 0.2.0` before committing and
+tagging `v0.2.0`. The tag's commit holds the PKGBUILD, which can't hold its own
+checksum, so that source has none; the libwebrtc and Skia archives keep theirs.
+Arch's `llvm21` is a later 21.x than Nix's, which is why
+`nix/prepare-skia-native.py` takes any LLVM 21. Nothing builds this PKGBUILD
+automatically: build it in a clean `archlinux:base-devel` container before a
+release, about 6 minutes from cold.
+
+The releases carry a package of their own binary instead. `scripts/package-arch`,
+run after `scripts/build-appimage`, packs the AppImage's binary, desktop file,
+icon, metainfo and notices into `yapfast-VERSION-1-x86_64.pkg.tar.zst` beside
+it, through `packaging/arch/release.PKGBUILD`, and adds it to
+`SHA256SUMS.txt`. It's the AppImage's binary, which runs on the host's loader
+and libraries, so the two packages can't differ. The script runs makepkg in an
+`archlinux:base-devel` container with Docker, then installs the package there
+and runs `yapfast --smoke-test`, in about 20 seconds. A nightly's version
+becomes `0.2.0nightly.20261020.5`, which pacman sorts after 0.1.0 and before
+0.2.0, as SemVer sorts the nightly; with a dot before `nightly`, pacman would
+sort it after 0.2.0. `sudo pacman -U` installs the file or its link; there's no
+repository, so `pacman -Syu` doesn't update it.
+
+It was checked in an Arch container, on `scripts/ui-session`'s private display
+with the fake Discord: both renderers drew the window, the GPU one through
+Arch's EGL and Mesa (llvmpipe).
+
 ## Nightly releases
 
 Releases are built locally, but a nightly of `main` builds on GitHub: Actions,
@@ -426,11 +456,11 @@ nightlies of one day in order, as a commit hash wouldn't, and gives a second
 run on one commit a tag of its own. `scripts/set-version` writes that version
 into `Cargo.toml` and `Cargo.lock` before building, so the app reports it and
 the packages and `SOURCE.txt` name it. One job runs `scripts/build-appimage`
-and another `scripts/build-windows` in the Windows shell, with the Windows Skia
+and `scripts/package-arch`, and another `scripts/build-windows` in the Windows shell, with the Windows Skia
 build, cargo-xwin's MSVC files and the compiled Rust dependencies
 (`Swatinem/rust-cache`) cached between runs. The Linux build has no cache: it
 compiles in the Nix sandbox, which can't reach one. The last job publishes the
-AppImage, its `.zsync` file, the Windows ZIP, the source snapshot and
+AppImage, its `.zsync` file, the Arch package, the Windows ZIP, the source snapshot and
 `SHA256SUMS.txt` as a prerelease on that commit. Wine doesn't start on the
 runner, so there's no installer. The release's notes list the commits since the
 previous nightly, or the latest release, each with its author's GitHub account:

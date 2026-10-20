@@ -52,10 +52,14 @@ jobs:
       - name: Fetch the toolchain and crates
         run: nix develop path:./nix --command cargo fetch --locked
       - run: scripts/build-appimage
+      # The AppImage's binary as an Arch package, in an Arch container.
+      - run: scripts/package-arch
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: target/dist/linux/Yapfast-*
+          path: |
+            target/dist/linux/Yapfast-*
+            target/dist/linux/yapfast-*.pkg.tar.zst
           if-no-files-found: error
           compression-level: 0
 
@@ -123,9 +127,9 @@ jobs:
           # name the one file the release carries.
           cmp "dist/linux/Yapfast-$VERSION-source.zip" "dist/windows/Yapfast-$VERSION-source.zip"
           mkdir release
-          mv dist/linux/Yapfast-* release/
+          mv dist/linux/Yapfast-* dist/linux/yapfast-*.pkg.tar.zst release/
           mv dist/windows/Yapfast-*-windows-x64* release/
-          (cd release && sha256sum Yapfast-* > SHA256SUMS.txt)
+          (cd release && sha256sum Yapfast-* yapfast-*.pkg.tar.zst > SHA256SUMS.txt)
           # The newest nightly, or before the first one the latest release.
           previous=$(gh release list --exclude-drafts --limit 100 --json tagName \
             --jq '[.[].tagName | select(contains("-nightly."))][0] // empty')
@@ -144,6 +148,8 @@ jobs:
               echo
             fi
             echo "AppImage updaters take the AppImage to the latest stable release, not to newer nightlies."
+            echo
+            echo "On Arch Linux, install the .pkg.tar.zst with \`sudo pacman -U\` and its link."
           } > notes.md
           # Titled as the stable releases are, with the commit: the version
           # already says it's a nightly.

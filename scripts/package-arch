@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Packages the Linux release for Arch: the AppImage's binary, desktop files and
+# notices as a pacman package, through packaging/arch/release.PKGBUILD in an
+# archlinux:base-devel container. Run it after scripts/build-appimage, or name
+# an AppImage: `scripts/package-arch [APPIMAGE]`. The package goes beside the
+# AppImage and into its SHA256SUMS.txt. Needs Docker.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+if (($# > 1)); then
+  echo "usage: scripts/package-arch [APPIMAGE]" >&2
+  exit 2
+fi
+if (($#)); then
+  appimage=$1
+else
+  # The AppImage of Cargo.toml's version, which scripts/set-version sets.
+  current=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+  appimage=target/dist/linux/Yapfast-$current-x86_64.AppImage
+fi
+if [[ ! -f $appimage ]]; then
+  echo "scripts/package-arch: no $appimage; run scripts/build-appimage first" >&2
+  exit 2
+fi
+name=$(basename "$appimage")
+version=${name#Yapfast-}
+version=${version%-x86_64.AppImage}
+if [[ $name != "Yapfast-$version-x86_64.AppImage" ]]; then
+  echo "scripts/package-arch: $name isn't named as the release's AppImage" >&2
+  exit 2
+fi
+# pacman sorts 0.2.0nightly.20261020.5 after 0.1.0 and before 0.2.0, as
+# SemVer sorts the nightly; 0.2.0.nightly.20261020.5 would come after 0.2.0.
+pkgver=${version/-/}
+output=$(cd "$(dirname "$appimage")" && pwd)
+package=yapfast-$pkgver-1-x86_64.pkg.tar.zst
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cp packaging/arch/PKGBUILD "$work/source.PKGBUILD"
+cp packaging/arch/release.PKGBUILD "$work/PKGBUILD"
+install -m755 "$appimage" "$work/$name"
+# The container installs the dependencies, for namcap to check the package
+# against, then installs the package and runs its smoke test. makepkg refuses
+# to run as root. The files go back to this user, for the trap to remove.
+docker run --rm -v "$work:/build" -w /build \
+  -e YAPFAST_PKGVER="$pkgver" -e YAPFAST_APPIMAGE="$name" \
+  -e YAPFAST_APPIMAGE_SHA256="$(sha256sum "$appimage" | cut -d' ' -f1)" \
+  -e OWNER="$(id -u):$(id -g)" -e PACKAGE="$package" \
+  archlinux:base-devel bash -euo pipefail -c '
+    trap "chown -R \"\$OWNER\" /build" EXIT
+    mapfile -t depends < <(CARCH=x86_64; source ./source.PKGBUILD; printf "%s\n" "${depends[@]}")
+    pacman -Syu --noconfirm --needed namcap "${depends[@]}" >/dev/null
+    useradd builder
+    chown -R builder /build
+    sudo -u builder --preserve-env=YAPFAST_PKGVER,YAPFAST_APPIMAGE,YAPFAST_APPIMAGE_SHA256 \
+      makepkg --noconfirm
+    namcap "$PACKAGE"
+    pacman -U --noconfirm "$PACKAGE" >/dev/null
+    yapfast --smoke-test
+  '
+mv "$work/$package" "$output/"
+hashes=$output/SHA256SUMS.txt
+touch "$hashes"
+{
+  grep -v "  $package\$" "$hashes" || true
+  (cd "$output" && sha256sum "$package")
+} > "$work/SHA256SUMS.txt"
+mv "$work/SHA256SUMS.txt" "$hashes"
+echo "Packaged $output/$package ($(du -m "$output/$package" | cut -f1) MiB)"

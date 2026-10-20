@@ -106,9 +106,10 @@ Advanced**.
 ### Linux
 
 It runs great on both X11 and Wayland, screen sharing too (Hyprland here).
-There's no package yet; an AppImage is coming, then the AUR. Until then, if you
-have [Nix](https://nixos.org), it's one command (pretty sure, anyway :D), and
-you get the same Discord-only app the releases ship, in your launcher:
+There's no package yet; an AppImage and an Arch package are coming with the
+next release. Until then, if you have [Nix](https://nixos.org), it's one
+command (pretty sure, anyway :D), and you get the same Discord-only app the
+releases ship, in your launcher:
 
 ```sh
 nix profile add github:yapfast/yapfast#yapfast
@@ -132,6 +133,8 @@ marked **Pre-release**, newest first, each with a list of what changed:
 - **Windows:** the portable ZIP. Extract it and double-click `yapfast.exe`.
 - **Linux:** the AppImage, the one coming to releases too. `chmod +x` it and
   run it.
+- **Arch Linux:** the `.pkg.tar.zst`, the one coming to releases too. Install
+  it with `sudo pacman -U` and the file or its link.
 
 They're untested between releases, so expect the odd rough edge.
 
