@@ -2430,8 +2430,10 @@ impl Application {
             }
             Action::Inactive { since, show_idle } => {
                 // Discord keeps it through reconnecting, so it goes even
-                // before Discord connects.
-                if self.state.preview {
+                // before Discord connects. On the sign-in screen nothing
+                // runs to hear it.
+                let signed_out = self.state.account.is_none() && !self.state.busy;
+                if self.state.preview || signed_out {
                     return vec![];
                 }
                 vec![Effect::Backend(Command::Discord(

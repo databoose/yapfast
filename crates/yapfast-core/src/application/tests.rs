@@ -7978,3 +7978,20 @@ fn an_unknown_invite_says_so() {
         Some("This invite is invalid or has expired.")
     );
 }
+
+#[test]
+fn going_idle_while_signed_out_tells_nobody() {
+    let inactive = || Action::Inactive {
+        since: Some(1),
+        show_idle: true,
+    };
+    let mut app = Application::default();
+    assert!(app.dispatch(inactive()).is_empty());
+    let mut app = connected();
+    assert!(matches!(
+        app.dispatch(inactive()).as_slice(),
+        [Effect::Backend(Command::Discord(
+            DiscordCommand::Inactive { .. }
+        ))]
+    ));
+}
