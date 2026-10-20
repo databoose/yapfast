@@ -33,9 +33,11 @@ stamp_path = target / 'yapfast-skia-native.json'
 script_sha256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 objcopy = os.environ.get('YAPFAST_SKIA_OBJCOPY') or shutil.which('llvm-objcopy')
 if not objcopy:
-    raise SystemExit('Pinned development shell must provide LLVM objcopy')
+    raise SystemExit('Needs LLVM 21 objcopy, from the development shell or YAPFAST_SKIA_OBJCOPY')
 objcopy_version = subprocess.check_output([objcopy, '--version'], text=True).strip()
-if 'LLVM version 21.1.7\n' not in objcopy_version:
+# Nix pins 21.1.7; a distribution's package may be a later 21.x, which the
+# checks below hold to the same result: only the one symbol renamed.
+if 'LLVM version 21.' not in objcopy_version:
     raise SystemExit('Unexpected objcopy version: ' + objcopy_version)
 stamp = {
     'tag': '0.153.3', 'key': key, 'upstream_sha256': source_sha256,
