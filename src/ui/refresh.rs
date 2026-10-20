@@ -324,6 +324,7 @@ impl Adapter {
                 Some(DiscordLink::Scanned(name)) => (3, name.as_str(), ""),
                 Some(DiscordLink::Captcha(_)) => (5, "", ""),
                 Some(DiscordLink::Failed(error)) => (4, "", error.as_str()),
+                Some(DiscordLink::Checking) => (6, "", ""),
             };
             window.set_link_phase(phase);
             window.set_link_name(name.into());

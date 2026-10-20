@@ -1767,7 +1767,12 @@ impl Adapter {
                 }
                 Effect::LinkDiscord => {
                     #[cfg(feature = "discord")]
-                    self.link_discord();
+                    self.link_discord(None);
+                }
+                #[cfg_attr(not(feature = "discord"), allow(unused_variables))]
+                Effect::LinkDiscordToken(token) => {
+                    #[cfg(feature = "discord")]
+                    self.link_discord(Some(token));
                 }
                 Effect::OpenPage(page) => browser::open(&page),
                 Effect::CopyPicture(picture) => crate::copy::picture(picture),
@@ -1821,13 +1826,14 @@ impl Adapter {
         }
     }
 
-    /// Starts linking a Discord account, replacing any linking under way. The
-    /// work runs on Tokio; its progress reaches the app on Slint's executor.
+    /// Starts linking a Discord account, by QR code or with a pasted token,
+    /// replacing any linking under way. The work runs on Tokio; its progress
+    /// reaches the app on Slint's executor.
     #[cfg(feature = "discord")]
-    fn link_discord(&mut self) {
+    fn link_discord(&mut self, token: Option<String>) {
         self.link_run += 1;
         let run = self.link_run;
-        let (task, mut progress) = yapfast_core::discord_link::start(&self.runtime);
+        let (task, mut progress) = yapfast_core::discord_link::start(&self.runtime, token);
         self.linking = Some(task);
         let weak = self.weak.clone();
         let task = slint::spawn_local(async move {

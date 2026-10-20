@@ -3989,6 +3989,35 @@ fn links_discord_by_qr_code_and_unlinks_it() {
 
 #[test]
 #[cfg(feature = "discord")]
+fn links_discord_by_token() {
+    use crate::discord_link::Progress;
+    let mut app = Application::default();
+    assert!(
+        app.dispatch(Action::LinkDiscordToken("  ".into()))
+            .is_empty(),
+        "nothing pasted"
+    );
+    assert!(matches!(
+        app.dispatch(Action::LinkDiscordToken("abc.def".into())).as_slice(),
+        [Effect::LinkDiscordToken(token)] if token == "abc.def"
+    ));
+    assert_eq!(app.state.discord_link, Some(DiscordLink::Checking));
+    app.linking(Progress::Failed("Discord didn't accept that token.".into()));
+    assert!(matches!(
+        app.state.discord_link,
+        Some(DiscordLink::Failed(_))
+    ));
+    // Pasted again, it signs in as linking by QR code does.
+    app.dispatch(Action::LinkDiscordToken("abc.def".into()));
+    assert!(matches!(
+        app.linking(Progress::Linked).as_slice(),
+        [Effect::Start(chat::Start::Restore)]
+    ));
+    assert!(app.state.discord_linked);
+}
+
+#[test]
+#[cfg(feature = "discord")]
 fn adds_friends_by_username_and_sets_the_custom_status() {
     use yapfast_discord::service::{Snapshot, Status};
     let mut app = Application::default();

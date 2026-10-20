@@ -950,6 +950,7 @@ export component DiscordLinkSettings inherits VerticalLayout {
     in property <string> link-name;
     in property <string> link-note;
     callback link-discord;
+    callback link-discord-token(string);
     callback open-discord-captcha;
     spacing: 16px;
     SettingsTitle { text: "Discord"; }
@@ -958,6 +959,7 @@ export component DiscordLinkSettings inherits VerticalLayout {
         phase: root.link-phase; code: root.link-code; name: root.link-name; note: root.link-note;
         begin => { root.link-discord(); }
         reopen => { root.open-discord-captcha(); }
+        link-token(token) => { root.link-discord-token(token); }
     }
 }
 

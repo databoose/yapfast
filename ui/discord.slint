@@ -1,5 +1,5 @@
 import { Theme, Badges } from "theme.slint";
-import { ActionButton } from "controls.slint";
+import { ActionButton, TextField } from "controls.slint";
 
 // Marks something from Discord: its logo, white on blurple, on a ring of the
 // colour behind it.
@@ -21,10 +21,11 @@ export component DiscordBadge inherits Rectangle {
 }
 
 // Linking Discord by QR code: the risk to the account first, then the code to
-// scan with the phone app, then who scanned it while they confirm. The phase
-// is 0 before linking, 1 while Yapfast gets a code, 2 showing it, 3 once it's
-// scanned, 4 when linking failed, and 5 while Discord's captcha waits in the
-// browser.
+// scan with the phone app, then who scanned it while they confirm. A token
+// pasted instead links without the phone. The phase is 0 before linking, 1
+// while Yapfast gets a code, 2 showing it, 3 once it's scanned, 4 when linking
+// failed, 5 while Discord's captcha waits in the browser, and 6 while Discord
+// checks a token.
 export component DiscordLinkPanel inherits VerticalLayout {
     in property <int> phase;
     in property <image> code;
@@ -33,6 +34,10 @@ export component DiscordLinkPanel inherits VerticalLayout {
     callback begin;
     // Opens the captcha's page in the browser again.
     callback reopen;
+    callback link-token(string);
+    // Kept here, outside the phases, so a token Discord refused stays to fix.
+    property <bool> token-open;
+    property <string> token;
     spacing: 16px;
     if root.phase == 0 || root.phase == 4: VerticalLayout {
         spacing: 12px;
@@ -54,13 +59,35 @@ export component DiscordLinkPanel inherits VerticalLayout {
         }
         if root.phase == 4: Text { text: root.note; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
         HorizontalLayout {
-            alignment: start;
+            alignment: start; spacing: 8px;
             ActionButton {
-                text: root.phase == 4 ? "Try again" : "Show the code"; primary: true;
+                text: root.phase == 4 && !root.token-open ? "Try again" : "Show the code"; primary: !root.token-open;
                 clicked => { root.begin(); }
+            }
+            if !root.token-open: ActionButton {
+                text: "Use a token";
+                clicked => { root.token-open = true; }
+            }
+        }
+        if root.token-open: VerticalLayout {
+            spacing: 8px;
+            Text { text: "TOKEN"; color: Theme.secondary; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+            HorizontalLayout {
+                spacing: 8px;
+                TextField {
+                    text <=> root.token; password: true; placeholder: "Discord token"; label: "Discord token";
+                    init => { self.focus-input(); }
+                    accepted => { root.link-token(root.token); }
+                }
+                ActionButton { text: "Link"; primary: true; enabled: root.token != ""; clicked => { root.link-token(root.token); } }
+            }
+            Text {
+                text: "Anyone with your token can use your account. Paste it only here, and never share it.";
+                color: Theme.secondary; font-size: 13px; wrap: word-wrap;
             }
         }
     }
+    if root.phase == 6: Text { text: "Checking the token..."; color: Theme.secondary; font-size: 15px; wrap: word-wrap; }
     if root.phase == 5: VerticalLayout {
         spacing: 8px;
         Text { text: "Solve the captcha in your browser"; color: Theme.text; font-size: 17px; font-weight: 700; wrap: word-wrap; }

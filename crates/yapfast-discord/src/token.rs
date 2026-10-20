@@ -101,10 +101,10 @@ pub fn forget() -> Result<()> {
 
 /// Accept the header value as copied from browser developer tools, with or
 /// without surrounding quotes or whitespace.
-fn clean(token: &str) -> Result<String> {
+pub fn clean(token: &str) -> Result<String> {
     let token = token.trim().trim_matches(['"', '\'']).trim();
     if token.is_empty() || token.contains(char::is_whitespace) {
-        bail!("that doesn't look like a Discord token");
+        bail!("That doesn't look like a Discord token.");
     }
     Ok(token.to_owned())
 }

@@ -97,11 +97,13 @@ pub struct NewDm {
     pub error: Option<String>,
 }
 
-/// Linking a Discord account by QR code, while it's under way.
+/// Linking a Discord account by QR code or token, while it's under way.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DiscordLink {
     /// Yapfast is asking Discord for a code.
     Starting,
+    /// Discord is checking a pasted token.
+    Checking,
     /// The code to scan, as the address it carries.
     Code(String),
     /// Someone scanned it, by their username, and confirms on their phone.
@@ -1496,9 +1498,10 @@ pub enum Action {
     AddFriend(String),
     CloseAddFriend,
     /// Link a Discord account by QR code, or start again with a new code;
-    /// open the captcha Discord asked for again; stop linking; or forget the
-    /// linked account on this device.
+    /// link one with a pasted token; open the captcha Discord asked for
+    /// again; stop linking; or forget the linked account on this device.
     LinkDiscord,
+    LinkDiscordToken(String),
     OpenDiscordCaptcha,
     CancelDiscordLink,
     UnlinkDiscord,
@@ -1589,8 +1592,9 @@ pub enum Effect {
     ListDevices,
     /// Link a Discord account by QR code, with `crate::discord_link::run`,
     /// reporting through `Application::linking`; this replaces any linking
-    /// under way. Stop linking.
+    /// under way. The same with a pasted token. Stop linking.
     LinkDiscord,
+    LinkDiscordToken(String),
     StopDiscordLink,
     /// Open this web page in the browser.
     OpenPage(String),
@@ -2374,6 +2378,16 @@ impl Application {
                 }
                 self.state.discord_link = Some(DiscordLink::Starting);
                 vec![Effect::LinkDiscord]
+            }
+            Action::LinkDiscordToken(token) => {
+                if self.state.preview || self.state.discord_linked || !cfg!(feature = "discord") {
+                    return vec![];
+                }
+                if token.trim().is_empty() {
+                    return vec![];
+                }
+                self.state.discord_link = Some(DiscordLink::Checking);
+                vec![Effect::LinkDiscordToken(token)]
             }
             Action::OpenDiscordCaptcha => match &self.state.discord_link {
                 Some(DiscordLink::Captcha(page)) => vec![Effect::OpenPage(page.clone())],
