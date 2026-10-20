@@ -72,6 +72,37 @@ impl Captcha {
     }
 }
 
+/// How many captchas a request shows before giving up: Discord asks again
+/// when it doesn't take a solution.
+pub const TRIES: usize = 3;
+
+/// Sends a request until Discord takes it, showing each captcha it asks for
+/// first. `send` sends the request, with the last captcha's solution after
+/// the first try, and `shown` hears the address of each captcha's page,
+/// which waits until it's solved.
+pub async fn solving<T, Sent: Future<Output = Result<T>>>(
+    mut send: impl FnMut(Option<(Captcha, String)>) -> Sent,
+    mut shown: impl FnMut(&str),
+) -> Result<T> {
+    let mut solved: Option<(Captcha, String)> = None;
+    for tries in 0..=TRIES {
+        let error = match send(solved.take()).await {
+            Ok(answer) => return Ok(answer),
+            Err(error) => error,
+        };
+        let Some(captcha) = error.downcast_ref::<Captcha>().cloned() else {
+            return Err(error);
+        };
+        if tries == TRIES {
+            bail!("Discord didn't take the captcha. Try again.");
+        }
+        let page = Page::serve(&captcha).await?;
+        shown(&page.url);
+        solved = Some((captcha, page.solution().await?));
+    }
+    unreachable!("the last captcha returns")
+}
+
 /// The page with a captcha, served until it's solved.
 pub struct Page {
     /// Where to open it.

@@ -16,7 +16,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use crate::{
     activity,
     api::{self, Api, PAGE, Span},
-    cache, forum, limits,
+    cache, forum, invite, limits,
     member_list::{ListedMember, Presence},
     message::{self, Message, Names, Page},
     notifications::Change,
@@ -497,6 +497,8 @@ enum Request {
     /// Nobody has used Yapfast since then, in Unix milliseconds, or someone
     /// is using it again; and whether it may show idle.
     Inactive(Option<u64>, bool),
+    /// This gateway session's id, from READY.
+    Session(oneshot::Sender<Option<String>>),
 }
 
 /// What a channel's dialog edits; see [`Discord::channel_settings`].
@@ -1530,6 +1532,48 @@ impl Discord {
             .await?;
         self.write_names().learn_message(None, &sent);
         Ok(())
+    }
+
+    /// What an invite shows before joining by it, by its code; see
+    /// [`Api::resolve_invite`]. An invite that isn't to a server, which
+    /// Yapfast doesn't join, is refused.
+    pub async fn invite(&self, code: &str, typed: Option<&str>) -> Result<invite::Preview> {
+        let invite = self.api.resolve_invite(code, typed).await?;
+        invite::Preview::of(&invite).context("This invite isn't to a server.")
+    }
+
+    /// Joins a server by the invite `preview` shows, as Discord's client
+    /// does from `from`, showing each captcha Discord asks for first:
+    /// `captcha` hears its page's address. The server's GUILD_CREATE
+    /// follows, and a snapshot lists it.
+    pub async fn join_invite(
+        &self,
+        preview: &invite::Preview,
+        from: invite::JoinFrom,
+        captcha: impl FnMut(&str),
+    ) -> Result<invite::Joined> {
+        let (reply, answer) = oneshot::channel();
+        self.requests
+            .send(Request::Session(reply))
+            .map_err(|_| anyhow!("Discord isn't connected. Restart Yapfast and try again."))?;
+        let session = answer
+            .await
+            .ok()
+            .flatten()
+            .context("Discord isn't connected yet. Try again in a moment.")?;
+        let (api, session, context) = (&self.api, &session, &preview.context(from));
+        let answer = crate::captcha::solving(
+            |solved| async move {
+                let solved = solved
+                    .as_ref()
+                    .map(|(captcha, solution)| (captcha, solution.as_str()));
+                api.accept_invite(&preview.code, session, context, solved)
+                    .await
+            },
+            captcha,
+        )
+        .await?;
+        Ok(invite::Joined::of(&answer, preview))
     }
 
     /// A channel's name, topic, slowmode in seconds and whether it's

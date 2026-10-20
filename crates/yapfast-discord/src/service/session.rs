@@ -460,6 +460,10 @@ impl Session<'_> {
                 self.shared.inactive = since.map(|since| (since, show_idle));
                 self.show_presence().await
             }
+            Request::Session(reply) => {
+                let _ = reply.send(self.tracker.session.clone());
+                Ok(())
+            }
             Request::Search {
                 guild,
                 query,

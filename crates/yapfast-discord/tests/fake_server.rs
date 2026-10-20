@@ -317,6 +317,80 @@ fn stream_codec(server: &str, codec: &str) {
     post_control(server, "/_control/stream-codec", codec);
 }
 
+/// Joins "Server" again by an invite to #general, as Join a Server does
+/// with a vanity code: Discord asks for a captcha first, which a page
+/// shows, and the server comes back with its GUILD_CREATE.
+async fn joins_by_an_invite_as_discords_client_does(
+    discord: &Discord,
+    server: &str,
+    general: &str,
+) {
+    use yapfast_discord::invite::JoinFrom;
+
+    let unknown = discord.invite("gone", None).await.unwrap_err();
+    assert_eq!(
+        unknown.to_string(),
+        "This invite is invalid or has expired."
+    );
+    let preview = discord.invite("server", Some("server")).await.unwrap();
+    assert_eq!(
+        (preview.name.as_str(), preview.channel.as_str()),
+        ("Server", general)
+    );
+    assert!(preview.members.is_some());
+
+    post_control(server, "/_control/invite-captcha", "");
+    let mut pages = Vec::new();
+    let joined = discord
+        .join_invite(&preview, JoinFrom::Dialog, |page| {
+            pages.push(page.to_owned());
+            let page = page.to_owned();
+            tokio::spawn(async move {
+                reqwest::Client::new()
+                    .post(page)
+                    .body("solved")
+                    .send()
+                    .await
+            });
+        })
+        .await
+        .unwrap();
+    assert_eq!(pages.len(), 1);
+    assert_eq!(
+        (joined.guild.as_str(), joined.channel.as_str()),
+        (preview.guild.as_str(), general)
+    );
+    assert!(!joined.verification_form);
+    let joins: serde_json::Value =
+        serde_json::from_str(&control(server, "GET", "/_control/invite-joins", "")).unwrap();
+    let join = joins.as_array().unwrap().last().unwrap();
+    assert_eq!(join["code"], "server");
+    assert_eq!(
+        join["context"],
+        serde_json::json!({
+            "location": "Join Guild",
+            "location_guild_id": preview.guild,
+            "location_channel_id": general,
+            "location_channel_type": 0,
+        })
+    );
+
+    // A server with a form to fill in says so; she's in it already, which
+    // joins nothing more.
+    post_control(server, "/_control/invite-form", "");
+    let joined = discord
+        .join_invite(&preview, JoinFrom::Link, |_| panic!("no captcha"))
+        .await
+        .unwrap();
+    assert!(joined.verification_form);
+    let joins: serde_json::Value =
+        serde_json::from_str(&control(server, "GET", "/_control/invite-joins", "")).unwrap();
+    assert_eq!(
+        joins.as_array().unwrap().last().unwrap()["context"]["location"],
+        "Desktop Invite Modal"
+    );
+}
+
 /// Posts `body` to one of the fake's controls.
 fn post_control(server: &str, path: &str, body: &str) {
     control(server, "POST", path, body);
@@ -2756,7 +2830,7 @@ async fn talks_to_the_fake_server() {
         discord.leave_server(&guild).await.is_err(),
         "she isn't in it"
     );
-    post_control(server, "/_control/rejoin", "");
+    joins_by_an_invite_as_discords_client_does(&discord, server, &general).await;
     let snapshot = snapshot_where(&discord, |snapshot| {
         snapshot.servers.iter().any(|known| known.id == guild)
     })

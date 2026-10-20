@@ -1196,6 +1196,44 @@ impl Api {
             .ok_or_else(|| anyhow!("Discord made no invite."))
     }
 
+    /// An invite, as Discord's client asks before joining by it: with the
+    /// server's member and online counts, when it expires and what joining
+    /// would let this account do. `typed` is what someone typed into Join a
+    /// Server, which the client sends along.
+    pub async fn resolve_invite(&self, code: &str, typed: Option<&str>) -> Result<Value> {
+        let mut path = format!(
+            "/invites/{}?with_counts=true&with_expiration=true&with_permissions=true",
+            encode(code)
+        );
+        if let Some(typed) = typed {
+            path.push_str(&format!("&inputValue={}", encode(typed)));
+        }
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Joins a server by an invite, from this gateway `session`, as
+    /// Discord's client does; `context` says where, as
+    /// [`crate::invite::Preview::context`] makes it. Discord may ask for a
+    /// [`Captcha`] first, whose solution goes with the next try.
+    pub async fn accept_invite(
+        &self,
+        code: &str,
+        session: &str,
+        context: &Value,
+        solved: Option<(&Captcha, &str)>,
+    ) -> Result<Value> {
+        let path = format!("/invites/{}", encode(code));
+        let body = json!({"session_id": session});
+        let mut request = with_json(self.request(Method::POST, &path), &body)
+            .header("X-Context-Properties", encoded_context(context));
+        if let Some((captcha, solution)) = solved {
+            for (name, value) in captcha.headers(solution) {
+                request = request.header(name, value);
+            }
+        }
+        self.json(request).await
+    }
+
     /// A channel object, as `GET /channels/{id}` gives it.
     pub async fn channel(&self, channel: &str) -> Result<Value> {
         let path = format!("/channels/{channel}");
@@ -1451,6 +1489,15 @@ fn refusal(status: StatusCode, body: &Value) -> anyhow::Error {
             anyhow!("They don't take friend requests from people they don't know.")
         }
         (_, Some(ALREADY_FRIENDS)) => anyhow!("You're already friends."),
+        (_, Some(UNKNOWN_INVITE | INVALID_INVITE)) => {
+            anyhow!("This invite is invalid or has expired.")
+        }
+        (_, Some(BANNED)) => anyhow!("You're banned from this server."),
+        (_, Some(TOO_MANY_SERVERS)) => {
+            anyhow!("You're in as many servers as Discord allows. Leave one to join another.")
+        }
+        (_, Some(SERVER_FULL)) => anyhow!("This server is full."),
+        (_, Some(INVITES_PAUSED)) => anyhow!("This server has paused invites."),
         _ => match status {
             StatusCode::UNAUTHORIZED => anyhow!(UNAUTHORIZED),
             StatusCode::FORBIDDEN => {
@@ -1484,12 +1531,24 @@ fn refusal(status: StatusCode, body: &Value) -> anyhow::Error {
 const REQUESTS_CLOSED: u64 = 80000;
 const UNKNOWN_USERNAME: u64 = 80004;
 const ALREADY_FRIENDS: u64 = 80007;
+const UNKNOWN_INVITE: u64 = 10006;
+const INVALID_INVITE: u64 = 50020;
+const BANNED: u64 = 40007;
+const TOO_MANY_SERVERS: u64 = 30001;
+const SERVER_FULL: u64 = 30019;
+const INVITES_PAUSED: u64 = 40069;
 
 /// The X-Context-Properties header Discord's client sends: where an action
 /// happened, as base64 JSON.
 fn context(place: &str) -> String {
+    encoded_context(&json!({"location": place}))
+}
+
+/// The X-Context-Properties header of a whole context, for an action whose
+/// context says more than where.
+fn encoded_context(context: &Value) -> String {
     use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(json!({"location": place}).to_string())
+    base64::engine::general_purpose::STANDARD.encode(context.to_string())
 }
 
 /// A new message's body as Discord's client sends it, before attachments

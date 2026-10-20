@@ -17,6 +17,7 @@ pub mod forum;
 pub mod frecency;
 pub mod gateway;
 pub mod gifs;
+pub mod invite;
 pub mod limits;
 pub mod member_list;
 pub mod message;

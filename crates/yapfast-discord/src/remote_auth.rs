@@ -179,10 +179,6 @@ pub async fn link(mut step: impl FnMut(Step)) -> Result<String> {
     }
 }
 
-/// How many captchas linking shows before giving up: Discord asks again
-/// when it doesn't take a solution.
-const CAPTCHAS: usize = 3;
-
 /// Trades a confirmed login's ticket for the login, showing Discord's
 /// captcha when it asks for one. The login service hears heartbeats while
 /// someone solves it, as it would while the code shows.
@@ -194,7 +190,7 @@ async fn trade(
 ) -> Result<String> {
     let api = Api::anonymous()?;
     let mut solved: Option<(Captcha, String)> = None;
-    for shown in 0..=CAPTCHAS {
+    for shown in 0..=captcha::TRIES {
         let solution = solved
             .as_ref()
             .map(|(captcha, solution)| (captcha, solution.as_str()));
@@ -205,7 +201,7 @@ async fn trade(
         let Some(captcha) = error.downcast_ref::<Captcha>().cloned() else {
             return Err(error);
         };
-        if shown == CAPTCHAS {
+        if shown == captcha::TRIES {
             bail!("Discord didn't take the captcha. Try again.");
         }
         let page = captcha::Page::serve(&captcha).await?;
