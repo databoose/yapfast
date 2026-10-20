@@ -417,9 +417,15 @@ impl Item for StyledTextItem {
                 InputEventResult::EventAccepted
             }
             // Yapfast: other buttons go on to the items around the text, so a right click on a
-            // message's text opens the message's menu.
+            // message's text opens the message's menu, which can copy the link pressed.
             #[cfg(feature = "shared-parley")]
-            MouseEvent::Pressed { position, .. } | MouseEvent::Released { position, .. } => {
+            MouseEvent::Pressed { position, .. } => {
+                crate::yapfast_selection::set_pressed_link(in_window(position), find_link(position));
+                point(position);
+                InputEventResult::EventIgnored
+            }
+            #[cfg(feature = "shared-parley")]
+            MouseEvent::Released { position, .. } => {
                 point(position);
                 InputEventResult::EventIgnored
             }

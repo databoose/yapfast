@@ -59,7 +59,8 @@ list scrolls it, and Yapfast supplies the text of the rows in between through
 link and leaves the focus where it was. A left press anywhere clears the
 selection, as does Escape. Other buttons pass through a text to the items around
 it, so a right click on a message's text opens its menu, and
-`yapfast_selection::copied_at` gives that menu the selection there. The highlight is the text's `link-color` at 35%
+`yapfast_selection::copied_at` gives that menu the selection there, and
+`yapfast_selection::pressed_link_at` the link pressed. The highlight is the text's `link-color` at 35%
 opacity, since `StyledText` has no property of its own for it.
 
 The core of it is `yapfast_selection.rs`. The other changes are marked `Yapfast:` in:

@@ -1066,6 +1066,9 @@ export component YapfastWindow inherits Window {
     /// The text selected in the message at this point in the window, as
     /// copied, or empty when none is.
     pure callback selection-at(length, length) -> string;
+    /// The web address of the link right-clicked in a message at this point
+    /// in the window, or empty when there was none.
+    pure callback link-at(length, length) -> string;
     callback view-image(string, int);
     callback step-image(int);
     callback close-image();
@@ -1443,7 +1446,8 @@ export component YapfastWindow inherits Window {
         root.open-message-menu(message, -1, false);
     }
     // A message's menu, with what can be done with its picture or video at
-    // this index of its attachments, from a right click on it.
+    // this index of its attachments, or with a link in its text, from a right
+    // click on it.
     property <int> menu-media: -1;
     property <bool> menu-video;
     property <string> menu-link;
@@ -1455,7 +1459,7 @@ export component YapfastWindow inherits Window {
         root.menu-aside = false;
         root.menu-media = media;
         root.menu-video = video;
-        root.menu-link = media >= 0 ? root.attachment-link(message.item, media) : "";
+        root.menu-link = media >= 0 ? root.attachment-link(message.item, media) : root.link-at(root.anchor-x, root.anchor-y);
         message-menu.show();
     }
     property <bool> picker-open: emoji-picker.is-open;
@@ -1633,7 +1637,7 @@ export component YapfastWindow inherits Window {
             pin-message(item) => { root.pin-message(item); message-menu.close(); }
             request-delete(item) => { root.request-delete(item); message-menu.close(); }
             end-poll(item) => { Polls.ask-end(item); message-menu.close(); }
-            media-index: root.menu-media; media-video: root.menu-video; media-link: root.menu-link;
+            media-index: root.menu-media; media-video: root.menu-video; link: root.menu-link;
             copy-image(item, index) => { root.copy-attachment(item, index); message-menu.close(); }
             save-attachment(item, index) => { root.save-attachment(item, index); message-menu.close(); }
             open-link(link) => { root.open-link(link); message-menu.close(); }

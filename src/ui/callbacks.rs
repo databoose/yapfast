@@ -1264,6 +1264,14 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
             .unwrap_or_default()
             .into()
     });
+    window.on_link_at(|x, y| {
+        let point = i_slint_core::lengths::LogicalPoint::new(x, y);
+        i_slint_core::yapfast_selection::pressed_link_at(point)
+            .as_deref()
+            .and_then(web_address)
+            .unwrap_or_default()
+            .into()
+    });
     let state = adapter.clone();
     window.on_attachment_link(move |item, index| {
         let adapter = state.borrow();
@@ -2242,6 +2250,13 @@ fn place_videos(adapter: &Adapter, window: &YapfastWindow) {
 
 /// Opens a web page in the browser. Only web pages open: a message can't
 /// start other programs.
+/// The web address a link in a message leads to: a masked link's, behind
+/// the question asked before leaving. A mention or Yapfast's own link has none.
+pub(super) fn web_address(link: &str) -> Option<&str> {
+    let link = links::masked(link).unwrap_or(link);
+    (links::openable(link) && mention::target(link).is_none()).then_some(link)
+}
+
 fn open_web_page(link: &str) {
     if links::openable(link) {
         super::browser::open(link);

@@ -120,6 +120,7 @@ std::thread_local! {
     static ROW_TEXT: RefCell<Option<Box<dyn Fn(usize) -> Option<String>>>> =
         const { RefCell::new(None) };
     static CLICKED_LINK: core::cell::Cell<Option<LogicalRect>> = const { core::cell::Cell::new(None) };
+    static PRESSED_LINK: RefCell<Option<(LogicalPoint, String)>> = const { RefCell::new(None) };
 }
 
 /// Where in the window the link a styled text's `link-clicked` reports is, on the line
@@ -130,6 +131,21 @@ pub fn clicked_link() -> Option<LogicalRect> {
 
 pub(crate) fn set_clicked_link(rect: Option<LogicalRect>) {
     CLICKED_LINK.with(|clicked| clicked.set(rect));
+}
+
+/// The link a styled text had under the last press of a button other than the left, if that
+/// press was at `point`, in window coordinates: for a menu opened there to copy it.
+pub fn pressed_link_at(point: LogicalPoint) -> Option<String> {
+    PRESSED_LINK.with(|pressed| {
+        let pressed = pressed.borrow();
+        let (at, link) = pressed.as_ref()?;
+        // The menu works its point out apart from the text, so it may differ a little.
+        ((*at - point).square_length() < 1.).then(|| link.clone())
+    })
+}
+
+pub(crate) fn set_pressed_link(point: LogicalPoint, link: Option<String>) {
+    PRESSED_LINK.with(|pressed| *pressed.borrow_mut() = link.map(|link| (point, link)));
 }
 
 /// Sets how a row of the list a selection runs through is copied when all of it is selected,

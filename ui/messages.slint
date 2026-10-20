@@ -702,7 +702,7 @@ export component EmojiPicker inherits Rectangle {
 
 // A message's actions, from its hover bar's "More" button or a right click:
 // frequent reactions, then what can be done with it. A right click on a
-// picture or video adds what can be done with that.
+// picture, video or link adds what can be done with that.
 export component MessageMenu inherits Rectangle {
     in property <MessageRow> menu-message;
     /// Text selected in the message, as copied; empty for none.
@@ -711,8 +711,8 @@ export component MessageMenu inherits Rectangle {
     /// attachments; -1 for none.
     in property <int> media-index: -1;
     in property <bool> media-video;
-    /// Its address on the web, or empty when it has none.
-    in property <string> media-link;
+    /// Its address on the web, or the link's, or empty when it has none.
+    in property <string> link;
     in property <bool> menu-can-react;
     /// The reactions this device uses most.
     in property <[EmojiCell]> menu-reactions;
@@ -799,8 +799,8 @@ export component MessageMenu inherits Rectangle {
             icon: root.menu-message.pinned ? @image-url("icons/pin-off.svg") : @image-url("icons/pin.svg");
             clicked => { root.pin-message(root.menu-message.item); }
         }
-        if root.media-index >= 0 && (root.media-link != "" || !root.preview): Rectangle { height: 1px; background: Theme.line; }
-        if root.media-index >= 0 && root.media-link != "" && !root.media-video && !root.preview: MenuItem {
+        if root.link != "" || (root.media-index >= 0 && !root.preview): Rectangle { height: 1px; background: Theme.line; }
+        if root.media-index >= 0 && root.link != "" && !root.media-video && !root.preview: MenuItem {
             text: "Copy Image"; icon: @image-url("icons/image.svg");
             clicked => { root.copy-image(root.menu-message.item, root.media-index); }
         }
@@ -808,13 +808,14 @@ export component MessageMenu inherits Rectangle {
             text: root.media-video ? "Save Video" : "Save Image"; icon: @image-url("icons/download.svg");
             clicked => { root.save-attachment(root.menu-message.item, root.media-index); }
         }
-        if root.media-index >= 0 && root.media-link != "": MenuItem {
+        if root.link != "": MenuItem {
             text: "Copy Link"; icon: @image-url("icons/link.svg");
-            clicked => { root.copy-text(root.media-link); }
+            clicked => { root.copy-text(root.link); }
         }
-        if root.media-index >= 0 && root.media-link != "": MenuItem {
+        // A link in the text opens with a click.
+        if root.media-index >= 0 && root.link != "": MenuItem {
             text: "Open Link"; icon: @image-url("icons/external-link.svg");
-            clicked => { root.open-link(root.media-link); }
+            clicked => { root.open-link(root.link); }
         }
         if root.menu-message.can-delete && root.composer-enabled: Rectangle { height: 1px; background: Theme.line; }
         if root.menu-message.can-delete && root.composer-enabled: MenuItem {
