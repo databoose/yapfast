@@ -7,7 +7,7 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     let weak = window.as_weak();
     adapter.borrow().game_activity_due.start(
         slint::TimerMode::Repeated,
-        Duration::from_secs(2),
+        Duration::from_secs(5),
         move || {
             if let Some(window) = weak.upgrade() {
                 super::refresh_game_activity(&window);

@@ -180,7 +180,11 @@ async fn serve(
             biased;
             () = activity.closed() => break,
             accepted = socket.listener.accept(), if clients.len() < MAX_CLIENTS => {
-                let Ok((stream, _)) = accepted else { break };
+                let Ok((stream, _)) = accepted else {
+                    // Out of descriptors, say: wait rather than end RPC for good.
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue;
+                };
                 if !stream.peer_cred().is_ok_and(|peer| peer.uid() == socket.identity.uid()) {
                     continue;
                 }
@@ -275,6 +279,11 @@ async fn connection(
     // A connected, idle game must not retain its handshake JSON/packet buffer.
     drop(handshake);
     drop(payload);
+    // A game that retries while Discord is offline must not cost an API call each time.
+    ensure!(
+        snapshots.borrow().status == Status::Online,
+        "Discord is not connected"
+    );
     let application = tokio::time::timeout(WAIT, api.rpc_application(&client)).await??;
     let name = application["name"]
         .as_str()
