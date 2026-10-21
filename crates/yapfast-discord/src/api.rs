@@ -1169,6 +1169,69 @@ impl Api {
             .await
     }
 
+    /// How many members hold each role, by role id.
+    pub async fn role_member_counts(&self, guild: &str) -> Result<Value> {
+        let path = format!("/guilds/{guild}/roles/member-counts");
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Makes a role with `body`'s fields; it takes Manage Roles. Discord
+    /// answers with the role, and GUILD_ROLE_CREATE.
+    pub async fn create_role(&self, guild: &str, body: &Value) -> Result<Value> {
+        let path = format!("/guilds/{guild}/roles");
+        self.json(with_json(self.request(Method::POST, &path), body))
+            .await
+    }
+
+    /// Changes a role with `body`'s fields. Discord answers with the role,
+    /// and GUILD_ROLE_UPDATE.
+    pub async fn modify_role(&self, guild: &str, role: &str, body: &Value) -> Result<Value> {
+        let path = format!("/guilds/{guild}/roles/{role}");
+        self.json(with_json(self.request(Method::PATCH, &path), body))
+            .await
+    }
+
+    /// Moves roles, `[{"id", "position"}, ...]`. Discord answers with every
+    /// role, and GUILD_ROLE_UPDATE for each moved.
+    pub async fn move_roles(&self, guild: &str, positions: &Value) -> Result<Value> {
+        let path = format!("/guilds/{guild}/roles");
+        self.json(with_json(self.request(Method::PATCH, &path), positions))
+            .await
+    }
+
+    /// Deletes a role, and GUILD_ROLE_DELETE follows.
+    pub async fn delete_role(&self, guild: &str, role: &str) -> Result<()> {
+        let path = format!("/guilds/{guild}/roles/{role}");
+        self.empty(self.request(Method::DELETE, &path)).await
+    }
+
+    /// The ids of up to 100 members holding a role.
+    pub async fn role_member_ids(&self, guild: &str, role: &str) -> Result<Value> {
+        let path = format!("/guilds/{guild}/roles/{role}/member-ids");
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Gives a role to these members at once, as Add Members does.
+    pub async fn add_role_members(
+        &self,
+        guild: &str,
+        role: &str,
+        members: &[String],
+    ) -> Result<Value> {
+        let path = format!("/guilds/{guild}/roles/{role}/members");
+        let body = json!({ "member_ids": members });
+        self.json(with_json(self.request(Method::PATCH, &path), &body))
+            .await
+    }
+
+    /// Sets a member's roles, all of them, as Manage Members' remove does.
+    pub async fn set_member_roles(&self, guild: &str, user: &str, roles: &[String]) -> Result<()> {
+        let path = format!("/guilds/{guild}/members/{user}");
+        let body = json!({ "roles": roles });
+        self.empty(with_json(self.request(Method::PATCH, &path), &body))
+            .await
+    }
+
     /// Changes this account's user: its display name and avatar, as
     /// Discord's profile editor sends them. Discord answers with the user,
     /// and USER_UPDATE.

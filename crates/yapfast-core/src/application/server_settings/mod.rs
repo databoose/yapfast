@@ -16,11 +16,21 @@ use crate::{
 
 mod boost;
 mod engagement;
+mod permissions;
 mod profile;
+mod role_input;
+mod roles;
 
 pub use boost::BoostPage;
 pub use engagement::{AFK_TIMEOUTS, BOOSTED, EngagementPage, SETUP_TIPS, WELCOME, WELCOME_STICKER};
+pub use permissions::{PermissionGroup, PermissionInfo, ROLE_PERMISSIONS};
 pub use profile::{DESCRIPTION_LIMIT, ProfilePage, SettingsText};
+pub use role_input::RoleInput;
+pub use roles::{
+    ADD_MEMBERS_LIMIT, AddMembers, DEFAULT_ROLE_COLOR, PermissionLock, ROLE_COLORS,
+    ROLE_ICON_LIMIT, ROLE_NAME_LIMIT, RoleConfirm, RoleDraft, RoleLock, RoleRules, RoleTab,
+    RolesPage,
+};
 
 /// The settings of a Discord server, while they're open.
 #[derive(Clone, Debug)]
@@ -46,6 +56,7 @@ pub enum Page {
     Profile(ProfilePage),
     Engagement(EngagementPage),
     BoostPerks(BoostPage),
+    Roles(Box<RolesPage>),
 }
 
 /// A switch of a settings page: one of Engagement's system messages, by
@@ -86,6 +97,7 @@ impl ServerSettings {
             Page::Profile(page) => page.change(),
             Page::Engagement(page) => page.change(),
             Page::BoostPerks(page) => page.change(),
+            Page::Roles(page) => page.change(),
         }
     }
 
@@ -93,6 +105,7 @@ impl ServerSettings {
     pub fn problem(&self) -> Option<String> {
         match self.page.as_ref()? {
             Page::Profile(page) => page.problem(),
+            Page::Roles(page) => page.problem(),
             Page::Engagement(_) | Page::BoostPerks(_) => None,
         }
     }
@@ -118,6 +131,9 @@ impl Application {
                 SettingsSection::Engagement,
                 SettingsSection::BoostPerks,
             ]);
+        }
+        if self.may(server, Permission::ManageRoles) {
+            sections.push(SettingsSection::Roles);
         }
         sections
     }
@@ -250,6 +266,15 @@ impl Application {
         }
     }
 
+    /// What this account may do on the open settings' Roles.
+    fn settings_rules(&self) -> RoleRules {
+        self.state
+            .server_settings
+            .as_ref()
+            .map(|settings| self.role_rules(&settings.server))
+            .unwrap_or_default()
+    }
+
     /// The open page, unless Discord is taking its changes.
     fn editable_page(&mut self) -> Option<&mut Page> {
         self.state
@@ -268,6 +293,7 @@ impl Application {
         kind: ServerPicture,
         path: PathBuf,
     ) -> Vec<Effect> {
+        let rules = self.settings_rules();
         let Some(settings) = self
             .state
             .server_settings
@@ -281,6 +307,7 @@ impl Application {
             (Some(Page::BoostPerks(page)), ServerPicture::Banner | ServerPicture::Splash) => {
                 page.unlocked(kind)
             }
+            (Some(Page::Roles(page)), ServerPicture::RoleIcon) => page.icon_editable(&rules),
             _ => false,
         };
         if !fits {
@@ -334,16 +361,35 @@ impl Application {
                 page.icon = PictureEdit::New(picked);
                 None
             }
-            (Some(Page::BoostPerks(page)), _) if gif && !page.animated(kind) => Some(
-                match kind {
-                    ServerPicture::Banner => "An animated banner unlocks at boost level 3.",
-                    _ => "An invite background can't be animated.",
-                }
-                .to_owned(),
-            ),
-            (Some(Page::BoostPerks(page)), _) => {
+            (Some(Page::BoostPerks(page)), ServerPicture::Banner | ServerPicture::Splash)
+                if gif && !page.animated(kind) =>
+            {
+                Some(
+                    match kind {
+                        ServerPicture::Banner => "An animated banner unlocks at boost level 3.",
+                        _ => "An invite background can't be animated.",
+                    }
+                    .to_owned(),
+                )
+            }
+            (Some(Page::BoostPerks(page)), ServerPicture::Banner | ServerPicture::Splash) => {
                 if let Some(edit) = page.edit(kind) {
                     *edit = PictureEdit::New(picked);
+                }
+                None
+            }
+            (Some(Page::Roles(_)), ServerPicture::RoleIcon) if gif => {
+                Some("A role icon can't be animated.".to_owned())
+            }
+            (Some(Page::Roles(_)), ServerPicture::RoleIcon)
+                if picked.data.len() > ROLE_ICON_LIMIT =>
+            {
+                Some("Role icons must be under 256 KB.".to_owned())
+            }
+            (Some(Page::Roles(page)), ServerPicture::RoleIcon) => {
+                if let Some(draft) = &mut page.open {
+                    draft.icon = PictureEdit::New(picked);
+                    draft.emoji = None;
                 }
                 None
             }
@@ -354,6 +400,7 @@ impl Application {
     /// Removes the server's icon, banner or invite background, as the
     /// pages' Remove buttons do.
     pub(super) fn remove_server_picture(&mut self, kind: ServerPicture) {
+        let rules = self.settings_rules();
         let Some(settings) = self
             .state
             .server_settings
@@ -378,6 +425,19 @@ impl Application {
             }
             (Some(Page::BoostPerks(page)), ServerPicture::Splash) => {
                 (&mut page.splash, page.original.splash.is_some())
+            }
+            (Some(Page::Roles(page)), ServerPicture::RoleIcon) => {
+                let kept = page
+                    .open_role()
+                    .is_some_and(|role| role.icon.is_some() || role.unicode_emoji.is_some());
+                if !page.icon_editable(&rules) {
+                    return;
+                }
+                let Some(draft) = &mut page.open else {
+                    return;
+                };
+                draft.emoji = None;
+                (&mut draft.icon, kept)
             }
             _ => return,
         };
@@ -404,6 +464,7 @@ impl Application {
             Some(Page::Profile(page)) => page.undo(),
             Some(Page::Engagement(page)) => *page = EngagementPage::new(page.original.clone()),
             Some(Page::BoostPerks(page)) => *page = BoostPage::new(page.original.clone()),
+            Some(Page::Roles(page)) => page.undo(),
             None => {}
         }
     }
@@ -448,7 +509,15 @@ impl Application {
         };
         settings.saving = false;
         match result {
-            Ok(page) => settings.page = Page::new(settings.section, page),
+            Ok(page) => {
+                let new = Page::new(settings.section, page);
+                settings.page = match (new, settings.page.take()) {
+                    (Some(Page::Roles(new)), Some(Page::Roles(was))) => {
+                        Some(Page::Roles(Box::new((*new).carry(*was))))
+                    }
+                    (new, _) => new,
+                };
+            }
             Err(error) => settings.error = Some(error),
         }
     }
@@ -467,7 +536,7 @@ impl Application {
         match &mut settings.page {
             Some(Page::Engagement(page)) => page.follow(changed),
             Some(Page::BoostPerks(page)) => page.follow(changed),
-            Some(Page::Profile(_)) | None => {}
+            Some(Page::Profile(_) | Page::Roles(_)) | None => {}
         }
     }
 
@@ -540,6 +609,9 @@ impl Page {
             }
             (SettingsSection::BoostPerks, ServerSettingsPage::Guild(settings)) => {
                 Self::BoostPerks(BoostPage::new(settings))
+            }
+            (SettingsSection::Roles, ServerSettingsPage::Roles(roles)) => {
+                Self::Roles(Box::new(RolesPage::new(roles)))
             }
             _ => return None,
         })

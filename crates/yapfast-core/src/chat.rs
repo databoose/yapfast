@@ -2040,6 +2040,41 @@ pub enum DiscordCommand {
         server: String,
         change: Box<ServerSettingsChange>,
     },
+    /// Do something on Roles in a Discord server's settings that Discord's
+    /// client does at once, without the bar.
+    RoleAction {
+        server: String,
+        action: RoleAction,
+    },
+}
+
+/// What Roles does at once: each but [`RoleAction::Members`] and
+/// [`RoleAction::FindMembers`] is followed by [`Event::ServerSettingsSaved`]
+/// with the roles as they then stand.
+#[derive(Clone, Debug)]
+pub enum RoleAction {
+    /// Make a role, "new role", and open it.
+    Create,
+    /// Copy a role, as its draft stands, as `name`, just below it, and
+    /// open the copy.
+    Duplicate {
+        role: Box<RoleChange>,
+        name: String,
+    },
+    Delete(String),
+    /// The members holding a role; [`Event::RoleHolders`] follows.
+    Members(String),
+    /// Members whose names start with a text, for Add Members;
+    /// [`Event::RoleCandidates`] follows.
+    FindMembers(String),
+    AddMembers {
+        role: String,
+        members: Vec<String>,
+    },
+    RemoveMember {
+        role: String,
+        member: String,
+    },
 }
 
 /// A way to confirm with two-factor authentication, as Discord offers them.
@@ -2062,6 +2097,7 @@ pub enum SettingsSection {
     Profile,
     Engagement,
     BoostPerks,
+    Roles,
 }
 
 /// A picture of a Discord server's.
@@ -2071,6 +2107,8 @@ pub enum ServerPicture {
     Banner,
     /// The invite background.
     Splash,
+    /// The icon of the role open on Roles.
+    RoleIcon,
 }
 
 /// What a page of a Discord server's settings shows, as Discord sent it.
@@ -2079,6 +2117,80 @@ pub enum ServerSettingsPage {
     Profile(ServerProfile),
     /// Engagement's and Boost Perks', which the guild object holds.
     Guild(GuildSettings),
+    Roles(ServerRoles),
+}
+
+/// What Roles shows: a server's roles and what they may have.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerRoles {
+    /// Highest first, @everyone last.
+    pub roles: Vec<RoleDetail>,
+    /// The server's boost level or features give roles icons
+    /// (`ROLE_ICONS`).
+    pub role_icons: bool,
+    /// A Community server, whose roles have Stage and Insights permissions.
+    pub community: bool,
+    /// A role to open, which the action that sent these just made.
+    pub open: Option<String>,
+}
+
+/// A role of a Discord server in full, as Roles shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RoleDetail {
+    pub id: String,
+    pub name: String,
+    pub permissions: u64,
+    /// Higher roles list first; @everyone is 0.
+    pub position: i64,
+    /// Its colour, 0 for none, and a gradient's others, which Yapfast
+    /// keeps as they are.
+    pub color: u32,
+    pub secondary_color: Option<u32>,
+    pub tertiary_color: Option<u32>,
+    /// Listed apart from online members.
+    pub hoist: bool,
+    pub mentionable: bool,
+    /// What gives it, when not people.
+    pub managed: Option<RoleManager>,
+    /// Its icon's address, or a Unicode emoji in its place.
+    pub icon: Option<String>,
+    pub unicode_emoji: Option<String>,
+    /// How many members hold it.
+    pub members: u64,
+}
+
+/// What gives a role, when people don't.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoleManager {
+    Bot,
+    Booster,
+    Integration,
+}
+
+/// A role as saving it sends it: every field, as Discord's client sends
+/// them, and its icon only when it changes.
+#[derive(Clone, Debug)]
+pub struct RoleChange {
+    pub id: String,
+    pub name: String,
+    pub permissions: u64,
+    pub color: u32,
+    pub secondary_color: Option<u32>,
+    pub tertiary_color: Option<u32>,
+    pub hoist: bool,
+    pub mentionable: bool,
+    /// A new icon, or `None` to remove it, which removes the emoji too.
+    pub icon: Option<Option<PickedPicture>>,
+    pub unicode_emoji: Option<String>,
+}
+
+/// A member holding a role, as Manage Members lists them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoleMember {
+    pub id: String,
+    pub name: String,
+    pub username: Option<String>,
+    pub avatar: String,
 }
 
 /// A Discord server's settings, as its Engagement and Boost Perks pages
@@ -2145,6 +2257,12 @@ pub enum ServerSettingsChange {
         banner: Option<Option<PickedPicture>>,
         splash: Option<Option<PickedPicture>>,
         progress_bar: Option<bool>,
+    },
+    /// Roles': the roles that move, as `(id, position)`, then the open
+    /// role, if it changed.
+    Roles {
+        positions: Vec<(String, i64)>,
+        role: Option<Box<RoleChange>>,
     },
 }
 
@@ -2534,6 +2652,32 @@ pub enum Event {
     ServerSettingsSaved {
         server: String,
         result: Result<ServerSettingsPage, String>,
+    },
+    /// A role was made or changed elsewhere, or by this account, as
+    /// GUILD_ROLE_CREATE and GUILD_ROLE_UPDATE give it, for an open Roles
+    /// to follow; its member count isn't known.
+    ServerRoleChanged {
+        server: String,
+        role: Box<RoleDetail>,
+    },
+    ServerRoleDeleted {
+        server: String,
+        role: String,
+    },
+    /// The members [`RoleAction::Members`] found holding a role, or why
+    /// not.
+    RoleHolders {
+        server: String,
+        role: String,
+        result: Result<Vec<RoleMember>, String>,
+        /// How many hold it, after a change to them.
+        count: Option<u64>,
+    },
+    /// The members [`RoleAction::FindMembers`] found for a text.
+    RoleCandidates {
+        server: String,
+        query: String,
+        members: Vec<RoleMember>,
     },
     /// Whether this account left a Discord server, by its server id, or why
     /// not.

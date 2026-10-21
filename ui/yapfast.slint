@@ -35,6 +35,7 @@ import { ContactRow, ForwardRow, ReactionPill, ReactorRow, StatusDialog, NewDmDi
 import { InvitePrompt, InviteDialog, JoinPrompt, JoinDialog, ChannelPrompt, ChannelDialog, ProfileEditorPrompt, ProfileEditorDialog } from "server.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
 import { BoostPicture, BoostPrompt, EngagementPrompt, ServerProfilePrompt, ServerSettingsPrompt, ServerSettingsScreen } from "server_settings.slint";
+import { PermissionRow, RoleMemberRow, RoleRow, RoleSwatch, RolesPrompt } from "roles.slint";
 import { MfaChoice, MfaPrompt, MfaDialog } from "mfa.slint";
 import { FoundRow, PickRow, ThreadRow, HeaderSearch, PinsPopover, ThreadsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
 import { ThreadPanel, NewThreadPanel } from "thread.slint";
@@ -187,7 +188,10 @@ export component YapfastWindow inherits Window {
     in property <ServerSettingsPrompt> server-settings-prompt;
     in-out property <string> server-settings-name;
     in-out property <string> server-settings-description;
+    in-out property <string> server-settings-role-name;
     callback server-settings-section(int);
+    /// Something done on Roles; see ServerSettingsScreen.
+    callback role-input(int, string, int);
     callback write-server-setting(int, string);
     callback toggle-server-setting(int);
     callback choose-server-setting(int, int);
@@ -3053,7 +3057,9 @@ export component YapfastWindow inherits Window {
     if root.server-settings-open: ServerSettingsScreen {
         prompt: root.server-settings-prompt;
         name <=> root.server-settings-name; description <=> root.server-settings-description;
+        role-name <=> root.server-settings-role-name;
         choose(section) => { root.server-settings-section(section); }
+        role(what, text, number) => { root.role-input(what, text, number); }
         write(field, text) => { root.write-server-setting(field, text); }
         toggle(which) => { root.toggle-server-setting(which); }
         pick-choice(list, index) => { root.choose-server-setting(list, index); }

@@ -56,6 +56,24 @@ pub(super) fn live_events(
             })
             .into_iter()
             .collect(),
+        Event::GuildRoleCreate | Event::GuildRoleUpdate => data["guild_id"]
+            .as_str()
+            .zip(crate::server_settings::parse_role(&data["role"]))
+            .map(|(guild, role)| Live::ServerRole {
+                guild: guild.to_owned(),
+                role: Box::new(role),
+            })
+            .into_iter()
+            .collect(),
+        Event::GuildRoleDelete => data["guild_id"]
+            .as_str()
+            .zip(data["role_id"].as_str())
+            .map(|(guild, role)| Live::ServerRoleDeleted {
+                guild: guild.to_owned(),
+                role: role.to_owned(),
+            })
+            .into_iter()
+            .collect(),
         Event::MessageCreate | Event::MessageUpdate => {
             let Some(message) = message.cloned() else {
                 return vec![];

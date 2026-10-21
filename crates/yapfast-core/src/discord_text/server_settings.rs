@@ -27,6 +27,10 @@ const ICON_PREVIEW: (u32, u32) = (128, 128);
 /// and their previews at the size Boost Perks shows them.
 const BACKGROUND: (u32, u32) = (1920, 1080);
 const BACKGROUND_PREVIEW: (u32, u32) = (480, 270);
+/// A role icon, square, well over the 64 pixels Discord recommends and
+/// under its 256 KB, and its preview at the size the editor shows it.
+const ROLE_ICON: (u32, u32) = (128, 128);
+const ROLE_ICON_PREVIEW: (u32, u32) = (64, 64);
 
 /// Carries out a command about a server's settings or a two-factor prompt,
 /// or gives back any other.
@@ -110,6 +114,10 @@ pub(super) fn command(
                         .guild_settings(&guild)
                         .await
                         .map(|settings| ServerSettingsPage::Guild(guild_settings(settings))),
+                    SettingsSection::Roles => discord
+                        .roles_page(&guild)
+                        .await
+                        .map(|roles| ServerSettingsPage::Roles(super::roles::page(roles))),
                 };
                 let result = result.map_err(|error| {
                     tracing::warn!(
@@ -138,6 +146,9 @@ pub(super) fn command(
                         BACKGROUND_PREVIEW,
                         "an invite background",
                     ),
+                    ServerPicture::RoleIcon => {
+                        read_shaped(&path, ROLE_ICON, ROLE_ICON_PREVIEW, "a role icon")
+                    }
                 };
                 let _ = events.send(Event::ServerPicture { kind, path, result });
             });
@@ -169,6 +180,9 @@ pub(super) fn command(
                             .stepping_up(|| discord.save_guild_settings(&guild, &body))
                             .await
                             .map(|settings| ServerSettingsPage::Guild(guild_settings(settings)))
+                    }
+                    ServerSettingsChange::Roles { positions, role } => {
+                        super::roles::save(&discord, &guild, positions, role).await
                     }
                 };
                 let result = result.map_err(|error| {

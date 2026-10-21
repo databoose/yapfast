@@ -416,6 +416,17 @@ pub enum Live {
         guild: String,
         settings: Box<server_settings::GuildSettings>,
     },
+    /// A role was made or changed, as GUILD_ROLE_CREATE and
+    /// GUILD_ROLE_UPDATE give it, for Roles while it's open.
+    ServerRole {
+        guild: String,
+        role: Box<server_settings::Role>,
+    },
+    /// A role was deleted, by id.
+    ServerRoleDeleted {
+        guild: String,
+        role: String,
+    },
 }
 
 /// What a call needs to open the voice connection Discord assigned.
@@ -1275,6 +1286,98 @@ impl Discord {
     ) -> Result<server_settings::GuildSettings> {
         let settings = self.api.modify_guild(guild, body).await?;
         Ok(server_settings::parse_guild(&settings))
+    }
+
+    /// What Roles shows: the server's roles in full and how many members
+    /// hold each.
+    pub async fn roles_page(&self, guild: &str) -> Result<server_settings::Roles> {
+        let (settings, counts) =
+            tokio::join!(self.api.guild(guild), self.api.role_member_counts(guild));
+        Ok(server_settings::parse_roles_page(&settings?, &counts?))
+    }
+
+    /// How many members hold each role, by role id.
+    pub async fn role_member_counts(&self, guild: &str) -> Result<HashMap<String, u64>> {
+        let counts = self.api.role_member_counts(guild).await?;
+        Ok(server_settings::parse_roles_page(&Value::Null, &counts).counts)
+    }
+
+    /// Moves roles to new positions, as `(id, position)`, then changes one
+    /// role with `body`'s fields, as Roles' Save Changes does, in that
+    /// order. GUILD_ROLE_UPDATE follows each.
+    pub async fn save_roles(
+        &self,
+        guild: &str,
+        positions: &[(String, i64)],
+        role: Option<(&str, &Value)>,
+    ) -> Result<()> {
+        if !positions.is_empty() {
+            let positions: Vec<Value> = positions
+                .iter()
+                .map(|(id, position)| serde_json::json!({"id": id, "position": position}))
+                .collect();
+            self.api.move_roles(guild, &Value::Array(positions)).await?;
+        }
+        if let Some((role, body)) = role {
+            self.api.modify_role(guild, role, body).await?;
+        }
+        Ok(())
+    }
+
+    /// Makes a role with `body`'s fields, giving its id; GUILD_ROLE_CREATE
+    /// follows.
+    pub async fn create_role(&self, guild: &str, body: &Value) -> Result<String> {
+        let role = self.api.create_role(guild, body).await?;
+        role["id"]
+            .as_str()
+            .map(str::to_owned)
+            .context("Discord gave no id for the role")
+    }
+
+    /// Deletes a role; GUILD_ROLE_DELETE follows.
+    pub async fn delete_role(&self, guild: &str, role: &str) -> Result<()> {
+        self.api.delete_role(guild, role).await
+    }
+
+    /// Up to 100 members holding a role, by id, whose names, avatars and
+    /// roles are known once this answers.
+    pub async fn role_members(&self, guild: &str, role: &str) -> Result<Vec<String>> {
+        let ids = self.api.role_member_ids(guild, role).await?;
+        let ids: Vec<String> = ids
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|id| Some(id.as_str()?.to_owned()))
+            .collect();
+        self.ask_members(guild, ids.iter().map(String::as_str))
+            .await;
+        Ok(ids)
+    }
+
+    /// Gives a role to these members at once.
+    pub async fn add_role_members(
+        &self,
+        guild: &str,
+        role: &str,
+        members: &[String],
+    ) -> Result<()> {
+        self.api
+            .add_role_members(guild, role, members)
+            .await
+            .map(drop)
+    }
+
+    /// Takes a role from a member, as Manage Members does: by setting the
+    /// member's other roles.
+    /// Their roles must be known, or the rest would go too.
+    pub async fn remove_role_member(&self, guild: &str, role: &str, user: &str) -> Result<()> {
+        self.ask_members(guild, std::iter::once(user)).await;
+        let held = self.roles(guild, user);
+        if !held.iter().any(|known| known == role) {
+            bail!("Yapfast doesn't know that member's roles yet. Try again.");
+        }
+        let kept: Vec<String> = held.iter().filter(|held| *held != role).cloned().collect();
+        self.api.set_member_roles(guild, user, &kept).await
     }
 
     /// Changes this account's main profile as Discord's client does:

@@ -2880,6 +2880,7 @@ async fn talks_to_the_fake_server() {
     starts_threads_as_discords_client_does(&discord, server, &guild, &general).await;
     posts_in_a_forum_as_discords_client_does(&discord, server, &guild).await;
     changes_server_settings_as_discords_client_does(&discord, server, &guild).await;
+    changes_roles_as_discords_client_does(&discord, server, &guild).await;
 
     // Leaving "Server", which Bob owns, takes it out of her list; the fake
     // lets her back in, so the tests after these find it again.
@@ -3106,6 +3107,120 @@ async fn changes_server_settings_as_discords_client_does(
             .any(|known| known.id == guild && known.name == "Server")
     })
     .await;
+}
+
+/// Making, changing, moving and deleting a role in "Server"'s Roles as
+/// Discord's client does, below Staff, her highest; part of
+/// [`talks_to_the_fake_server`], whose session it shares. It puts the roles
+/// and members back after.
+async fn changes_roles_as_discords_client_does(discord: &Discord, server: &str, guild: &str) {
+    use serde_json::json;
+    let (staff, leads, crew, bots, mods) = (
+        "1400000000000000114",
+        "1400000000000000113",
+        "1400000000000000112",
+        "1400000000000000111",
+        "1400000000000000110",
+    );
+    let (alice, dave) = ("1400000000000000001", "1400000000000000004");
+    let names = |roles: &[yapfast_discord::server_settings::Role]| -> Vec<String> {
+        roles.iter().map(|role| role.name.clone()).collect()
+    };
+    let page = discord.roles_page(guild).await.unwrap();
+    assert_eq!(
+        names(&page.roles),
+        ["Leads", "Staff", "Crew", "Bots", "Mods", "@everyone"]
+    );
+    assert_eq!(page.counts.get(staff), Some(&1));
+
+    // A new role starts at the bottom, above @everyone.
+    let mut live = discord.live();
+    let body = json!({"name": "new role", "color": 0,
+        "colors": {"primary_color": 0, "secondary_color": null, "tertiary_color": null},
+        "permissions": "0"});
+    let made = discord.create_role(guild, &body).await.unwrap();
+    live_where(&mut live, |live| match live {
+        Live::ServerRole { role, .. } if role.id == made => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // Saving moves it first, then changes it whole, permissions as a
+    // decimal string; a permission she doesn't hold is refused.
+    let positions = [
+        (made.clone(), 3),
+        (bots.to_owned(), 2),
+        (mods.to_owned(), 1),
+    ];
+    let role = json!({"name": "Helpers", "permissions": "1024", "color": 3447003,
+        "colors": {"primary_color": 3447003, "secondary_color": null, "tertiary_color": null},
+        "hoist": true, "mentionable": false, "unicode_emoji": null});
+    discord
+        .save_roles(guild, &positions, Some((&made, &role)))
+        .await
+        .unwrap();
+    let page = discord.roles_page(guild).await.unwrap();
+    assert_eq!(
+        names(&page.roles),
+        [
+            "Leads",
+            "Staff",
+            "Crew",
+            "Helpers",
+            "Bots",
+            "Mods",
+            "@everyone"
+        ]
+    );
+    let helpers = page.roles.iter().find(|known| known.id == made).unwrap();
+    assert_eq!(
+        (helpers.permissions, helpers.color, helpers.hoist),
+        (1024, 3447003, true)
+    );
+    let admin = json!({"permissions": "8"});
+    assert!(
+        discord
+            .save_roles(guild, &[], Some((&made, &admin)))
+            .await
+            .is_err()
+    );
+    // Leads, above her, stays put; listing it where it is goes.
+    assert!(
+        discord
+            .save_roles(guild, &[(leads.to_owned(), 1)], None)
+            .await
+            .is_err()
+    );
+    discord
+        .save_roles(guild, &[(leads.to_owned(), 6), (crew.to_owned(), 4)], None)
+        .await
+        .unwrap();
+
+    // Members: Staff's are hers to see, Helpers' to change.
+    assert_eq!(discord.role_members(guild, staff).await.unwrap(), [alice]);
+    discord
+        .add_role_members(guild, &made, &[dave.to_owned()])
+        .await
+        .unwrap();
+    assert_eq!(discord.role_members(guild, &made).await.unwrap(), [dave]);
+    assert_eq!(
+        discord.role_member_counts(guild).await.unwrap().get(&made),
+        Some(&1)
+    );
+    discord
+        .remove_role_member(guild, &made, dave)
+        .await
+        .unwrap();
+    assert!(discord.role_members(guild, &made).await.unwrap().is_empty());
+
+    discord.delete_role(guild, &made).await.unwrap();
+    live_where(&mut live, |live| match live {
+        Live::ServerRoleDeleted { role, .. } if role == made => Some(()),
+        _ => None,
+    })
+    .await;
+    post_control(server, "/_control/roles-reset", "");
+    post_control(server, "/_control/members-reset", "");
 }
 
 /// Editing her main profile as Discord's client does, then putting it

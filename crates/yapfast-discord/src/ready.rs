@@ -1362,6 +1362,11 @@ pub fn splash(guild: &str, hash: &str) -> String {
     format!("{}/splashes/{guild}/{hash}.png?size=600", cdn())
 }
 
+/// A role's icon, as its settings show it.
+pub fn role_icon(role: &str, hash: &str) -> String {
+    format!("{}/role-icons/{role}/{hash}.png?size=64", cdn())
+}
+
 /// The banner a member set for one server.
 pub fn member_banner(guild: &str, user: &str, hash: &str) -> String {
     format!(

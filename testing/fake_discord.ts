@@ -1641,15 +1641,35 @@ function dispatch(name: string, data: unknown) {
   for (const session of parked.values()) session.missed.push({ name, data });
 }
 
-const serverRoles = [
-  { id: GUILD, name: "@everyone", permissions: String(EVERYONE), position: 0, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
-  { id: MODS, name: "Mods", permissions: String(bit(13)), position: 1, color: 3447003, hoist: true, managed: false, mentionable: true, flags: 0 },
-  { id: BOTS, name: "Bots", permissions: "0", position: 2, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
+/** A role of "Server" as Discord sends it. */
+function serverRole(id: string, name: string, permissions: number, position: number, color = 0, hoist = false, mentionable = false) {
+  return {
+    id, name, permissions: String(permissions), position, color, hoist, managed: false, mentionable, flags: 0,
+    colors: { primary_color: color, secondary_color: null as number | null, tertiary_color: null as number | null },
+    icon: null as string | null, unicode_emoji: null as string | null, description: null as string | null,
+  };
+}
+
+// "Server"'s roles, which Roles in its settings changes as Discord's client
+// does: POST /guilds/{id}/roles makes one at position 1, PATCH
+// /guilds/{id}/roles moves them, PATCH and DELETE .../roles/{role} change
+// and delete one, GET .../roles/member-counts and .../roles/{role}/member-ids
+// list who holds them, and PATCH .../roles/{role}/members gives one to
+// several members. Each takes Manage Roles and a role below Alice's
+// highest, and grants only what Alice holds, as Discord checks them, and
+// sends GUILD_ROLE_CREATE, GUILD_ROLE_UPDATE or GUILD_ROLE_DELETE. POST
+// /_control/roles-reset puts them back.
+const SERVER_ROLES = () => [
+  serverRole(GUILD, "@everyone", EVERYONE, 0),
+  serverRole(MODS, "Mods", bit(13), 1, 3447003, true, true),
+  serverRole(BOTS, "Bots", 0, 2),
   // Crew may manage channels, the server and pin messages.
-  { id: CREW, name: "Crew", permissions: String(bit(4) + bit(5) + bit(51)), position: 3, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
-  { id: STAFF, name: "Staff", permissions: String(MODERATION), position: 4, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
-  { id: LEADS, name: "Leads", permissions: "0", position: 5, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
+  serverRole(CREW, "Crew", bit(4) + bit(5) + bit(51), 3),
+  serverRole(STAFF, "Staff", MODERATION, 4),
+  serverRole(LEADS, "Leads", 0, 5),
 ];
+const serverRoles = SERVER_ROLES();
+let madeRoles = 0;
 
 /** The highest position of a member's roles; the owner is above all. */
 function rank(user: string): number {
@@ -1807,6 +1827,7 @@ function resetGuild() {
 function needsMfa(method: string, path: string): boolean {
   if (!mfa.on) return false;
   if (method === "PATCH" && /^\/guilds\/\d+(\/profile)?$/.test(path)) return true;
+  if (method !== "GET" && /^\/guilds\/\d+\/roles/.test(path)) return true;
   if (method === "POST" && /^\/guilds\/\d+\/channels$/.test(path)) return true;
   if ((method === "PATCH" || method === "DELETE") && /^\/channels\/\d+$/.test(path)) return true;
   return method !== "GET" && /^\/guilds\/\d+\/(members|bans)\/\d+/.test(path);
@@ -3739,6 +3760,125 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     }
   }
 
+  // "Server"'s roles; see "Server"'s roles above.
+  if ((m = path.match(/^\/guilds\/(\d+)\/roles(?:\/(\d+|member-counts))?(?:\/(members|member-ids))?$/))) {
+    if (m[1] !== GUILD) return notFound("Unknown Guild", 10004);
+    const [which, part] = [m[2], m[3]];
+    const refused = () => json({ message: "Missing Permissions", code: 50013 }, 403);
+    const invalid = (field: string, code: string, message: string) =>
+      json({ message: "Invalid Form Body", code: 50035, errors: { [field]: { _errors: [{ code, message }] } } }, 400);
+    const holders = (role: string) => [...memberRoles].filter(([, roles]) => roles.includes(role)).map(([user]) => user);
+    if (method === "GET" && which === "member-counts") {
+      return json(Object.fromEntries(serverRoles.filter((role) => role.id !== GUILD).map((role) => [role.id, holders(role.id).length])));
+    }
+    if (method === "GET" && which === undefined) return json(serverRoles);
+    if (!aliceMay(28)) return refused();
+    // Below her highest role, as Discord asks of anyone but the owner.
+    const below = (role: { position: number }) => role.position < rank(ALICE);
+    const held = serverPermissions(ALICE);
+    const grants = (permissions: unknown) => {
+      const wanted = BigInt(String(permissions ?? "0"));
+      return (wanted & ~held) === 0n;
+    };
+    const updated = (role: (typeof serverRoles)[number]) => dispatch("GUILD_ROLE_UPDATE", { guild_id: GUILD, role });
+    if (method === "POST" && which === undefined) {
+      const body: any = await req.json().catch(() => ({}));
+      if (!grants(body.permissions)) return refused();
+      madeRoles += 1;
+      const role = serverRole(snowflake(Date.now(), madeRoles), String(body.name ?? "new role").slice(0, 100), 0, 1, Number(body.color) || 0);
+      role.permissions = String(body.permissions ?? "0");
+      for (const known of serverRoles) {
+        if (known.id !== GUILD) {
+          known.position += 1;
+          updated(known);
+        }
+      }
+      serverRoles.push(role);
+      dispatch("GUILD_ROLE_CREATE", { guild_id: GUILD, role });
+      return json(role);
+    }
+    if (method === "PATCH" && which === undefined) {
+      const body: any = await req.json().catch(() => []);
+      if (!Array.isArray(body)) return invalid("_", "BASE_TYPE_ARRAY", "Must be an array.");
+      const moves = body.map((move: any) => ({ role: serverRoles.find((known) => known.id === String(move.id)), position: Number(move.position) }));
+      // Roles above hers may be listed, as Discord's client lists every
+      // role, so long as they stay where they are.
+      const refusedMove = ({ role, position }: { role?: (typeof serverRoles)[number]; position: number }) =>
+        !role || role.id === GUILD || (role.position !== position && (!below(role) || !below({ position })));
+      if (moves.some(refusedMove)) return refused();
+      changeMembers(() => {
+        for (const { role, position } of moves) {
+          role!.position = position;
+          updated(role!);
+        }
+      });
+      return json(serverRoles);
+    }
+    const role = serverRoles.find((known) => known.id === which);
+    if (!role) return notFound("Unknown Role", 10011);
+    // Anyone who manages roles sees who holds one, a higher one too.
+    if (method === "GET" && part === "member-ids") return json(holders(role.id).slice(0, 100));
+    if (!below(role)) return refused();
+    if (method === "PATCH" && part === "members") {
+      const body: any = await req.json().catch(() => ({}));
+      const ids: string[] = Array.isArray(body.member_ids) ? body.member_ids.map(String) : [];
+      if (role.id === GUILD || role.managed) return refused();
+      const added: Record<string, unknown> = {};
+      changeMembers(() => {
+        for (const id of ids) {
+          const user = userById.get(id);
+          if (!user || removed.has(id)) continue;
+          memberRoles.set(id, [...(memberRoles.get(id) ?? []).filter((known) => known !== role.id), role.id]);
+          memberUpdated(user);
+          added[id] = member(user);
+        }
+      });
+      return json(added);
+    }
+    if (method === "PATCH" && part === undefined) {
+      const body: any = await req.json().catch(() => ({}));
+      if ("name" in body && (typeof body.name !== "string" || body.name.trim() === "" || body.name.length > 100)) {
+        return invalid("name", "BASE_TYPE_BAD_LENGTH", "Must be between 1 and 100 in length.");
+      }
+      if ("permissions" in body && !grants(body.permissions)) return refused();
+      let icon: string | null | undefined;
+      if ("icon" in body) {
+        if (body.icon !== null && serverSettings.premium_tier < 2 && !serverSettings.features.includes("ROLE_ICONS")) {
+          return invalid("icon", "GUILD_FEATURE_REQUIRED", "This server needs boost level 2 for that.");
+        }
+        const kept = body.icon === null ? { hash: null } : keepPicture(body.icon);
+        if ("error" in kept) return invalid("icon", "IMAGE_INVALID", kept.error);
+        icon = kept.hash;
+      }
+      changeMembers(() => {
+        if (typeof body.name === "string") role.name = body.name.trim();
+        if ("permissions" in body) role.permissions = String(body.permissions);
+        if ("color" in body) role.color = Number(body.color) || 0;
+        role.colors = body.colors ?? { primary_color: role.color, secondary_color: null, tertiary_color: null };
+        if ("hoist" in body) role.hoist = !!body.hoist;
+        if ("mentionable" in body) role.mentionable = !!body.mentionable;
+        if (icon !== undefined) role.icon = icon;
+        if ("unicode_emoji" in body) role.unicode_emoji = body.unicode_emoji || null;
+      });
+      updated(role);
+      return json(role);
+    }
+    if (method === "DELETE" && part === undefined) {
+      if (role.id === GUILD || role.managed) return refused();
+      changeMembers(() => {
+        serverRoles.splice(serverRoles.indexOf(role), 1);
+        for (const [user, roles] of memberRoles) {
+          if (roles.includes(role.id)) {
+            memberRoles.set(user, roles.filter((known) => known !== role.id));
+            memberUpdated(userById.get(user)!);
+          }
+        }
+      });
+      dispatch("GUILD_ROLE_DELETE", { guild_id: GUILD, role_id: role.id });
+      return empty();
+    }
+  }
+
   // "Server" itself: Engagement and Boost Perks in Server Settings. A
   // banner needs boost level 2 or BANNER, a GIF one level 3 or
   // ANIMATED_BANNER, and an invite background level 1 or INVITE_SPLASH;
@@ -4812,6 +4952,23 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     }
     if (kind === "members" && role === undefined && method === "PATCH") {
       const body: any = await req.json().catch(() => ({}));
+      // All of a member's roles at once, as Manage Members' remove sends
+      // them: each given or taken must be one Alice may.
+      if (Array.isArray(body.roles)) {
+        const wanted: string[] = body.roles.map(String);
+        const had = memberRoles.get(user.id) ?? [];
+        const changed = [...wanted.filter((id) => !had.includes(id)), ...had.filter((id) => !wanted.includes(id))];
+        const may = (id: string) => {
+          const known = serverRoles.find((found) => found.id === id);
+          return known && known.id !== GUILD && !known.managed && known.position < rank(ALICE);
+        };
+        if (!aliceMay(28) || !changed.every(may)) return refused();
+        changeMembers(() => {
+          memberRoles.set(user.id, wanted);
+          memberUpdated(user);
+        });
+        return json(member(user));
+      }
       if ("nick" in body && !(who === "@me" ? aliceMay(26) : aliceMay(27, user.id))) return refused();
       if ("nick" in body && (body.nick ?? "").length > 32) return tooLong("nick", 32);
       let avatar: string | null | undefined;
@@ -5817,7 +5974,7 @@ const server = Bun.serve<SocketData>({
     if (req.method === "GET" && /^\/(app-icons\/\d+\/[a-z0-9]+\.png|app-assets\/\d+\/[a-z0-9]+\.png|spotify\/[A-Za-z0-9]+)$/.test(path)) {
       return new Response(picture(path), { headers: { "content-type": "image/png" } });
     }
-    if (req.method === "GET" && /^\/(icons\/\d+|avatars\/\d+|banners\/\d+|splashes\/\d+|embed\/avatars|guilds\/\d+\/users\/\d+\/(avatars|banners))\/[^/]+\.png$/.test(path)) {
+    if (req.method === "GET" && /^\/(icons\/\d+|avatars\/\d+|banners\/\d+|splashes\/\d+|role-icons\/\d+|embed\/avatars|guilds\/\d+\/users\/\d+\/(avatars|banners))\/[^/]+\.png$/.test(path)) {
       const uploaded = uploadedPictures.get(path.slice(path.lastIndexOf("/") + 1, -".png".length));
       if (uploaded) return new Response(uploaded.data, { headers: { "content-type": uploaded.type } });
       return new Response(picture(path), { headers: { "content-type": "image/png" } });
@@ -6355,6 +6512,16 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "GET" && path === "/_control/mfa") {
       return Response.json(mfa.tried);
+    }
+    if (req.method === "POST" && path === "/_control/roles-reset") {
+      changeMembers(() => {
+        for (const role of serverRoles) {
+          if (!SERVER_ROLES().some((known) => known.id === role.id)) dispatch("GUILD_ROLE_DELETE", { guild_id: GUILD, role_id: role.id });
+        }
+        serverRoles.splice(0, serverRoles.length, ...SERVER_ROLES());
+        for (const role of serverRoles) dispatch("GUILD_ROLE_UPDATE", { guild_id: GUILD, role });
+      });
+      return new Response("roles as they were\n");
     }
     if (req.method === "POST" && path === "/_control/guild") {
       const body: any = await req.json().catch(() => ({}));

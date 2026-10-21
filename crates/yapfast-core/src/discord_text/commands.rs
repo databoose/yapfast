@@ -79,6 +79,9 @@ pub fn command(
     let Some(command) = super::server_settings::command(command, discord, events) else {
         return;
     };
+    let Some(command) = super::roles::command(command, discord, &channels.searches, events) else {
+        return;
+    };
     let room = match &command {
         Command::Open(room)
         | Command::Send { room, .. }
@@ -599,6 +602,20 @@ pub fn live(
             settings: Box::new(super::server_settings::guild_settings(
                 DiscordSettings::clone(settings),
             )),
+        });
+        return;
+    }
+    if let Ok(Live::ServerRole { guild, role }) = &event {
+        let _ = events.send(Event::ServerRoleChanged {
+            server: discord::server_id(guild),
+            role: Box::new(super::roles::detail((**role).clone(), 0)),
+        });
+        return;
+    }
+    if let Ok(Live::ServerRoleDeleted { guild, role }) = &event {
+        let _ = events.send(Event::ServerRoleDeleted {
+            server: discord::server_id(guild),
+            role: role.clone(),
         });
         return;
     }

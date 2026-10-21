@@ -5618,6 +5618,8 @@ fn a_discord_servers_menu_and_header_offer_its_notifications() {
             MuteServer,
             ServerNotifications,
             HideMuted,
+            // Her role manages roles.
+            ServerSettings,
             EditServerProfile,
             LeaveServer,
             CopyLink,
@@ -5627,6 +5629,7 @@ fn a_discord_servers_menu_and_header_offer_its_notifications() {
     assert_eq!(
         app.header_choices("discord:10"),
         [
+            ServerSettings,
             ServerNotifications,
             EditServerProfile,
             HideMuted,
@@ -5867,12 +5870,13 @@ fn discord_channels_and_categories_are_made_changed_and_deleted_from_their_menus
         );
     });
     assert_eq!(
-        app.menu_choices("discord:10")[5..],
+        app.menu_choices("discord:10")[6..],
         [CreateChannel, CreateCategory, LeaveServer, CopyLink, CopyId]
     );
     assert_eq!(
         app.header_choices("discord:10"),
         [
+            ServerSettings,
             CreateChannel,
             CreateCategory,
             ServerNotifications,
@@ -6180,6 +6184,7 @@ fn a_server_profile_is_edited_as_discords_per_server_profile_editor_does() {
     assert_eq!(
         app.header_choices("discord:10"),
         [
+            ServerSettings,
             ServerNotifications,
             EditServerProfile,
             HideMuted,

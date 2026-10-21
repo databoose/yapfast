@@ -4093,6 +4093,98 @@ fn engagement_and_boost_perks_show_their_choices_and_locks() {
 
 #[test]
 #[cfg(feature = "discord")]
+fn roles_lock_what_ranks_above_her_and_the_permissions_she_lacks() {
+    use slint::Model;
+    use yapfast_core::{
+        chat::{RoleDetail, ServerRoles, ServerSettingsPage, SettingsSection},
+        yapfast_discord::ready::permission,
+    };
+    // She holds Staff, which may kick.
+    let (window, adapter, _directory) =
+        discord_server_window_changed(permission::MANAGE_ROLES, |server| {
+            server.my_roles = vec!["20".into()];
+            Arc::make_mut(&mut server.role_positions).insert("20".into(), 2);
+            Arc::make_mut(&mut server.roles).insert("20".into(), permission::KICK_MEMBERS);
+        });
+    let role = |id: &str, name: &str, position: i64| RoleDetail {
+        id: id.into(),
+        name: name.into(),
+        position,
+        ..Default::default()
+    };
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    window.invoke_choose_menu("header:discord:10".into(), false, "server-settings".into());
+    let rows: Vec<(bool, String)> = window
+        .get_server_settings_prompt()
+        .rows
+        .iter()
+        .map(|row| (row.heading, row.text.to_string()))
+        .collect();
+    assert_eq!(rows, [(true, "PEOPLE".into()), (false, "Roles".into())]);
+    window.invoke_server_settings_section(3);
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section: SettingsSection::Roles,
+            result: Ok(ServerSettingsPage::Roles(ServerRoles {
+                roles: vec![
+                    role("40", "Leads", 3),
+                    role("20", "Staff", 2),
+                    role("30", "Crew", 1),
+                    role("10", "@everyone", 0),
+                ],
+                ..Default::default()
+            })),
+        });
+        adapter.refresh(&window);
+    }
+    let roles = window.get_server_settings_prompt().roles;
+    let listed: Vec<(String, bool)> = roles
+        .rows
+        .iter()
+        .map(|row| (row.name.to_string(), row.locked))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("Leads".into(), true),
+            ("Staff".into(), true),
+            ("Crew".into(), false)
+        ]
+    );
+    assert_eq!(
+        roles.rows.row_data(1).unwrap().lock_text,
+        "Role is locked because it is your highest ranked role. Please ask a higher rank or Server Owner for help."
+    );
+    assert_eq!(roles.first_movable, 2);
+
+    // Crew's permissions: Kick Members is hers to give, Administrator not.
+    window.invoke_role_input(10, "30".into(), 0);
+    window.invoke_role_input(11, "".into(), 1);
+    let roles = window.get_server_settings_prompt().roles;
+    assert!(roles.open && !roles.locked && roles.tab == 1);
+    let switch = |bit: u64| {
+        window
+            .get_server_settings_prompt()
+            .roles
+            .permissions
+            .iter()
+            .find(|row| !row.heading && 1u64 << row.bit == bit)
+            .unwrap()
+    };
+    assert_eq!(
+        switch(permission::ADMINISTRATOR).lock_text,
+        "You cannot modify this permission because none of your roles have it."
+    );
+    assert_eq!(switch(permission::KICK_MEMBERS).lock_text, "");
+    window.invoke_role_input(14, "".into(), 1);
+    assert!(switch(permission::KICK_MEMBERS).on);
+    assert!(window.get_server_settings_prompt().changed);
+}
+
+#[test]
+#[cfg(feature = "discord")]
 fn the_two_factor_prompt_offers_discords_methods() {
     use slint::Model;
     use yapfast_core::chat::MfaMethod;

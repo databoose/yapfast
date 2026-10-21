@@ -3,8 +3,9 @@
 
 use super::*;
 use crate::chat::{
-    GuildSettings, MfaMethod, PickedPicture, ServerPicture, ServerProfile, ServerSettingsChange,
-    ServerSettingsPage, SettingsSection,
+    GuildSettings, MfaMethod, PickedPicture, RoleAction, RoleDetail, RoleManager, RoleMember,
+    ServerPicture, ServerProfile, ServerRoles, ServerSettingsChange, ServerSettingsPage,
+    SettingsSection,
 };
 
 /// `discord_server`, with Alice's Mods role managing the server as well.
@@ -63,12 +64,23 @@ fn server_settings_open_only_with_a_page_she_may_change() {
     use MenuChoice::*;
     let mut app = discord_server();
     app.state.discord_online = true;
-    // Kick Members and Manage Roles open Discord's settings, but none of
-    // the pages built yet.
+    // Kick Members alone opens none of them.
+    change_server(&mut app, |server| {
+        server.put_role(
+            &serde_json::json!({"id": "20", "name": "Mods", "position": 2,
+            "permissions": yapfast_discord::ready::permission::KICK_MEMBERS.to_string()}),
+        );
+    });
     assert!(!app.menu_choices("discord:10").contains(&ServerSettings));
     assert!(
         app.dispatch(Action::OpenServerSettings("discord:10".into()))
             .is_empty()
+    );
+    // Manage Roles opens Roles.
+    grant_mods(&mut app, 0);
+    assert_eq!(
+        app.settings_sections("discord:10"),
+        [SettingsSection::Roles]
     );
 
     grant_mods(&mut app, yapfast_discord::ready::permission::MANAGE_GUILD);
@@ -85,7 +97,8 @@ fn server_settings_open_only_with_a_page_she_may_change() {
         [
             SettingsSection::Profile,
             SettingsSection::Engagement,
-            SettingsSection::BoostPerks
+            SettingsSection::BoostPerks,
+            SettingsSection::Roles
         ]
     );
 
@@ -285,7 +298,9 @@ fn engagement(effects: Vec<Effect>) -> Engagement {
             afk_timeout,
             ..
         } => (system_channel, system_flags, afk_channel, afk_timeout),
-        ServerSettingsChange::Profile { .. } => panic!("a guild change"),
+        ServerSettingsChange::Profile { .. } | ServerSettingsChange::Roles { .. } => {
+            panic!("a guild change")
+        }
     }
 }
 
@@ -540,4 +555,332 @@ fn a_held_back_request_asks_for_two_factor_authentication() {
 
 fn prompt_answer(app: &Application) -> String {
     app.mfa_prompt().unwrap().answer()
+}
+
+/// A role as Discord sends it to Roles.
+fn detail(id: &str, name: &str, position: i64, permissions: u64) -> RoleDetail {
+    RoleDetail {
+        id: id.into(),
+        name: name.into(),
+        position,
+        permissions,
+        members: 1,
+        ..Default::default()
+    }
+}
+
+/// The fixture's roles, as Roles shows them: Bot, Mods (hers), Helpers and
+/// @everyone.
+fn roles() -> ServerRoles {
+    use yapfast_discord::ready::permission;
+    let mods = permission::KICK_MEMBERS | permission::MANAGE_ROLES;
+    ServerRoles {
+        roles: vec![
+            RoleDetail {
+                managed: Some(RoleManager::Bot),
+                ..detail("40", "Bot", 3, 0)
+            },
+            detail("20", "Mods", 2, mods),
+            detail("30", "Helpers", 1, 0),
+            detail("10", "@everyone", 0, permission::VIEW_CHANNEL),
+        ],
+        ..Default::default()
+    }
+}
+
+/// `managing`'s settings open on Roles, as Discord sent them.
+fn roles_page() -> Application {
+    roles_page_with(roles())
+}
+
+fn roles_page_with(roles: ServerRoles) -> Application {
+    let mut app = managing();
+    app.state.discord_online = true;
+    app.dispatch(Action::OpenServerSettings("discord:10".into()));
+    loaded(&mut app, "Test");
+    assert!(matches!(
+        app.dispatch(Action::ServerSettingsSection(SettingsSection::Roles))
+            .as_slice(),
+        [Effect::Backend(Command::Discord(
+            DiscordCommand::ServerSettings {
+                section: SettingsSection::Roles,
+                ..
+            }
+        ))]
+    ));
+    app.apply(Event::ServerSettingsLoaded {
+        server: "discord:10".into(),
+        section: SettingsSection::Roles,
+        result: Ok(ServerSettingsPage::Roles(roles)),
+    });
+    app
+}
+
+fn roles_of(app: &Application) -> &RolesPage {
+    match &app.state.server_settings.as_ref().unwrap().page {
+        Some(SettingsPage::Roles(page)) => page,
+        _ => panic!("Roles"),
+    }
+}
+
+fn role_action(effects: Vec<Effect>) -> RoleAction {
+    match effects.as_slice() {
+        [Effect::Backend(Command::Discord(DiscordCommand::RoleAction { server, action }))] => {
+            assert_eq!(server, "discord:10");
+            action.clone()
+        }
+        other => panic!("{} effects", other.len()),
+    }
+}
+
+#[test]
+fn roles_lock_what_ranks_at_or_above_her_highest() {
+    use yapfast_discord::ready::permission;
+    let mut app = roles_page();
+    let rules = app.role_rules("discord:10");
+    assert_eq!(rules.lock("40", 3), Some(RoleLock::Higher));
+    assert_eq!(rules.lock("20", 2), Some(RoleLock::Highest));
+    assert_eq!(rules.lock("30", 1), None);
+    assert_eq!(
+        rules.permission_lock("30", permission::ADMINISTRATOR, false),
+        Some(PermissionLock::NotHeld)
+    );
+
+    // Her own highest role can't change, nor can it move.
+    app.dispatch(Action::Roles(RoleInput::Open(Some("20".into()))));
+    app.dispatch(Action::Roles(RoleInput::Name("Mine".into())));
+    assert!(!app.state.server_settings.as_ref().unwrap().changed());
+    app.dispatch(Action::Roles(RoleInput::Move {
+        role: "30".into(),
+        to: 0,
+    }));
+    assert_eq!(roles_of(&app).order, ["40", "20", "30"]);
+
+    // Helpers takes what she holds, not what she doesn't.
+    app.dispatch(Action::Roles(RoleInput::Open(Some("30".into()))));
+    app.dispatch(Action::Roles(RoleInput::Permission(
+        permission::KICK_MEMBERS,
+    )));
+    app.dispatch(Action::Roles(RoleInput::Permission(
+        permission::ADMINISTRATOR,
+    )));
+    app.dispatch(Action::Roles(RoleInput::Name("Helpers+".into())));
+    app.dispatch(Action::Roles(RoleInput::Color(DEFAULT_ROLE_COLOR)));
+    let Some(ServerSettingsChange::Roles { positions, role }) =
+        app.state.server_settings.as_ref().unwrap().change()
+    else {
+        panic!("a roles change");
+    };
+    assert!(positions.is_empty());
+    let role = role.unwrap();
+    assert_eq!(
+        (role.name.as_str(), role.permissions, role.color),
+        ("Helpers+", permission::KICK_MEMBERS, 0)
+    );
+
+    // Another role waits for the bar.
+    app.dispatch(Action::Roles(RoleInput::Open(Some("10".into()))));
+    let settings = app.state.server_settings.as_ref().unwrap();
+    assert_eq!(settings.nudge, 1);
+    assert_eq!(roles_of(&app).open.as_ref().unwrap().id, "30");
+}
+
+#[test]
+fn a_role_takes_any_colour_and_an_emoji_in_its_pictures_place() {
+    let mut boosted = roles();
+    boosted.role_icons = true;
+    boosted.roles[2].icon = Some("abc".into());
+    let mut app = roles_page_with(boosted);
+    app.dispatch(Action::Roles(RoleInput::Open(Some("30".into()))));
+    let role = |app: &Application| match app.state.server_settings.as_ref().unwrap().change() {
+        Some(ServerSettingsChange::Roles { role, .. }) => role,
+        _ => None,
+    };
+    app.dispatch(Action::Roles(RoleInput::Color(0x123456)));
+    assert_eq!(role(&app).unwrap().color, 0x123456);
+    app.dispatch(Action::Roles(RoleInput::Color(DEFAULT_ROLE_COLOR)));
+    assert!(role(&app).is_none());
+
+    // Only an emoji, which takes the picture's place.
+    app.dispatch(Action::Roles(RoleInput::Emoji("abc".into())));
+    assert!(role(&app).is_none());
+    app.dispatch(Action::Roles(RoleInput::Emoji(" 🔥 ".into())));
+    let change = role(&app).unwrap();
+    assert_eq!(change.unicode_emoji.as_deref(), Some("🔥"));
+    assert!(matches!(change.icon, Some(None)), "the picture goes");
+    // Remove Icon takes both.
+    app.dispatch(Action::RemoveServerPicture(ServerPicture::RoleIcon));
+    let change = role(&app).unwrap();
+    assert!(change.unicode_emoji.is_none() && matches!(change.icon, Some(None)));
+}
+
+#[test]
+fn the_owner_reorders_roles_and_saves_the_order_first() {
+    let mut app = roles_page();
+    change_server(&mut app, |server| server.owner_id = Some("1".into()));
+    app.dispatch(Action::Roles(RoleInput::Move {
+        role: "30".into(),
+        to: 0,
+    }));
+    assert_eq!(roles_of(&app).order, ["30", "40", "20"]);
+    let ServerSettingsChange::Roles { positions, role } =
+        saved(app.dispatch(Action::SaveServerSettings))
+    else {
+        panic!("a roles change");
+    };
+    assert_eq!(
+        positions,
+        [
+            ("30".to_owned(), 3),
+            ("40".to_owned(), 2),
+            ("20".to_owned(), 1)
+        ]
+    );
+    assert!(role.is_none());
+
+    // Discord's answer replaces the page.
+    let mut moved = roles();
+    moved.roles[2].position = 3;
+    moved.roles[0].position = 2;
+    moved.roles[1].position = 1;
+    moved.roles.sort_by_key(|role| -role.position);
+    app.apply(Event::ServerSettingsSaved {
+        server: "discord:10".into(),
+        result: Ok(ServerSettingsPage::Roles(moved)),
+    });
+    assert!(!app.state.server_settings.as_ref().unwrap().changed());
+    assert_eq!(roles_of(&app).order, ["30", "40", "20"]);
+}
+
+#[test]
+fn a_role_changed_elsewhere_reaches_the_open_role_but_not_its_draft() {
+    let mut app = roles_page();
+    app.dispatch(Action::Roles(RoleInput::Open(Some("30".into()))));
+    app.dispatch(Action::Roles(RoleInput::Name("Mine".into())));
+    app.apply(Event::ServerRoleChanged {
+        server: "discord:10".into(),
+        role: Box::new(RoleDetail {
+            hoist: true,
+            ..detail("30", "Theirs", 1, 0)
+        }),
+    });
+    let page = roles_of(&app);
+    let draft = page.open.as_ref().unwrap();
+    assert_eq!((draft.name.as_str(), draft.hoist), ("Mine", true));
+    assert_eq!(page.role("30").unwrap().members, 1, "the count stays");
+    app.apply(Event::ServerRoleDeleted {
+        server: "discord:10".into(),
+        role: "30".into(),
+    });
+    assert!(roles_of(&app).open.is_none());
+}
+
+#[test]
+fn making_copying_and_deleting_go_at_once_and_open_what_they_made() {
+    let mut app = roles_page();
+    assert!(matches!(
+        role_action(app.dispatch(Action::Roles(RoleInput::Create))),
+        RoleAction::Create
+    ));
+    assert!(app.state.server_settings.as_ref().unwrap().saving);
+    let mut made = roles();
+    made.roles.insert(3, detail("50", "new role", 1, 0));
+    made.open = Some("50".into());
+    app.apply(Event::ServerSettingsSaved {
+        server: "discord:10".into(),
+        result: Ok(ServerSettingsPage::Roles(made)),
+    });
+    assert_eq!(roles_of(&app).open.as_ref().unwrap().id, "50");
+
+    // A copy is named as Discord names it; Bot, managed, has none.
+    let RoleAction::Duplicate { role, name } =
+        role_action(app.dispatch(Action::Roles(RoleInput::Duplicate("30".into()))))
+    else {
+        panic!("a copy");
+    };
+    assert_eq!((role.id.as_str(), name.as_str()), ("30", "Helpers copy"));
+    app.apply(Event::ServerSettingsSaved {
+        server: "discord:10".into(),
+        result: Err("no".into()),
+    });
+    assert!(
+        app.dispatch(Action::Roles(RoleInput::Duplicate("40".into())))
+            .is_empty()
+    );
+
+    // Deleting asks first.
+    assert!(
+        app.dispatch(Action::Roles(RoleInput::Delete("30".into())))
+            .is_empty()
+    );
+    assert_eq!(
+        roles_of(&app).confirm,
+        Some(RoleConfirm::Delete("30".into()))
+    );
+    assert!(matches!(
+        role_action(app.dispatch(Action::Roles(RoleInput::Confirm))),
+        RoleAction::Delete(role) if role == "30"
+    ));
+}
+
+#[test]
+fn manage_members_lists_adds_and_removes_members() {
+    let mut app = roles_page();
+    app.dispatch(Action::Roles(RoleInput::Open(Some("30".into()))));
+    assert!(matches!(
+        role_action(app.dispatch(Action::Roles(RoleInput::Tab(RoleTab::Members)))),
+        RoleAction::Members(role) if role == "30"
+    ));
+    let member = |id: &str, name: &str| RoleMember {
+        id: id.into(),
+        name: name.into(),
+        username: Some(name.to_lowercase()),
+        avatar: format!("https://cdn/{id}.png"),
+    };
+    app.apply(Event::RoleHolders {
+        server: "discord:10".into(),
+        role: "30".into(),
+        result: Ok(vec![member("2", "Bob"), member("3", "Carol")]),
+        count: None,
+    });
+    app.dispatch(Action::Roles(RoleInput::MemberSearch("car".into())));
+    assert_eq!(roles_of(&app).shown_members().len(), 1);
+
+    // Remove member asks first.
+    app.dispatch(Action::Roles(RoleInput::RemoveMember("3".into())));
+    assert!(matches!(
+        role_action(app.dispatch(Action::Roles(RoleInput::Confirm))),
+        RoleAction::RemoveMember { role, member } if role == "30" && member == "3"
+    ));
+    app.apply(Event::RoleHolders {
+        server: "discord:10".into(),
+        role: "30".into(),
+        result: Ok(vec![member("2", "Bob")]),
+        count: Some(1),
+    });
+
+    // Add Members finds those without the role.
+    assert!(matches!(
+        role_action(app.dispatch(Action::Roles(RoleInput::AddMembers))),
+        RoleAction::FindMembers(query) if query.is_empty()
+    ));
+    app.apply(Event::RoleCandidates {
+        server: "discord:10".into(),
+        query: String::new(),
+        members: vec![member("2", "Bob"), member("4", "Dave")],
+    });
+    let found: Vec<String> = roles_of(&app)
+        .adding
+        .as_ref()
+        .unwrap()
+        .found
+        .iter()
+        .map(|member| member.id.clone())
+        .collect();
+    assert_eq!(found, ["4"]);
+    app.dispatch(Action::Roles(RoleInput::Pick("4".into())));
+    assert!(matches!(
+        role_action(app.dispatch(Action::Roles(RoleInput::AddPicked))),
+        RoleAction::AddMembers { role, members } if role == "30" && members == ["4"]
+    ));
 }

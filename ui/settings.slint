@@ -1,6 +1,6 @@
 import { ComboBox } from "std-widgets.slint";
 import { ScrollView } from "scrollview.slint";
-import { Theme, Middle, Label } from "theme.slint";
+import { Theme, Middle, Label, Tip } from "theme.slint";
 import { ActionButton, IconButton, Avatar, SensitivitySlider, VolumeSlider, TextField, StatusText } from "controls.slint";
 import { DiscordLinkPanel } from "discord.slint";
 import { ChannelRow } from "rail.slint";
@@ -22,6 +22,8 @@ export component SettingsSwitch inherits Rectangle {
     in property <string> description;
     in-out property <bool> checked;
     in property <bool> enabled: true;
+    /// Why it can't change, shown while the pointer is on the switch.
+    in property <string> locked-tip;
     callback toggled(bool);
     height: column.preferred-height;
     function toggle() {
@@ -49,9 +51,31 @@ export component SettingsSwitch inherits Rectangle {
                     }
                 }
             }
-            Text {
-                text: root.text; color: root.enabled ? Theme.text : Theme.muted; font-size: 15px;
-                vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1;
+            HorizontalLayout {
+                spacing: 6px; alignment: start; horizontal-stretch: 1;
+                Text {
+                    text: root.text; color: root.enabled ? Theme.text : Theme.muted; font-size: 15px;
+                    vertical-alignment: center; wrap: word-wrap;
+                }
+                // Discord's lock after the title, with why on hover.
+                if !root.enabled && root.locked-tip != "": Middle {
+                    Image {
+                        width: 14px; height: 14px; source: @image-url("icons/lock.svg"); colorize: Theme.muted;
+                        accessible-role: image; accessible-label: root.locked-tip;
+                        TouchArea {
+                            changed has-hover => {
+                                if self.has-hover {
+                                    Tip.text = root.locked-tip;
+                                    Tip.side = 0;
+                                    Tip.x = self.absolute-position.x + self.width / 2;
+                                    Tip.y = self.absolute-position.y;
+                                } else if Tip.text == root.locked-tip {
+                                    Tip.text = "";
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         if root.description != "": Label { text: root.description; }
@@ -73,6 +97,20 @@ export component SettingsSwitch inherits Rectangle {
         pointer := TouchArea {
             enabled: root.enabled; mouse-cursor: MouseCursor.pointer;
             clicked => { root.toggle(); }
+        }
+    }
+    // Outside the focus scope, which disabled takes no pointer.
+    if !root.enabled && root.locked-tip != "": TouchArea {
+        x: 0px; y: (row.height - 22px) / 2; width: 40px; height: 22px;
+        changed has-hover => {
+            if self.has-hover {
+                Tip.text = root.locked-tip;
+                Tip.side = 0;
+                Tip.x = self.absolute-position.x + self.width / 2;
+                Tip.y = self.absolute-position.y;
+            } else if Tip.text == root.locked-tip {
+                Tip.text = "";
+            }
         }
     }
 }
@@ -178,6 +216,10 @@ export component SettingsFrame inherits Rectangle {
     in property <string> label: "Settings";
     /// Room below the section, for a bar over its bottom.
     in property <length> bottom: 56px;
+    /// The page fills the frame's height instead of scrolling in it, for
+    /// a page with a list view of its own, which makes only the rows in
+    /// sight.
+    in property <bool> fill;
     /// Where the section's column starts and how wide it is, for such a bar.
     out property <length> content-x: content.x;
     out property <length> content-width: content.width;
@@ -217,11 +259,14 @@ export component SettingsFrame inherits Rectangle {
             }
             content := Rectangle {
                 horizontal-stretch: 2; min-width: 440px;
-                ScrollView {
-                    HorizontalLayout {
+                scroll := ScrollView {
+                    content-height: root.fill ? self.visible-height : page.preferred-height;
+                    page := HorizontalLayout {
+                        height: root.fill ? scroll.visible-height : self.preferred-height;
                         padding-left: 40px; padding-right: 96px; padding-top: 56px; padding-bottom: root.bottom;
                         VerticalLayout {
-                            max-width: 660px; horizontal-stretch: 1; spacing: 16px; alignment: start;
+                            max-width: 660px; horizontal-stretch: 1; spacing: 16px;
+                            alignment: root.fill ? LayoutAlignment.stretch : LayoutAlignment.start;
                             @children
                         }
                     }

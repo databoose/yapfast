@@ -62,9 +62,11 @@ pub use profile_editor::{
 pub use reactions::{ReactionTip, ReactionsWindow, TIP_PEOPLE};
 pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
 pub use server_settings::{
-    AFK_TIMEOUTS, BOOSTED, BoostPage, DESCRIPTION_LIMIT, EngagementPage, Page as SettingsPage,
-    ProfilePage, SETUP_TIPS, ServerSettings, SettingsChoice, SettingsText, SettingsToggle, WELCOME,
-    WELCOME_STICKER,
+    ADD_MEMBERS_LIMIT, AFK_TIMEOUTS, AddMembers, BOOSTED, BoostPage, DEFAULT_ROLE_COLOR,
+    DESCRIPTION_LIMIT, EngagementPage, Page as SettingsPage, PermissionGroup, PermissionInfo,
+    PermissionLock, ProfilePage, ROLE_COLORS, ROLE_NAME_LIMIT, ROLE_PERMISSIONS, RoleConfirm,
+    RoleDraft, RoleInput, RoleLock, RoleRules, RoleTab, RolesPage, SETUP_TIPS, ServerSettings,
+    SettingsChoice, SettingsText, SettingsToggle, WELCOME, WELCOME_STICKER,
 };
 pub use threads::{
     NewThread, THREAD_NAME_LIMIT, ThreadFrom, ThreadList, ThreadSearch, ThreadSections,
@@ -1497,6 +1499,8 @@ pub enum Action {
     UndoServerSettings,
     SaveServerSettings,
     CloseServerSettings,
+    /// Something done on Roles in a server's settings.
+    Roles(RoleInput),
     /// Answer the two-factor prompt: use another method, or with none
     /// list them; write the code; have Discord text it again; confirm; or
     /// cancel, which fails the request waiting on it.
@@ -1807,9 +1811,33 @@ fn pictures_on_screen<'a>(
                     page.original.banner.as_deref(),
                     page.original.splash.as_deref(),
                 ),
-                Some(server_settings::Page::Engagement(_)) | None => (None, None),
+                Some(server_settings::Page::Engagement(_) | server_settings::Page::Roles(_))
+                | None => (None, None),
             };
-            first.into_iter().chain(second)
+            // Roles' icons, the open role's members and Add Members' finds.
+            let roles = match &settings.page {
+                Some(server_settings::Page::Roles(page)) => Some(page),
+                _ => None,
+            };
+            let icons = roles
+                .into_iter()
+                .flat_map(|page| page.original.roles.iter())
+                .filter_map(|role| role.icon.as_deref());
+            let members = roles
+                .into_iter()
+                .flat_map(|page| page.shown_members())
+                .map(|member| member.avatar.as_str());
+            let found = roles
+                .into_iter()
+                .flat_map(|page| page.adding.iter())
+                .flat_map(|adding| adding.found.iter().chain(&adding.chosen))
+                .map(|member| member.avatar.as_str());
+            first
+                .into_iter()
+                .chain(second)
+                .chain(icons)
+                .chain(members)
+                .chain(found)
         }))
         .chain(state.profile_editor.iter().flat_map(|editor| {
             // The profile's pictures and its fallback's, which show where
@@ -2443,6 +2471,7 @@ impl Application {
                 vec![]
             }
             Action::SaveServerSettings => self.save_server_settings(),
+            Action::Roles(input) => self.role_input(input),
             Action::CloseServerSettings => {
                 self.close_server_settings();
                 vec![]
@@ -2900,6 +2929,23 @@ impl Application {
             Event::ServerSettingsSaved { server, result } => {
                 self.server_settings_saved(server, result);
             }
+            Event::ServerRoleChanged { server, role } => {
+                self.server_role_changed(server, Some(*role), None);
+            }
+            Event::ServerRoleDeleted { server, role } => {
+                self.server_role_changed(server, None, Some(role));
+            }
+            Event::RoleHolders {
+                server,
+                role,
+                result,
+                count,
+            } => self.role_holders(server, role, result, count),
+            Event::RoleCandidates {
+                server,
+                query,
+                members,
+            } => self.role_candidates(server, query, members),
             Event::FriendAdded(outcome) => {
                 if let Some(dialog) = &mut self.state.add_friend {
                     dialog.sending = false;

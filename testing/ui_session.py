@@ -428,8 +428,8 @@ def perform(command):
     elif verb == 'pick':
         kind, _, rest = rest.partition(' ')
         path = (ROOT / rest).resolve()
-        if kind not in ('avatar', 'banner', 'icon', 'server-banner', 'splash') or not path.is_file():
-            raise ValueError(f'pick avatar|banner|icon|server-banner|splash PATH, with a file at {path}')
+        if kind not in ('avatar', 'banner', 'icon', 'server-banner', 'splash', 'role-icon') or not path.is_file():
+            raise ValueError(f'pick avatar|banner|icon|server-banner|splash|role-icon PATH, with a file at {path}')
         with window_control.open('a') as window:
             window.write(f'pick {kind} {path}\n')
         time.sleep(.8)

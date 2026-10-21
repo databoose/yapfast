@@ -16,7 +16,7 @@ use yapfast_core::{
     application::{
         Action, AddFriend, AppState, Application, BAN_HISTORY, ChannelAsk, ClearAfter, Compose,
         DmScreen, Effect, INVITE_AGES, INVITE_USES, ListedCategory, MenuChoice, Navigation, NewDm,
-        PersonAsk, ProfileText, ProfileView, Relation, SLOWMODES, Search, TIMEOUT_TIMES,
+        PersonAsk, ProfileText, ProfileView, Relation, RoleInput, SLOWMODES, Search, TIMEOUT_TIMES,
     },
     backend::Backend,
     chat::{
@@ -657,6 +657,10 @@ fn control(path: PathBuf, shell: Rc<shell::Shell>) -> slint::Timer {
                             },
                             "splash" => Action::PickServerPicture {
                                 kind: yapfast_core::chat::ServerPicture::Splash,
+                                path,
+                            },
+                            "role-icon" => Action::PickServerPicture {
+                                kind: yapfast_core::chat::ServerPicture::RoleIcon,
                                 path,
                             },
                             "banner" => Action::PickProfilePicture {
@@ -1927,9 +1931,18 @@ impl Adapter {
         // stays as it is.
         let composing = matches!(action, Action::SetDraft(_) | Action::MentionQuery(_));
         let profiling = matches!(action, Action::WriteProfile { .. });
+        // Typing on Roles changes only the settings, too.
         let setting = matches!(
             action,
-            Action::WriteServerSetting { .. } | Action::WriteMfa(_)
+            Action::WriteServerSetting { .. }
+                | Action::WriteMfa(_)
+                | Action::Roles(
+                    RoleInput::Name(_)
+                        | RoleInput::Search(_)
+                        | RoleInput::PermissionSearch(_)
+                        | RoleInput::MemberSearch(_)
+                        | RoleInput::FindCandidates(_)
+                )
         );
         let effects = self.app.dispatch(action);
         self.execute(effects);

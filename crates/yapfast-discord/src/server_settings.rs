@@ -93,10 +93,154 @@ pub fn parse_guild(guild: &Value) -> GuildSettings {
     }
 }
 
+/// A role in full, as Roles in a server's settings shows and edits it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Role {
+    pub id: String,
+    pub name: String,
+    pub permissions: u64,
+    /// Higher roles list first; @everyone is 0.
+    pub position: i64,
+    /// Its colour, 0 for none, and a gradient's second and third, which
+    /// Yapfast keeps as they are.
+    pub color: u32,
+    pub secondary_color: Option<u32>,
+    pub tertiary_color: Option<u32>,
+    /// Listed apart from online members.
+    pub hoist: bool,
+    pub mentionable: bool,
+    /// What gives the role, when not people: a bot, an integration or
+    /// boosting. Nobody grants it by hand.
+    pub managed: Option<Managed>,
+    /// Its icon's address, or a Unicode emoji in its place.
+    pub icon: Option<String>,
+    pub unicode_emoji: Option<String>,
+}
+
+/// What manages a role, from its `tags`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Managed {
+    Bot,
+    Booster,
+    Integration,
+}
+
+/// A role object from `GET /guilds/{id}/roles` or a GUILD_ROLE_* event.
+pub fn parse_role(role: &Value) -> Option<Role> {
+    let id = role["id"].as_str()?.to_owned();
+    let tags = &role["tags"];
+    let managed = role["managed"].as_bool().unwrap_or_default().then(|| {
+        if tags.get("bot_id").is_some() {
+            Managed::Bot
+        } else if tags.get("premium_subscriber").is_some() {
+            Managed::Booster
+        } else {
+            Managed::Integration
+        }
+    });
+    let colors = &role["colors"];
+    let color = |key: &str| colors[key].as_u64().map(|color| color as u32);
+    Some(Role {
+        name: role["name"].as_str().unwrap_or_default().to_owned(),
+        permissions: role["permissions"]
+            .as_str()
+            .and_then(|bits| bits.parse().ok())
+            .unwrap_or_default(),
+        position: role["position"].as_i64().unwrap_or_default(),
+        color: color("primary_color")
+            .or_else(|| role["color"].as_u64().map(|color| color as u32))
+            .unwrap_or_default(),
+        secondary_color: color("secondary_color"),
+        tertiary_color: color("tertiary_color"),
+        hoist: role["hoist"].as_bool().unwrap_or_default(),
+        mentionable: role["mentionable"].as_bool().unwrap_or_default(),
+        managed,
+        icon: role["icon"]
+            .as_str()
+            .map(|hash| ready::role_icon(&id, hash)),
+        unicode_emoji: role["unicode_emoji"]
+            .as_str()
+            .filter(|emoji| !emoji.is_empty())
+            .map(str::to_owned),
+        id,
+    })
+}
+
+/// What Roles shows: a server's roles, how many members hold each, and
+/// the boost level and features that decide what a role may have.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Roles {
+    /// Highest first, @everyone last.
+    pub roles: Vec<Role>,
+    /// By role id; @everyone isn't counted.
+    pub counts: std::collections::HashMap<String, u64>,
+    pub premium_tier: u8,
+    pub features: Vec<String>,
+}
+
+/// Roles from a server's guild object and Discord's member counts.
+pub fn parse_roles_page(guild: &Value, counts: &Value) -> Roles {
+    let settings = parse_guild(guild);
+    Roles {
+        roles: parse_roles(&guild["roles"]),
+        counts: counts
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(role, count)| Some((role.clone(), count.as_u64()?)))
+            .collect(),
+        premium_tier: settings.premium_tier,
+        features: settings.features,
+    }
+}
+
+/// A server's roles, highest first, @everyone last, as Roles lists them.
+pub fn parse_roles(roles: &Value) -> Vec<Role> {
+    let mut roles: Vec<Role> = roles
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(parse_role)
+        .collect();
+    roles.sort_by(|a, b| b.position.cmp(&a.position).then(a.id.cmp(&b.id)));
+    roles
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn roles_read_highest_first_with_what_manages_them() {
+        let roles = parse_roles(&json!([
+            {"id": "1", "name": "@everyone", "permissions": "1024", "position": 0, "color": 0},
+            {"id": "3", "name": "Bot", "position": 2, "managed": true, "tags": {"bot_id": "9"},
+             "colors": {"primary_color": 255, "secondary_color": 65280, "tertiary_color": null}},
+            {"id": "2", "name": "Mods", "permissions": "8192", "position": 1, "color": 3447003,
+             "hoist": true, "icon": "abc", "unicode_emoji": ""},
+        ]));
+        let ids: Vec<&str> = roles.iter().map(|role| role.id.as_str()).collect();
+        assert_eq!(ids, ["3", "2", "1"]);
+        assert_eq!(roles[0].managed, Some(Managed::Bot));
+        assert_eq!(
+            (
+                roles[0].color,
+                roles[0].secondary_color,
+                roles[0].tertiary_color
+            ),
+            (255, Some(65280), None)
+        );
+        assert_eq!((roles[1].permissions, roles[1].color), (8192, 3447003));
+        assert!(roles[1].hoist && roles[1].unicode_emoji.is_none());
+        assert!(
+            roles[1]
+                .icon
+                .as_deref()
+                .unwrap()
+                .contains("/role-icons/2/abc.png")
+        );
+    }
 
     #[test]
     fn a_profile_reads_as_server_profile_shows_it() {

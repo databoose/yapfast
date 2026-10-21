@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [push-to-talk](#push-to-talk) on a recorded key, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio, cameras and push-to-talk on real Windows, and of push-to-talk on real Wayland desktops; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, [joining by invite](#joining-by-invite), making and changing channels, [server settings](#server-settings)' Server Profile, [two-factor authentication](#two-factor-authentication), threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, most of a server's settings and its privacy, membership forms when joining |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, [joining by invite](#joining-by-invite), making and changing channels, [server settings](#server-settings)' Server Profile, Engagement, Boost Perks and [Roles](#roles), [two-factor authentication](#two-factor-authentication), threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, most of a server's settings and its privacy, membership forms when joining |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, [editing one's profile](#editing-ones-main-profile) and [server profiles](#editing-ones-server-profile), notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored; changing the username |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -2334,6 +2334,11 @@ permission:
 - Boost Perks, with Manage Server: the server's banner and invite
   background, each locked until its boost level, and the boost progress
   bar.
+- Roles, with Manage Roles, under People: the server's roles, their order,
+  and each role's name, colour, icon, permissions and members.
+
+A heading with no page under it doesn't show, so someone who may only
+manage roles sees People alone.
 
 The rest of Discord's pages come in later stages; the plan is kept outside
 the repository.
@@ -2362,6 +2367,12 @@ with Server Profile open, 8.55 to 8.59 on Engagement and 8.54 to 8.57 on
 Boost Perks. Closed after Server Profile alone, 8.31 to 8.32, as before
 them; after all three pages 8.38 to 8.41, and four rounds of all three
 stayed at 8.42 to 8.43.
+With Roles: 7.71 to 7.74 on #general, 8.53 to 8.55 with Server Profile
+open (8.50 to 8.51 before), 8.67 to 8.70 on Roles' list and 8.82 on a
+role's Permissions, whose list view makes only the rows in sight: making
+all 49 switches at once took 10.07 to 10.11. Closed, 8.38 to 8.47 (8.29
+before, after Server Profile alone), and four rounds of Roles, a role and
+its Permissions stayed at 8.37 to 8.41.
 
 Server Profile reads `GET /guilds/{id}/profile` and saves with `PATCH
 /guilds/{id}/profile`, as Discord's page does, with `name`,
@@ -2401,6 +2412,80 @@ boost level and features, as `{"premium_tier": 2, "features":
 ["BANNER"]}`. `scripts/ui-session do 'pick icon PATH'` chooses an icon, as
 the file chooser would, and `pick server-banner` and `pick splash` the
 other two pictures.
+
+#### Roles
+
+Roles lists the server's roles highest first, @everyone apart above them
+as Default Permissions, with each one's members, a search box and Create
+Role. Discord's client lets this account change only roles below its
+highest, unless it owns the server; the rest show a lock, whose tooltip
+gives Discord's reason, "Role is locked because it is your highest ranked
+role…" or "…a higher rank than your highest role.", and open to be viewed.
+A role an integration manages, a bot's or the boosters', can't be copied,
+deleted or given by hand. Dragging a row by its handle, or its menu's
+Move Up and Move Down, reorders the roles below the locked ones.
+
+A role opens on three tabs, as Discord's editor has them:
+
+- Display: the name, up to 100 characters; a colour from Discord's 20
+  swatches, any other written as `#rrggbb` in place of Discord's colour
+  picker, or none (Discord's grey, saved as 0), keeping a gradient's
+  other colours as they are; the icon, from boost level 2 (`ROLE_ICONS`),
+  an image up to 256 KB and not animated, read at most 128 pixels square,
+  or a Unicode emoji typed or pasted in place of Discord's emoji picker,
+  each taking the other's place; "Display role members separately" and
+  "Allow anyone to @mention this role".
+- Permissions: Discord's 49 permissions in its eight groups, with its
+  titles and descriptions (51 on a Community server, with Stage's), a
+  search box, and Clear permissions. They're switches, as Discord's are. A
+  switch is locked when this account holds that permission through none
+  of its roles, or when turning it off on one of its own roles would take
+  it from the account; the lock's tooltip gives Discord's reason. Clear
+  permissions is locked the same way.
+- Manage Members: the role's members, with a search box, Remove for each,
+  after "Remove member", and Add Members, which searches the server's
+  members and adds up to 30 at once.
+
+The draft is the order and the open role. Save Changes sends the order
+first, then the role whole, as Discord's client does; opening another role
+or leaving Roles with changes shakes the bar. Create Role, Duplicate Role,
+Delete (after "Delete Role"), Add Members and Remove go at once. A copy is
+named "{name} copy", as Discord names it, takes the role as its draft
+stands, and goes just below it. Created and copied roles open.
+GUILD_ROLE_CREATE, GUILD_ROLE_UPDATE and GUILD_ROLE_DELETE reach the open
+page: a role changed elsewhere shows unless the draft changed the same
+field, and one deleted elsewhere closes if it was open.
+
+Roles reads `GET /guilds/{id}` for the roles, boost level and features,
+and `GET /guilds/{id}/roles/member-counts`, and holds them only while it's
+open; members come by id, with names from those Yapfast already knows or
+asks the gateway for. It saves with:
+
+- `PATCH /guilds/{id}/roles`, `[{id, position}]`, only the roles that
+  move; @everyone stays at 0.
+- `PATCH /guilds/{id}/roles/{role}`: `name`, `permissions` as a decimal
+  string, `color`, `colors` (`primary_color`, `secondary_color`,
+  `tertiary_color`), `hoist`, `mentionable`, `unicode_emoji`, and `icon`,
+  a data URI or `null`, only when it changed.
+- `POST /guilds/{id}/roles`, `{name: "new role", color: 0, colors,
+  permissions: "0"}`; a copy then saves its fields with the PATCH above,
+  and moves.
+- `DELETE /guilds/{id}/roles/{role}`.
+- `GET /guilds/{id}/roles/{role}/member-ids`, up to 100, then the members
+  by id over the gateway.
+- `PATCH /guilds/{id}/roles/{role}/members`, `{member_ids}`, to add.
+- `PATCH /guilds/{id}/members/{user}`, `{roles}`, with the role left out,
+  to remove, as Discord's client does; Yapfast first asks the gateway for
+  the member's roles, and refuses, "Yapfast doesn't know that member's
+  roles yet. Try again.", if it still doesn't know them.
+
+The fake's "Server" has Leads, Staff, Crew, Bots and Mods above
+@everyone; Alice holds Staff and Crew, so Leads and Staff are locked.
+It answers these requests, refuses a move, change or deletion of a role at
+or above Staff, or a permission Alice doesn't hold, with 50013, a role
+icon below level 2 with its 50035, and sends the GUILD_ROLE events. `POST
+/_control/roles-reset` puts the roles back. `scripts/ui-session do 'pick
+role-icon PATH'` chooses the open role's icon, as the file chooser would.
 
 ### Two-factor authentication
 
