@@ -687,14 +687,18 @@ streams by key (`guild:{server}:{channel}:{user}`) and
 states carry `self_stream`, which shows as a LIVE badge beside the person.
 Sharing starts from the call's controls or from the voice panel's Share
 button, which works wherever the window is; the panel says when the stream
-is live and stops it. While the call is off screen, the stream being watched,
-or else this account's own, shows in a corner (`StreamPip`), as Discord's
+is live and stops it. A click on someone's tile watches their stream, which
+then shows large in it; someone who films as well has a second tile for the
+stream. A stream being watched starts large, however watching began, and
+stays watched in its tile after a click beside it. While the call is off
+screen, the large tile's stream or camera, or else the stream being watched,
+or this account's own, shows in a corner (`StreamPip`), as Discord's
 picture in picture does. STREAM_CREATE and STREAM_UPDATE name a stream's
 viewers in `viewer_ids`; Yapfast keeps them for the stream it shares and the one
 it watches, and shows them over the stream (`ViewerStack`) and as a count in
 the voice panel; a click on it returns to the call. This account's
-own stream opens large from its tile, as others' do, without watching it
-through Discord: it shows the worker's preview.
+own stream has a tile of its own, which opens large as others' do, without
+watching it through Discord: it shows the worker's preview.
 
 Capture runs in a worker process, `yapfast --stream-worker`, so its buffers take
 memory only while sharing; the process exits when sharing stops. Playing a

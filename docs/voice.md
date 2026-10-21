@@ -58,11 +58,19 @@ people list beside the channel marks them with a camera. Your own camera shows
 mirrored, as a mirror would. Up to four people take the columns that make
 their tiles largest within both the grid's width and height, so a call
 above a DM's messages shows both people side by side without scrolling;
-more take tiles at least 240px wide, and scroll. The grid tells Rust its columns, tile size and
-scroll whenever they change (`call-tiles`), so each feed is made at its tile's
-size in physical pixels, and only while the tile is in view. A tile scrolled
-away, or a grid hidden behind settings or a watched stream, makes no pictures
-and keeps no buffers. Skia draws each frame from Slint's buffer in place
+more take tiles at least 240px wide, and scroll. A click on a tile shows it
+large, as Discord's focus does, with the others in rows of small tiles
+beneath; a click beside it shows the grid again. The large tile goes full
+screen from its button or a double click, over the whole window, until
+Escape. Rust keeps which tile is large (`tiles::Focus`), by whose it is, so
+it stays as people come and go. The grid tells Rust its columns, tile size,
+scroll and large tile whenever they change (`call-tiles`), so each feed is
+made at its tile's size in physical pixels, and only while the tile is in
+view. A tile scrolled away, or a grid hidden behind settings, makes no
+pictures and keeps no buffers. While the call is off screen, one camera
+shows in the corner (`StreamPip`), made at the corner's size: the large
+tile's, or else, with no stream to show there, the first of someone else's.
+The others make none. Skia draws each frame from Slint's buffer in place
 (`docs/building.md`). Preview, Matrix and Discord calls carry video.
 
 A camera takes a moment to open, and longer to send its first picture, so it

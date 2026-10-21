@@ -64,7 +64,7 @@ pub(crate) use pictures::picture as slint_image;
 use pictures::*;
 use profile::*;
 use refresh::{Reach, SidebarShown};
-use tiles::Tiles;
+use tiles::{Focus, Pip, Stage, Tiles};
 use yapfast_ui::*;
 
 /// How the desktop window ended.
@@ -1148,6 +1148,8 @@ struct Models {
     watch_viewers: Rc<VecModel<PersonRow>>,
     /// Each participant's newest camera picture, in the same order.
     participant_frames: Rc<VecModel<slint::Image>>,
+    /// The streams in tiles of their own, as indexes of their participants.
+    stream_tiles: Rc<VecModel<i32>>,
     /// Who is in the open DM's call, shown above its messages.
     call_people: Rc<VecModel<PersonRow>>,
     /// Discord friends: all of them, and those around.
@@ -1193,6 +1195,7 @@ impl Models {
         window.set_share_viewers(ModelRc::from(self.share_viewers.clone()));
         window.set_watch_viewers(ModelRc::from(self.watch_viewers.clone()));
         window.set_participant_frames(ModelRc::from(self.participant_frames.clone()));
+        window.set_stream_tiles(ModelRc::from(self.stream_tiles.clone()));
         window.set_call_people(ModelRc::from(self.call_people.clone()));
         window.set_friends(ModelRc::from(self.friends.clone()));
         window.set_friends_online(ModelRc::from(self.friends_online.clone()));
@@ -1371,6 +1374,10 @@ struct Adapter {
     frame_ids: Vec<String>,
     /// Where the call's tiles are, as the grid last said.
     tiles: Option<Tiles>,
+    /// The call's tile shown large, and whose stream was watched when the
+    /// call last showed, so a stream starts large.
+    call_focus: Option<tiles::Focus>,
+    watched: Option<String>,
     /// Runs the microphone through Discord's processing while voice settings
     /// show the voice gate's sensitivity.
     #[cfg(feature = "discord")]
@@ -1548,6 +1555,8 @@ impl Adapter {
                 preview_camera: None,
                 frame_ids: vec![],
                 tiles: None,
+                call_focus: None,
+                watched: None,
                 #[cfg(feature = "discord")]
                 gate_meter: None,
                 talk_key: None,

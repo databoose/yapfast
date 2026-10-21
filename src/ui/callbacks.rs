@@ -2119,19 +2119,49 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     });
     let state = adapter.clone();
     let weak = window.as_weak();
-    window.on_call_tiles(move |columns, width, height, gap, top, scrolled, shown| {
+    window.on_call_tiles(
+        move |columns,
+              width,
+              height,
+              gap,
+              top,
+              scrolled,
+              shown,
+              focused,
+              focus_width,
+              focus_height| {
+            let Some(window) = weak.upgrade() else { return };
+            let mut adapter = state.borrow_mut();
+            adapter.tiles = Some(Tiles {
+                columns: columns.max(0) as u32,
+                width,
+                height,
+                gap,
+                top,
+                scrolled,
+                shown,
+                focused: usize::try_from(focused).ok(),
+                focus_width,
+                focus_height,
+            });
+            place_videos(&adapter, &window);
+        },
+    );
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_focus_tile(move |slot| {
         let Some(window) = weak.upgrade() else { return };
         let mut adapter = state.borrow_mut();
-        adapter.tiles = Some(Tiles {
-            columns: columns.max(0) as u32,
-            width,
-            height,
-            gap,
-            top,
-            scrolled,
-            shown,
-        });
-        place_videos(&adapter, &window);
+        let adapter = &mut *adapter;
+        let voice = &adapter.app.state.voice;
+        let stage = Stage {
+            participants: &voice.participants,
+            sharing: voice.sharing.is_some(),
+        };
+        adapter.call_focus = usize::try_from(slot)
+            .ok()
+            .and_then(|slot| stage.focus_at(slot));
+        adapter.show_stage(&window);
     });
     let state = adapter.clone();
     let weak = window.as_weak();
@@ -2237,23 +2267,40 @@ fn start_camera_test(adapter: &mut Adapter, window: &YapfastWindow) {
 }
 
 /// Tells each camera in the call where its tile shows, or that it doesn't,
-/// so pictures are made only for tiles in sight, at their size.
+/// so pictures are made only for tiles in sight, at their size. With the
+/// call off screen, the camera in the corner shows there.
 fn place_videos(adapter: &Adapter, window: &YapfastWindow) {
     let voice = &adapter.app.state.voice;
     let shown = window.get_grid_shown() && voice.active();
     let scale = window.window().scale_factor();
-    // A shared screen takes the grid's first place.
-    let before = usize::from(voice.sharing.is_some());
+    let corner = usize::try_from(window.get_pip_person())
+        .ok()
+        .filter(|_| window.get_pip_shown() && voice.active());
+    let pixels = |side: f32| (side * scale).round() as u32;
+    // Shared screens take the grid's first places.
+    let before = Stage {
+        participants: &voice.participants,
+        sharing: voice.sharing.is_some(),
+    }
+    .before();
     for (index, person) in voice.participants.iter().enumerate() {
         if let Some(feed) = &person.video {
-            let at = adapter
-                .tiles
-                .filter(|_| shown)
-                .and_then(|tiles| tiles.shown_at(index + before, scale));
+            let at = if corner == Some(index) {
+                Some((pixels(PIP_WIDTH), pixels(PIP_HEIGHT)))
+            } else {
+                adapter
+                    .tiles
+                    .filter(|_| shown)
+                    .and_then(|tiles| tiles.shown_at(index + before, scale))
+            };
             feed.show_at(at);
         }
     }
 }
+
+/// The corner's size, as StreamPip draws it.
+const PIP_WIDTH: f32 = 320.0;
+const PIP_HEIGHT: f32 = 180.0;
 
 /// Opens a web page in the browser. Only web pages open: a message can't
 /// start other programs.

@@ -2518,6 +2518,57 @@ impl Adapter {
         }
     }
 
+    /// Which of the call's tiles shows large, the streams with tiles of their
+    /// own, and what the corner shows while the call is off screen.
+    pub(super) fn show_stage(&mut self, window: &YapfastWindow) {
+        let voice = &self.app.state.voice;
+        let watching = voice
+            .watching
+            .as_ref()
+            .map(|watching| watching.user.as_str());
+        if watching != self.watched.as_deref() {
+            // A stream starts large, and leaves when watching it stops.
+            if let Some(user) = watching {
+                self.call_focus = Some(Focus::Stream(user.to_owned()));
+            } else if matches!(&self.call_focus, Some(Focus::Stream(user)) if self.watched.as_ref() == Some(user))
+            {
+                self.call_focus = None;
+            }
+            self.watched = watching.map(str::to_owned);
+        }
+        let stage = Stage {
+            participants: if voice.active() {
+                &voice.participants
+            } else {
+                &[]
+            },
+            sharing: voice.sharing.is_some(),
+        };
+        let focused = self.call_focus.as_ref().and_then(|focus| stage.slot(focus));
+        if focused.is_none() {
+            self.call_focus = None;
+        }
+        let slot = |slot: Option<usize>| slot.map_or(-1, |slot| slot as i32);
+        window.set_call_focus(slot(focused));
+        update_model(
+            &self.models.stream_tiles,
+            stage.streams().map(|person| person as i32).collect(),
+        );
+        window.set_watch_user(watching.unwrap_or_default().into());
+        let pip = stage.pip(self.call_focus.as_ref(), watching);
+        window.set_pip_kind(match pip {
+            Pip::None => 0,
+            Pip::Watched => 1,
+            Pip::Shared => 2,
+            Pip::Camera(_) => 3,
+        });
+        window.set_pip_person(match pip {
+            Pip::Camera(person) => person as i32,
+            _ => -1,
+        });
+        window.set_pip_slot(slot(stage.pip_slot(pip, watching)));
+    }
+
     /// The call: the voice dock, sharing and watching a screen, a DM's call,
     /// ringing, and the devices.
     fn show_voice(&mut self, window: &YapfastWindow) {
@@ -2853,6 +2904,9 @@ impl Adapter {
         while frames.row_count() < count {
             frames.push(slint::Image::default());
         }
+        self.show_stage(window);
+        let state = &self.app.state;
+        let voice = &state.voice;
         window.set_can_film(voice.can_film);
         window.set_camera_on(voice.camera_phase != voice::CameraPhase::Off);
         window.set_camera_starting(voice.camera_phase == voice::CameraPhase::Starting);
