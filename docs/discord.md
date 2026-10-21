@@ -2331,8 +2331,13 @@ permission:
 - Boost Perks, with Manage Server: the server's banner and invite
   background, each locked until its boost level, and the boost progress
   bar.
+- [Members](#members), under People, with any of Manage Server, Kick, Ban
+  or Time Out Members, Manage Roles and Manage Nicknames: the server's
+  members, found by name or id.
 - Roles, with Manage Roles, under People: the server's roles, their order,
   and each role's name, colour, icon, permissions and members.
+- [Invites](#invites), with Manage Server, under People: the server's
+  invites, and pausing invites and DMs.
 - [Safety Setup](#safety-setup), with Manage Server, under Moderation: the
   verification level, whether moderators need two-factor authentication,
   and the sensitive content filter.
@@ -2349,8 +2354,8 @@ the repository.
 
 Only the open page's settings are held, from when it opens to when it
 closes: opening a page asks Discord for it, and leaving it drops it. Each
-page but Safety Setup and Bans, which act at once as Discord's do, edits a
-draft against what Discord sent. Once the draft differs,
+page but Members, Invites, Safety Setup, Audit Log and Bans, which act at
+once as Discord's do, edits a draft against what Discord sent. Once the draft differs,
 Discord's bar shows over the bottom of the page, "Careful — you have
 unsaved changes!", with Reset and Save Changes; until one is chosen,
 choosing another page, Escape and the close button shake the bar red
@@ -2491,6 +2496,85 @@ or above Staff, or a permission Alice doesn't hold, with 50013, a role
 icon below level 2 with its 50035, and sends the GUILD_ROLE events. `POST
 /_control/roles-reset` puts the roles back. `scripts/ui-session do 'pick
 role-icon PATH'` chooses the open role's icon, as the file chooser would.
+
+#### Members
+
+Members is Discord's Server Members page for a server that isn't a
+Community one; Discord's client sends a Community server's to a page in
+its channel list, and Yapfast keeps the settings page. Its heading reads
+"Recent Members", or "Search Results" once a search or an order is chosen.
+Each row has the member's avatar and name, in their highest coloured
+role's colour, with the username under it when it differs; Member Since
+and Joined Discord, as Discord words them, "3 days ago" (Discord's months
+are 30 days and its years 360); Join Method, with Manage Server: the
+invite's code, "Server Discovery", "Bot Invite", "Manual Verification
+(code)" and so on, or "Unknown"; their highest role and "+2" for the rest;
+and Discord's signals, each with its tooltip: timed out, with the time
+left, unusual DMs in the last two days, suspected spam, and a name AutoMod
+quarantined. A row opens the member's profile, and a right click or More
+Options their menu, which acts in the settings' server; once a nickname,
+timeout, kick or ban from it is done, the search runs again.
+
+`POST /guilds/{id}/members-search` finds them as Discord's client does:
+`{"or_query": {}, "and_query": {}, "limit": 250}` for the newest, and the
+search box, 300 ms after typing stops, splits its text at commas into ids,
+17 to 19 digits, for `and_query.user_id` and names for
+`and_query.usernames`; one character searches nothing. Sort chooses
+Discord's four orders, by when members joined the server or Discord,
+newest or oldest first. Discord sends chunks of 250, or 500 with 100 to a
+page; the page sorts what came and shows 12, 25, 50 or 100 a page, with
+"Showing … members of N", and a page past those fetched asks for the next
+chunk, `after` the last member's join time and id. While Discord indexes
+the server it answers 202; Yapfast says "Before searching, we need to
+index this server. Give us a bit.", waits the `retry_after` it gives and
+asks again, three times at most. With no match the page says "No members
+match these search results."; a refused search shows nothing new, as in
+Discord's client.
+
+The page holds the members fetched, and only the page shown has rows and
+asks for avatars. Heap in use (window-control
+`stats`, `measure` builds, the fake's "Server", against Stage 4b's build,
+three runs each): 7.72 to 7.73 MiB on #general, as before; 8.64 with
+Server Profile open (8.54 to 8.61 before, the sidebar's two rows added);
+8.89 to 8.92 on Members with its four members; 9.62 to 9.64 with 250 of
+264 fetched and 12 shown, nearly all of it the 12 new avatars, 64 KB each
+decoded; 8.77 to 8.79 on Invites. Closed after all of them, 8.67 to 8.79
+(8.46 to 8.47 before): the picture cache keeps the avatars seen, up to
+400, as it does everywhere; without the 260 more members, 8.51.
+
+Left out, as with the rest of the plan's: the date, role, signal and join
+method filters, Prune, selecting members to ban several at once, the mod
+view, the count of members who joined since the page opened, and Show
+Members In Channel List.
+
+#### Invites
+
+Invites lists the server's invites from `GET /guilds/{id}/invites`, by
+their inviter's username, as Discord's page does: the inviter's avatar
+and username with the channel under it, the code, the uses, "3" or "3/10",
+when it expires, counting down each second as "DD:HH:MM:SS", or "∞" for
+never, and the first role it gives with "+2" for more. A row's X revokes
+the invite at once with `DELETE /invites/{code}`, without asking, as
+Discord's does. Create Invite Link opens Yapfast's invite dialog for the
+server, and the list asks Discord again once it makes the invite.
+
+Pause Invites, or Enable Invites while they're paused, opens Security
+Actions: a duration of 1 to 24 hours, 2 at first, and the Pause Invites
+and Pause DMs switches as the server has them; Save waits for a change,
+then sends `PUT /guilds/{id}/incident-actions` with
+`invites_disabled_until` and `dms_disabled_until`, the same time that many
+hours on, or `null`, and `lockdown_duration_hours`. Invites are paused
+while the server's `incidents_data` says so, or it has `INVITES_DISABLED`;
+their rows dim. GUILD_UPDATE keeps it current. The questions Discord's
+client asks after resuming go only to its analytics, and are left out.
+
+The fake's "Server" finds its four members, and those `POST
+/_control/members` adds with `{"count": n}`, by name prefix and id, in
+Discord's four orders, `after` a member; each joined their own way, and
+Carol sent unusual DMs. `{"indexing": true}` has its next search answer
+202. It lists Bob's and Carol's invites and those Alice made, revokes them
+with INVITE_DELETE, and pauses with GUILD_UPDATE, all with Manage Server;
+`/_control/guild-reset` puts its invites and pauses back.
 
 #### Safety Setup
 

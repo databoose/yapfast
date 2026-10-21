@@ -700,9 +700,15 @@ pub(super) fn choose(
         return;
     }
     let (room, user) = subjects(&adapter.app.state, &target, person);
-    // A member's choices act in the server of the channel they're in.
+    // A member's choices act in the server of the channel they're in, or
+    // of the settings listing them.
+    #[cfg(feature = "discord")]
+    let listed = adapter.app.member_place(&target).map(str::to_owned);
+    #[cfg(not(feature = "discord"))]
+    let listed = None;
     let place = in_voice
         .map(|(room, _)| room)
+        .or(listed)
         .or_else(|| adapter.app.state.selected.clone());
     let me = adapter.app.state.discord_user.as_deref() == Some(target.as_str());
     let voice = |change| {

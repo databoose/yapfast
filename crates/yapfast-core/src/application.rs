@@ -70,11 +70,12 @@ pub use server_settings::{
     ADD_MEMBERS_LIMIT, AFK_TIMEOUTS, AUDIT_ACTIONS, AUDIT_PAGE, AddMembers, AuditInput, AuditKind,
     AuditLine, AuditLogPage, AuditRow, AuditSpan, AuditWords, BANS_BATCH, BANS_PER_PAGE, BOOSTED,
     BanInput, BansPage, BoostPage, DEFAULT_ROLE_COLOR, DESCRIPTION_LIMIT, EngagementPage,
-    FILTER_ALL, HIGHEST_VERIFICATION, MfaRule, Page as SettingsPage, PermissionGroup,
-    PermissionInfo, PermissionLock, ProfilePage, ROLE_COLORS, ROLE_NAME_LIMIT, ROLE_PERMISSIONS,
-    RoleConfirm, RoleDraft, RoleInput, RoleLock, RoleRules, RoleTab, RolesPage, SETUP_TIPS,
-    SafetyChoice, SafetyPage, ServerSettings, SettingsChoice, SettingsText, SettingsToggle,
-    WELCOME, WELCOME_STICKER,
+    FILTER_ALL, HIGHEST_VERIFICATION, InviteInput, InvitesPage, MEMBER_PAGE_SIZES, MEMBER_SORTS,
+    MEMBERS_CHUNK, MemberInput, MembersPage, MfaRule, PAUSE_HOURS, Page as SettingsPage,
+    PermissionGroup, PermissionInfo, PermissionLock, ProfilePage, ROLE_COLORS, ROLE_NAME_LIMIT,
+    ROLE_PERMISSIONS, RoleConfirm, RoleDraft, RoleInput, RoleLock, RoleRules, RoleTab, RolesPage,
+    SETUP_TIPS, SafetyChoice, SafetyPage, SecurityDraft, ServerSettings, SettingsChoice,
+    SettingsText, SettingsToggle, WELCOME, WELCOME_STICKER,
 };
 pub use threads::{
     NewThread, THREAD_NAME_LIMIT, ThreadFrom, ThreadList, ThreadSearch, ThreadSections,
@@ -1515,6 +1516,10 @@ pub enum Action {
     CloseServerSettings,
     /// Something done on Roles in a server's settings.
     Roles(RoleInput),
+    /// Something done on Members in a server's settings.
+    Members(MemberInput),
+    /// Something done on Invites in a server's settings.
+    Invites(InviteInput),
     /// Something done on Bans in a server's settings.
     Bans(BanInput),
     /// Something done on Audit Log in a server's settings.
@@ -1831,7 +1836,9 @@ fn pictures_on_screen<'a>(
                 ),
                 Some(
                     server_settings::Page::Engagement(_)
+                    | server_settings::Page::Members(_)
                     | server_settings::Page::Roles(_)
+                    | server_settings::Page::Invites(_)
                     | server_settings::Page::Safety(_)
                     | server_settings::Page::AuditLog(_)
                     | server_settings::Page::Bans(_),
@@ -1845,6 +1852,20 @@ fn pictures_on_screen<'a>(
             }
             .into_iter()
             .map(|ban| ban.user.avatar.as_str());
+            // The page of Members shown, and Invites' inviters.
+            let listed = match &settings.page {
+                Some(server_settings::Page::Members(page)) => page.on_page(),
+                _ => &[],
+            }
+            .iter()
+            .map(|member| member.person.avatar.as_str());
+            let inviters = match &settings.page {
+                Some(server_settings::Page::Invites(page)) => page.invites.as_slice(),
+                _ => &[],
+            }
+            .iter()
+            .filter_map(|invite| invite.inviter.as_ref())
+            .map(|inviter| inviter.avatar.as_str());
             // Audit Log's moderators, beside its rows and in its user
             // filter.
             let logged = match &settings.page {
@@ -1880,6 +1901,8 @@ fn pictures_on_screen<'a>(
                 .chain(members)
                 .chain(found)
                 .chain(banned)
+                .chain(listed)
+                .chain(inviters)
                 .chain(moderators)
         }))
         .chain(state.profile_editor.iter().flat_map(|editor| {
@@ -2514,6 +2537,8 @@ impl Application {
             }
             Action::SaveServerSettings => self.save_server_settings(),
             Action::Roles(input) => self.role_input(input),
+            Action::Members(input) => self.member_input(input),
+            Action::Invites(input) => self.invite_input(input),
             Action::Bans(input) => self.ban_input(input),
             Action::AuditLog(input) => self.audit_log_input(input),
             Action::CloseServerSettings => {
@@ -2943,7 +2968,13 @@ impl Application {
                 }
             }
             Event::GroupChanged(result) => self.group_changed(result),
-            Event::InviteMade { room, result } => self.invite_made(room, result),
+            Event::InviteMade { room, result } => {
+                let made = result.is_ok();
+                self.invite_made(room.clone(), result);
+                if made {
+                    return self.invites_after(&room);
+                }
+            }
             Event::InviteSent { result, .. } => self.invite_sent(result),
             Event::InviteResolved { code, result } => return self.invite_resolved(code, result),
             Event::JoinCaptcha { code, page } => return self.join_captcha(code, page),
@@ -3000,6 +3031,19 @@ impl Application {
                 query,
                 result,
             } => self.audit_log_loaded(server, query, result),
+            Event::MembersFound {
+                server,
+                query,
+                result,
+            } => return self.members_found(server, query, result),
+            Event::MembersIndexing { server, query } => self.members_indexing(server, query),
+            Event::InvitesLoaded { server, result } => self.invites_loaded(server, result),
+            Event::InviteRevoked {
+                server,
+                code,
+                result,
+            } => self.invite_revoked(server, code, result),
+            Event::ServerPaused { server, result } => self.server_paused(server, result),
             Event::ServerBan {
                 server,
                 ban,
@@ -3046,7 +3090,11 @@ impl Application {
             Event::PersonSaved(result) => {
                 if let Some(dialog) = &mut self.state.person_dialog {
                     match result {
-                        Ok(()) => self.state.person_dialog = None,
+                        // Members shows the change.
+                        Ok(()) => {
+                            self.state.person_dialog = None;
+                            return self.members_again();
+                        }
                         Err(error) => {
                             dialog.saving = false;
                             dialog.error = Some(error);

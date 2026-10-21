@@ -1923,6 +1923,8 @@ const SERVER_SETTINGS = {
   explicit_content_filter: 0,
   owner: users.bob.id,
   alice_mfa: false,
+  invites_disabled_until: null as string | null,
+  dms_disabled_until: null as string | null,
 };
 const serverSettings = { ...SERVER_SETTINGS };
 const mfa = {
@@ -1935,6 +1937,7 @@ const mfa = {
 };
 function resetGuild() {
   Object.assign(serverSettings, SERVER_SETTINGS);
+  revokedInvites.clear();
   Object.assign(mfa, { on: false, methods: ["totp"], code: "123456" });
   mfa.tickets.clear();
   mfa.tokens.clear();
@@ -2007,6 +2010,7 @@ function guild() {
     system_channel_flags: serverSettings.system_channel_flags,
     afk_channel_id: serverSettings.afk_channel_id,
     afk_timeout: serverSettings.afk_timeout,
+    incidents_data: incidents(),
   };
   return {
     id: GUILD,
@@ -2031,6 +2035,52 @@ function guild() {
     data_mode: "full",
     version: 1,
   };
+}
+
+/** "Server"'s paused invites and DMs, as its `incidents_data`. */
+function incidents() {
+  const { invites_disabled_until, dms_disabled_until } = serverSettings;
+  if (!invites_disabled_until && !dms_disabled_until) return null;
+  return { invites_disabled_until, dms_disabled_until, raid_detected_at: null, dm_spam_detected_at: null };
+}
+
+/** How "Server"'s members joined: when, and Discord's `join_source_type`
+ *  and invite code. */
+const DAY = 86_400_000;
+const memberSources: Record<string, [number, number, string | null]> = {
+  [users.bob.id]: [Date.parse("2026-01-01T09:00:00Z"), 0, null],
+  [ALICE]: [Date.parse(JOINED_AT), 6, "server"],
+  [users.carol.id]: [Date.parse(JOINED_AT) + 14 * DAY, 5, "carol1"],
+  [users.dave.id]: [Date.parse(JOINED_AT) + 30 * DAY, 3, null],
+};
+/** Members added by POST /_control/members. */
+const extraMembers: User[] = [];
+let membersIndexing = false;
+
+/** "Server"'s members as Members searches them. */
+function searchable() {
+  const start = Date.parse(JOINED_AT) + 31 * DAY;
+  return [
+    ...Object.values(users).filter((user) => !removed.has(user.id) && !(user.id === ALICE && leftServer)),
+    ...extraMembers,
+  ].map((user, index) => {
+    const [joined, ...source] = memberSources[user.id] ?? [start + index * 60_000, 5, "fill"];
+    return { user, joined, source: source as [number, string | null] };
+  });
+}
+
+/** Invites to "Server" that others made; Alice's are in `invites`. */
+const revokedInvites = new Set<string>();
+function serverInvites() {
+  const made = Date.parse(JOINED_AT);
+  const others = [
+    { code: "bobinvite", inviter: wireUser(users.bob), max_age: 0, max_uses: 0, uses: 12, created_at: iso(made), roles: [] },
+    { code: "carol1", inviter: wireUser(users.carol), max_age: 604800, max_uses: 10, uses: 3, created_at: iso(Date.now() - DAY), roles: [MODS] },
+  ].map((invite) => ({ ...invite, type: 0, temporary: false, flags: 0, guild_id: GUILD, channel: { id: GENERAL, type: 0, name: "general" } }));
+  const alices = (invites as any[])
+    .filter((invite) => invite.guild_id === GUILD)
+    .map(({ location: _, guild: __, ...invite }) => invite);
+  return [...others, ...alices].filter((invite) => !revokedInvites.has(invite.code));
 }
 
 // --- Filler servers -------------------------------------------------------
@@ -3998,6 +4048,96 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       dispatch("GUILD_ROLE_DELETE", { guild_id: GUILD, role_id: role.id });
       return empty();
     }
+  }
+
+  // Members in Server Settings: POST /guilds/{id}/members-search finds
+// "Server"'s members by `and_query.usernames` (a prefix of the username,
+// global name or nickname) and `and_query.user_id`, in Discord's `sort`,
+// `limit` at a time `after` a member's join time and id, with how each
+// joined, as any of Manage Server, Kick, Ban, Timeout, Manage Roles and
+// Manage Nicknames allows. POST /_control/members with `{"count": n}`
+// adds n members who joined by invite, 0 taking them away again, and
+// `{"indexing": true}` has the next search answer 202 while Discord
+// "indexes" the server.
+  if ((m = path.match(/^\/guilds\/(\d+)\/members-search$/)) && method === "POST") {
+    if (m[1] !== GUILD) return notFound("Unknown Guild", 10004);
+    if (![1, 2, 5, 27, 28, 40].some((bit) => aliceMay(bit))) {
+      return json({ message: "Missing Permissions", code: 50013 }, 403);
+    }
+    if (membersIndexing) {
+      membersIndexing = false;
+      return json({ message: "Index not yet available. Try this again later", code: 110000, documents_indexed: 0, retry_after: 0.2 }, 202);
+    }
+    const body: any = await req.json().catch(() => ({}));
+    const and = body.and_query ?? {};
+    const names: string[] = (and.usernames?.or_query ?? []).map((name: string) => name.toLowerCase());
+    const ids: string[] = and.user_id?.or_query ?? [];
+    const found = searchable().filter(({ user }) => {
+      const named = [user.username, user.global_name, memberNicks.get(user.id)]
+        .some((name) => name && names.some((prefix) => name.toLowerCase().startsWith(prefix)));
+      // Both, as `and_query` has it, each any of its terms.
+      return (names.length === 0 || named) && (ids.length === 0 || ids.includes(user.id));
+    });
+    const sort = Number(body.sort) || 1;
+    const order = (a: { user: User; joined: number }, b: { user: User; joined: number }) => {
+      const byId = BigInt(a.user.id) < BigInt(b.user.id) ? -1 : BigInt(a.user.id) > BigInt(b.user.id) ? 1 : 0;
+      const byJoin = a.joined - b.joined || byId;
+      return sort === 2 ? byJoin : sort === 3 ? -byId : sort === 4 ? byId : -byJoin;
+    };
+    found.sort(order);
+    const after = body.after
+      ? { user: { id: String(body.after.user_id) } as User, joined: Number(body.after.guild_joined_at) }
+      : null;
+    const limit = Math.min(Math.max(Number(body.limit) || 25, 1), 1000);
+    const page = found.filter((one) => !after || order(one, after) > 0).slice(0, limit);
+    return json({
+      guild_id: GUILD,
+      members: page.map(({ user, joined, source }) => ({
+        member: {
+          ...member(user),
+          joined_at: iso(joined),
+          unusual_dm_activity_until: user.id === users.carol.id ? iso(Date.now() - 3_600_000) : null,
+        },
+        join_source_type: source[0],
+        source_invite_code: source[1],
+        inviter_id: null,
+        integration_type: null,
+      })),
+      page_result_count: page.length,
+      total_result_count: found.length,
+    });
+  }
+
+  // Invites in Server Settings: GET /guilds/{id}/invites lists "Server"'s
+  // invites, Bob's and Carol's and those Alice made, and DELETE
+  // /invites/{code} revokes one, sending INVITE_DELETE, both with Manage
+  // Server. PUT /guilds/{id}/incident-actions pauses invites and DMs until
+  // a time, or resumes them, sending GUILD_UPDATE with `incidents_data`.
+  if ((m = path.match(/^\/guilds\/(\d+)\/invites$/)) && method === "GET") {
+    if (m[1] !== GUILD) return notFound("Unknown Guild", 10004);
+    if (!aliceMay(5)) return json({ message: "Missing Permissions", code: 50013 }, 403);
+    return json(serverInvites());
+  }
+  if ((m = path.match(/^\/invites\/([\w-]+)$/)) && method === "DELETE") {
+    const code = m[1]!;
+    const listed = serverInvites().find((invite: any) => invite.code === code) as any;
+    if (!listed) return notFound("Unknown Invite", 10006);
+    if (!aliceMay(5)) return json({ message: "Missing Permissions", code: 50013 }, 403);
+    revokedInvites.add(code);
+    logAudit(42, null, { changes: [{ key: "code", old_value: code }] });
+    dispatch("INVITE_DELETE", { channel_id: listed.channel.id, guild_id: GUILD, code });
+    return json(listed);
+  }
+  if ((m = path.match(/^\/guilds\/(\d+)\/incident-actions$/)) && method === "PUT") {
+    if (m[1] !== GUILD) return notFound("Unknown Guild", 10004);
+    if (!aliceMay(5)) return json({ message: "Missing Permissions", code: 50013 }, 403);
+    const body: any = await req.json().catch(() => ({}));
+    const until = (value: unknown) => (typeof value === "string" && !Number.isNaN(Date.parse(value)) ? value : null);
+    serverSettings.invites_disabled_until = until(body.invites_disabled_until);
+    serverSettings.dms_disabled_until = until(body.dms_disabled_until);
+    const { properties } = guild();
+    dispatch("GUILD_UPDATE", { ...properties, roles: serverRoles, emojis: guild().emojis });
+    return json(incidents() ?? {});
   }
 
   // "Server" itself: Engagement and Boost Perks in Server Settings. A
@@ -6404,6 +6544,19 @@ const server = Bun.serve<SocketData>({
         logAudit(72, users.dave.id, { options: { channel_id: GENERAL, count: "1" } }, users.bob.id, start + n * 60_000);
       }
       return new Response(`${auditEntries.length} entries\n`);
+    }
+    if (req.method === "POST" && path === "/_control/members") {
+      const body: any = await req.json().catch(() => ({}));
+      if (body.indexing === true) membersIndexing = true;
+      if (body.count !== undefined) {
+        const count = Number(body.count) || 0;
+        if (count === 0) extraMembers.length = 0;
+        for (let n = 0; n < count; n++) {
+          const index = extraMembers.length + 1;
+          extraMembers.push({ id: String(1300000000000000000n + BigInt(index) * 4194304000n), username: `member_${index}`, global_name: null, avatar: null });
+        }
+      }
+      return new Response(`${searchable().length} members\n`);
     }
     if (req.method === "POST" && path === "/_control/audit-reset") {
       seedAudit();

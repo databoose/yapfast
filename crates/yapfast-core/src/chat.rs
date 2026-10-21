@@ -2070,6 +2070,56 @@ pub enum DiscordCommand {
         server: String,
         query: AuditQuery,
     },
+    /// A chunk of a Discord server's members, as Members searches them;
+    /// [`Event::MembersFound`] follows, after [`Event::MembersIndexing`]
+    /// while Discord indexes the server.
+    Members {
+        server: String,
+        query: MembersQuery,
+    },
+    /// What Invites asks of Discord; [`Event::InvitesLoaded`],
+    /// [`Event::InviteRevoked`] or [`Event::ServerPaused`] follows.
+    Invites {
+        server: String,
+        action: InvitesAction,
+    },
+}
+
+/// Which members Members asks Discord for: those named like `text`, in an
+/// order, Discord's `sort`, 0 for its own, after a member's join time in
+/// Unix milliseconds and user id, `limit` at most, 0 for Discord's chunk of
+/// 250.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MembersQuery {
+    pub text: String,
+    pub sort: u8,
+    pub after: Option<(u64, String)>,
+    pub limit: usize,
+}
+
+impl MembersQuery {
+    /// How many Discord is asked for.
+    pub fn chunk(&self) -> usize {
+        if self.limit == 0 {
+            crate::application::MEMBERS_CHUNK
+        } else {
+            self.limit
+        }
+    }
+}
+
+/// What Invites asks of Discord.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InvitesAction {
+    /// The list again, as after making one.
+    Reload,
+    Revoke(String),
+    /// Pause invites, DMs or both for some hours, or resume both.
+    Pause {
+        invites: bool,
+        dms: bool,
+        hours: u8,
+    },
 }
 
 /// What Bans asks of Discord.
@@ -2133,7 +2183,9 @@ pub enum SettingsSection {
     Profile,
     Engagement,
     BoostPerks,
+    Members,
     Roles,
+    Invites,
     Safety,
     AuditLog,
     Bans,
@@ -2161,6 +2213,18 @@ pub enum ServerSettingsPage {
     Bans(Vec<Ban>),
     /// The audit log's newest page.
     AuditLog(AuditLog),
+    /// The newest members, as Members first finds them, and how many there
+    /// are in all.
+    Members {
+        members: Vec<ListedMember>,
+        total: Option<u64>,
+    },
+    /// The server's invites, and its settings, which say whether invites
+    /// are paused.
+    Invites {
+        invites: Vec<ServerInvite>,
+        settings: GuildSettings,
+    },
 }
 
 /// A page of a Discord server's audit log, as Discord sends it: its
@@ -2312,6 +2376,60 @@ pub enum OverwriteChange {
     Sync(Vec<ChannelOverwrite>),
 }
 
+/// A member as Members lists them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedMember {
+    /// Their name here, username and avatar.
+    pub person: RoleMember,
+    pub roles: Vec<String>,
+    /// When they joined the server, in Unix milliseconds.
+    pub joined: u64,
+    /// Until when they're timed out, in Unix milliseconds; 0 for not.
+    pub timed_out_until: u64,
+    /// Discord's safety signals: unusual DMs lately, an account it
+    /// suspects of spam, a name AutoMod quarantined.
+    pub unusual_dms: bool,
+    pub spammer: bool,
+    pub quarantined: bool,
+    pub joined_by: JoinMethod,
+}
+
+/// How a member joined a server, as Members' Join Method shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum JoinMethod {
+    #[default]
+    Unknown,
+    Bot,
+    /// An integration, such as `twitch` or `youtube`.
+    Integration(Option<String>),
+    Discovery,
+    Hub,
+    /// An invite's code.
+    Invite(String),
+    Vanity(String),
+    /// Manual verification, with the invite's code if any.
+    Manual(Option<String>),
+    LinkedChannel,
+}
+
+/// An invite to a Discord server, as Invites lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerInvite {
+    pub code: String,
+    pub inviter: Option<RoleMember>,
+    /// The channel it leads to, as `#name`.
+    pub channel: String,
+    pub uses: u64,
+    /// Its limit, 0 for none.
+    pub max_uses: u64,
+    /// When it expires, in Unix seconds; none for never.
+    pub expires: Option<u64>,
+    /// The roles it gives, by id.
+    pub roles: Vec<String>,
+    /// New members skip join applications.
+    pub bypass: bool,
+}
+
 /// A member holding a role, as Manage Members lists them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoleMember {
@@ -2352,6 +2470,9 @@ pub struct GuildSettings {
     pub verification_level: u8,
     pub explicit_content_filter: u8,
     pub mfa_level: u8,
+    /// When paused invites and DMs resume, in Unix seconds.
+    pub invites_paused_until: Option<u64>,
+    pub dms_paused_until: Option<u64>,
 }
 
 impl GuildSettings {
@@ -2828,6 +2949,35 @@ pub enum Event {
         server: String,
         query: AuditQuery,
         result: Result<AuditLog, String>,
+    },
+    /// The members [`DiscordCommand::Members`] asked for, and how many
+    /// match in all, or why Discord didn't send them.
+    MembersFound {
+        server: String,
+        query: MembersQuery,
+        result: Result<(Vec<ListedMember>, Option<u64>), String>,
+    },
+    /// Discord is indexing the server before it can search its members.
+    MembersIndexing {
+        server: String,
+        query: MembersQuery,
+    },
+    /// A server's invites again, or why not.
+    InvitesLoaded {
+        server: String,
+        result: Result<Vec<ServerInvite>, String>,
+    },
+    /// Whether Discord revoked an invite.
+    InviteRevoked {
+        server: String,
+        code: String,
+        result: Result<(), String>,
+    },
+    /// When a server's paused invites and DMs now resume, or why Discord
+    /// didn't pause or resume them.
+    ServerPaused {
+        server: String,
+        result: Result<(Option<u64>, Option<u64>), String>,
     },
     /// Whether Discord lifted a user's ban, or why not.
     Unbanned {

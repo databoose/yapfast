@@ -87,12 +87,30 @@ impl Application {
         vec![]
     }
 
-    /// The open channel, when someone's menu there is a Discord server
-    /// member's: a channel of a known server, and a Discord user.
+    /// Where someone's menu is a Discord server member's: the server whose
+    /// Members is open in its settings, else the open channel of a known
+    /// server; for a Discord user.
     #[cfg(feature = "discord")]
-    pub(super) fn member_place(&self, user: &str) -> Option<&str> {
+    pub fn member_place(&self, user: &str) -> Option<&str> {
+        if let Some(settings) = self.state.server_settings.as_ref() {
+            let place = settings.server.as_str();
+            let members = matches!(settings.page, Some(SettingsPage::Members(_)));
+            return (members && self.is_member_place(place, user)).then_some(place);
+        }
         let place = self.state.selected.as_deref()?;
         (self.state.discord_server_open() && self.is_member_place(place, user)).then_some(place)
+    }
+
+    /// Someone as the open Members of a server's settings lists them.
+    #[cfg(feature = "discord")]
+    fn listed_member(&self, place: &str, user: &str) -> Option<&crate::chat::ListedMember> {
+        let settings = self.state.server_settings.as_ref()?;
+        let Some(SettingsPage::Members(page)) = settings.page.as_ref() else {
+            return None;
+        };
+        let (server, _, _) = self.discord_place(place)?;
+        (discord::server_id(&server.id) == settings.server)
+            .then(|| page.members.iter().find(|member| member.person.id == user))?
     }
 
     /// Whether someone's menu in `place` is a Discord server member's.
@@ -162,9 +180,11 @@ impl Application {
         let me = state.relation(user) == Relation::Me;
         let mut choices = vec![MenuChoice::Profile];
         if !me {
-            if state
-                .selected_room()
-                .is_some_and(|room| state.writable(room))
+            // Not from a server's settings, which cover the channel.
+            if state.server_settings.is_none()
+                && state
+                    .selected_room()
+                    .is_some_and(|room| state.writable(room))
             {
                 choices.push(MenuChoice::Mention);
             }
@@ -261,6 +281,10 @@ impl Application {
         known
             .or_else(|| (user == me).then(|| server.my_roles.as_slice().into()))
             .or_else(|| self.state.person(user).map(|person| person.roles))
+            .or_else(|| {
+                self.listed_member(place, user)
+                    .map(|member| member.roles.as_slice().into())
+            })
             .unwrap_or_default()
     }
 
@@ -279,6 +303,10 @@ impl Application {
                 self.state
                     .person(user)
                     .and_then(|person| person.timed_out_until)
+            })
+            .or_else(|| {
+                self.listed_member(place, user)
+                    .map(|member| member.timed_out_until)
             });
         until.is_some_and(|until| until > crate::clock::now_ms())
     }

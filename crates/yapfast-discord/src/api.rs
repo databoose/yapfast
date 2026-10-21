@@ -92,6 +92,14 @@ pub const THREAD_PAGE: u32 = 25;
 /// batch this full may have more after it.
 pub const BANS_PAGE: usize = 1000;
 
+/// What a members search gave: Discord's answer, or the seconds to wait
+/// while it indexes the server.
+#[derive(Debug)]
+pub enum MembersSearch {
+    Found(Value),
+    Indexing(f64),
+}
+
 /// How many audit log entries Audit Log fetches at a time, as Discord's
 /// client does; a page this full may have older ones.
 pub const AUDIT_PAGE: usize = 50;
@@ -1233,6 +1241,52 @@ impl Api {
             path.push_str(&format!("&action_type={action}"));
         }
         self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Members of a server as Members in its settings searches them, a
+    /// chunk at a time: `body` is Discord's `members-search` query. Discord
+    /// answers 202 while it indexes the server, with how many seconds to
+    /// wait before asking again.
+    pub async fn search_members(&self, guild: &str, body: &Value) -> Result<MembersSearch> {
+        let path = format!("/guilds/{guild}/members-search");
+        let response = self
+            .execute(with_json(self.request(Method::POST, &path), body))
+            .await?;
+        let indexing = response.status() == StatusCode::ACCEPTED;
+        let body = response
+            .bytes()
+            .await
+            .context("could not read Discord's answer")?;
+        let body: Value =
+            serde_json::from_slice(&body).context("could not understand Discord's answer")?;
+        Ok(if indexing {
+            MembersSearch::Indexing(body["retry_after"].as_f64().unwrap_or(5.0))
+        } else {
+            MembersSearch::Found(body)
+        })
+    }
+
+    /// A server's invites, as Invites in its settings lists them; it takes
+    /// Manage Server.
+    pub async fn guild_invites(&self, guild: &str) -> Result<Value> {
+        let path = format!("/guilds/{guild}/invites");
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Revokes an invite, as Invites' X does.
+    pub async fn revoke_invite(&self, code: &str) -> Result<()> {
+        let path = format!("/invites/{}", encode(code));
+        self.empty(self.request(Method::DELETE, &path)).await
+    }
+
+    /// Pauses a server's invites or DMs until a time, or resumes them, as
+    /// Security Actions does: `body` has `invites_disabled_until`,
+    /// `dms_disabled_until` and `lockdown_duration_hours`. Discord answers
+    /// with the server's `incidents_data`, and GUILD_UPDATE.
+    pub async fn incident_actions(&self, guild: &str, body: &Value) -> Result<Value> {
+        let path = format!("/guilds/{guild}/incident-actions");
+        self.json(with_json(self.request(Method::PUT, &path), body))
+            .await
     }
 
     /// Whether a server's moderators need two-factor authentication, 1, or

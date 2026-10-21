@@ -44,6 +44,7 @@ mod gifs;
 mod open_channel;
 mod overwrites;
 mod own_profile;
+mod people;
 mod render;
 mod roles;
 mod server_settings;

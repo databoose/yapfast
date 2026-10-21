@@ -5,12 +5,16 @@
 use yapfast_core::{
     application::{
         AFK_TIMEOUTS, AUDIT_ACTIONS, AuditInput, AuditKind, AuditLogPage, AuditSpan, AuditWords,
-        BOOSTED, BanInput, BansPage, DEFAULT_ROLE_COLOR, MfaRule, PermissionLock, PictureEdit,
-        ROLE_COLORS, ROLE_PERMISSIONS, RoleConfirm, RoleInput, RoleLock, RoleRules, RoleTab,
-        RolesPage, SETUP_TIPS, SafetyChoice, SafetyPage, SettingsChoice, SettingsPage,
+        BOOSTED, BanInput, BansPage, DEFAULT_ROLE_COLOR, InviteInput, InvitesPage,
+        MEMBER_PAGE_SIZES, MemberInput, MembersPage, MfaRule, PAUSE_HOURS, PermissionLock,
+        PictureEdit, ROLE_COLORS, ROLE_PERMISSIONS, RoleConfirm, RoleInput, RoleLock, RoleRules,
+        RoleTab, RolesPage, SETUP_TIPS, SafetyChoice, SafetyPage, SettingsChoice, SettingsPage,
         SettingsText, SettingsToggle, WELCOME, WELCOME_STICKER,
     },
-    chat::{MfaMethod, RoleManager, RoleMember, ServerPicture, SettingsSection},
+    chat::{
+        JoinMethod, MfaMethod, Permission, RoleManager, RoleMember, ServerPicture, ServerRole,
+        SettingsSection,
+    },
 };
 
 use super::{messages::escape_markdown, *};
@@ -26,6 +30,8 @@ fn section_id(section: SettingsSection) -> i32 {
         SettingsSection::Safety => 4,
         SettingsSection::Bans => 5,
         SettingsSection::AuditLog => 6,
+        SettingsSection::Members => 7,
+        SettingsSection::Invites => 8,
     }
 }
 
@@ -38,6 +44,8 @@ fn section(id: i32) -> Option<SettingsSection> {
         4 => Some(SettingsSection::Safety),
         5 => Some(SettingsSection::Bans),
         6 => Some(SettingsSection::AuditLog),
+        7 => Some(SettingsSection::Members),
+        8 => Some(SettingsSection::Invites),
         _ => None,
     }
 }
@@ -115,18 +123,23 @@ impl Adapter {
             text: name.to_uppercase().into(),
             ..Default::default()
         }];
-        let mut moderation = false;
+        let mut group = "";
         for section in self.app.settings_sections(&settings.server) {
-            // Safety Setup, Audit Log and Bans under Discord's Moderation.
-            let moderating = matches!(
-                section,
-                SettingsSection::Safety | SettingsSection::AuditLog | SettingsSection::Bans
-            );
-            if moderating && !moderation {
-                moderation = true;
+            // Under Discord's People and Moderation.
+            let heading = match section {
+                SettingsSection::Members | SettingsSection::Roles | SettingsSection::Invites => {
+                    "PEOPLE"
+                }
+                SettingsSection::Safety | SettingsSection::AuditLog | SettingsSection::Bans => {
+                    "MODERATION"
+                }
+                _ => "",
+            };
+            if heading != group {
+                group = heading;
                 rows.push(SettingsRow {
                     heading: true,
-                    text: "MODERATION".into(),
+                    text: heading.into(),
                     ..Default::default()
                 });
             }
@@ -134,15 +147,9 @@ impl Adapter {
                 SettingsSection::Profile => ("Server Profile", &self.icons.edit),
                 SettingsSection::Engagement => ("Engagement", &self.icons.unmute),
                 SettingsSection::BoostPerks => ("Boost Perks", &self.icons.pin),
-                SettingsSection::Roles => {
-                    // Under Discord's People.
-                    rows.push(SettingsRow {
-                        heading: true,
-                        text: "PEOPLE".into(),
-                        ..Default::default()
-                    });
-                    ("Roles", &self.icons.roles)
-                }
+                SettingsSection::Members => ("Members", &self.icons.members),
+                SettingsSection::Roles => ("Roles", &self.icons.roles),
+                SettingsSection::Invites => ("Invites", &self.icons.invites),
                 SettingsSection::Safety => ("Safety Setup", &self.icons.lock),
                 SettingsSection::AuditLog => ("Audit Log", &self.icons.history),
                 SettingsSection::Bans => ("Bans", &self.icons.ban),
@@ -275,6 +282,16 @@ impl Adapter {
             }
             Some(SettingsPage::AuditLog(page)) => {
                 prompt.audit_log = audit_log_prompt(page, self.layout.twelve_hour_clock);
+            }
+            Some(SettingsPage::Members(page)) => {
+                let roles = self.app.server_roles(&settings.server);
+                let join_method = self.app.may(&settings.server, Permission::ManageServer);
+                prompt.members = members_prompt(page, &roles, join_method);
+            }
+            Some(SettingsPage::Invites(page)) => {
+                let roles = self.app.server_roles(&settings.server);
+                let may_create = self.app.may(&settings.server, Permission::CreateInvite);
+                prompt.invites = invites_prompt(page, &roles, may_create);
             }
             None => {}
         }
@@ -655,6 +672,36 @@ fn keep_lists(old: &ServerSettingsPrompt, new: &mut ServerSettingsPrompt) {
     keep!(audit_log.lines);
     keep!(audit_log.users);
     keep!(audit_log.actions);
+    new.members.rows = same_rows(&old.members.rows, new.members.rows.clone(), |row| {
+        row.id.clone()
+    });
+    new.invites.rows = same_rows(&old.invites.rows, new.invites.rows.clone(), |row| {
+        row.code.clone()
+    });
+}
+
+/// Keeps a list showing the same rows, by `key`, in the same order, and
+/// changes in place those that differ: Members' and Invites' times follow
+/// the clock, and a new list on every refresh would make every row again.
+fn same_rows<T: Clone + PartialEq + 'static, K: PartialEq>(
+    old: &ModelRc<T>,
+    new: ModelRc<T>,
+    key: impl Fn(&T) -> K,
+) -> ModelRc<T> {
+    let same = old.row_count() == new.row_count()
+        && old
+            .iter()
+            .zip(new.iter())
+            .all(|(old, new)| key(&old) == key(&new));
+    if !same {
+        return new;
+    }
+    for (index, row) in new.iter().enumerate() {
+        if old.row_data(index).as_ref() != Some(&row) {
+            old.set_row_data(index, row);
+        }
+    }
+    old.clone()
 }
 
 /// Discord's colours for the verification levels and content filters.
@@ -819,6 +866,244 @@ fn bans_prompt(page: &BansPage, may_unban: bool) -> BansPrompt {
         prompt.unbanning = page.unbanning;
     }
     prompt
+}
+
+/// A member's or an invite's roles as a chip shows them: the highest, its
+/// colour, and "+2" for the rest, of those the server lists.
+fn role_chip(held: &[String], roles: &[ServerRole]) -> (SharedString, slint::Color, SharedString) {
+    let mut known = roles.iter().filter(|role| held.contains(&role.id));
+    let Some(first) = known.next() else {
+        return Default::default();
+    };
+    let more = known.count();
+    (
+        first.name.as_str().into(),
+        role_color(first.color.unwrap_or_default()),
+        if more > 0 {
+            format!("+{more}").into()
+        } else {
+            SharedString::default()
+        },
+    )
+}
+
+/// How long ago, as Discord's Members words it: `account` for Joined
+/// Discord, which counts in days at least.
+fn ago(seconds: u64, account: bool) -> String {
+    let plural = |count: u64, one: &str, other: &str| {
+        format!("{count} {} ago", if count == 1 { one } else { other })
+    };
+    const DAY: u64 = 86_400;
+    match seconds {
+        0..DAY if account => "<1 day ago".to_owned(),
+        0..60 => "just now".to_owned(),
+        60..3_600 => plural(seconds / 60, "min", "mins"),
+        3_600..DAY => plural(seconds / 3_600, "hr", "hrs"),
+        // Discord's months are 30 days, and its years 360.
+        DAY..2_592_000 => plural(seconds / DAY, "day", "days"),
+        2_592_000..31_104_000 => plural(seconds / 2_592_000, "month", "months"),
+        _ => plural(seconds / 31_104_000, "year", "years"),
+    }
+}
+
+/// The time left, as Discord's timeout tooltip counts it: "2h 3m 10s".
+fn time_left(seconds: u64) -> String {
+    let parts = [
+        (seconds / 86_400, "d"),
+        (seconds / 3_600 % 24, "h"),
+        (seconds / 60 % 60, "m"),
+        (seconds % 60, "s"),
+    ];
+    let first = parts.iter().position(|(count, _)| *count > 0).unwrap_or(3);
+    parts[first..]
+        .iter()
+        .map(|(count, unit)| format!("{count}{unit}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// How a member joined, as Members' Join Method names it, and whether
+/// Discord doesn't say.
+fn join_method(joined: &JoinMethod) -> (String, bool) {
+    let label = match joined {
+        JoinMethod::Unknown => return ("Unknown".to_owned(), true),
+        JoinMethod::Bot => "Bot Invite".to_owned(),
+        JoinMethod::Integration(kind) => match kind.as_deref() {
+            Some("twitch") => "Twitch (Integration)".to_owned(),
+            Some("youtube") => "YouTube (Integration)".to_owned(),
+            _ => "Integration".to_owned(),
+        },
+        JoinMethod::Discovery => "Server Discovery".to_owned(),
+        JoinMethod::Hub => "Student Hub".to_owned(),
+        JoinMethod::Invite(code) | JoinMethod::Vanity(code) => code.clone(),
+        JoinMethod::Manual(Some(code)) => format!("Manual Verification ({code})"),
+        JoinMethod::Manual(None) => "Manual Verification".to_owned(),
+        JoinMethod::LinkedChannel => "Linked Channel".to_owned(),
+    };
+    (label, false)
+}
+
+/// Members, a page of them; `roles` are the server's, highest first.
+fn members_prompt(page: &MembersPage, roles: &[ServerRole], join_method: bool) -> MembersPrompt {
+    let now = clock::now_ms();
+    let rows: Vec<ListedMemberRow> = page
+        .on_page()
+        .iter()
+        .map(|member| {
+            let person = &member.person;
+            let (role, role_color_, more_roles) = role_chip(&member.roles, roles);
+            // Discord colours a name by its highest coloured role.
+            let name_color = roles
+                .iter()
+                .filter(|role| member.roles.contains(&role.id))
+                .find_map(|role| role.color.filter(|color| *color != 0))
+                .map_or(slint::Color::default(), role_color);
+            let created = person
+                .id
+                .parse::<u64>()
+                .map_or(now, |id| (id >> 22) + 1_420_070_400_000);
+            let (join, join_unknown) = self::join_method(&member.joined_by);
+            ListedMemberRow {
+                id: person.id.as_str().into(),
+                name: person.name.as_str().into(),
+                username: person.username.as_deref().unwrap_or_default().into(),
+                avatar_url: person.avatar.as_str().into(),
+                initial: initials(&person.name),
+                name_color,
+                since: ago(now.saturating_sub(member.joined) / 1000, false).into(),
+                age: ago(now.saturating_sub(created) / 1000, true).into(),
+                join: join.into(),
+                join_unknown,
+                role,
+                role_color: role_color_,
+                more_roles,
+                timed_out: if member.timed_out_until > now {
+                    let left = (member.timed_out_until - now).div_ceil(1000);
+                    format!("Timed out for {}", time_left(left)).into()
+                } else {
+                    SharedString::default()
+                },
+                unusual_dms: member.unusual_dms,
+                spammer: member.spammer,
+                quarantined: member.quarantined,
+            }
+        })
+        .collect();
+    let empty = page.members.is_empty() && page.fetching();
+    MembersPrompt {
+        rows: ModelRc::new(VecModel::from(rows)),
+        searched: page.searched(),
+        sort: i32::from(page.sort) - 1,
+        page: i32::try_from(page.page).unwrap_or_default(),
+        pages: i32::try_from(page.pages()).unwrap_or_default(),
+        page_size: MEMBER_PAGE_SIZES
+            .iter()
+            .position(|size| *size == page.page_size)
+            .map_or(0, |index| i32::try_from(index).unwrap_or_default()),
+        count: if empty {
+            "...".into()
+        } else {
+            page.count().to_string().into()
+        },
+        total: i32::try_from(page.count()).unwrap_or(i32::MAX),
+        fetching: page.fetching(),
+        indexing: page.indexing,
+        join_method,
+    }
+}
+
+/// What Members sent: what was done, with a text or a number.
+fn member_input(what: i32, text: SharedString, number: i32) -> Option<Action> {
+    let index = usize::try_from(number).ok();
+    Some(match what {
+        0 => Action::Members(MemberInput::Search(text.into())),
+        1 => Action::Members(MemberInput::Sort(u8::try_from(number + 1).ok()?)),
+        2 => Action::Members(MemberInput::Page(index?)),
+        3 => Action::Members(MemberInput::PageSize(*MEMBER_PAGE_SIZES.get(index?)?)),
+        4 => Action::ShowProfile {
+            user: text.into(),
+            large: true,
+        },
+        _ => return None,
+    })
+}
+
+/// Invites, and Security Actions while it's open.
+fn invites_prompt(page: &InvitesPage, roles: &[ServerRole], may_create: bool) -> InvitesPrompt {
+    let now = clock::now_ms() / 1000;
+    let rows: Vec<InviteRow> = page
+        .invites
+        .iter()
+        .map(|invite| {
+            // Discord's list names the inviter by their username.
+            let inviter = invite
+                .inviter
+                .as_ref()
+                .map(|inviter| inviter.username.as_deref().unwrap_or(&inviter.name))
+                .unwrap_or_default();
+            let (role, role_color, more_roles) = role_chip(&invite.roles, roles);
+            InviteRow {
+                code: invite.code.as_str().into(),
+                inviter: inviter.into(),
+                avatar_url: invite
+                    .inviter
+                    .as_ref()
+                    .map(|inviter| inviter.avatar.as_str())
+                    .unwrap_or_default()
+                    .into(),
+                initial: initials(inviter),
+                channel: invite.channel.as_str().into(),
+                uses: if invite.max_uses > 0 {
+                    format!("{}/{}", invite.uses, invite.max_uses)
+                } else {
+                    invite.uses.to_string()
+                }
+                .into(),
+                expires_in: invite.expires.map_or(-1, |expires| {
+                    i32::try_from(expires.saturating_sub(now)).unwrap_or(i32::MAX)
+                }),
+                role,
+                role_color,
+                more_roles,
+            }
+        })
+        .collect();
+    let mut prompt = InvitesPrompt {
+        rows: ModelRc::new(VecModel::from(rows)),
+        counted: i32::try_from(now % (1 << 30)).unwrap_or_default(),
+        paused: page.paused(now),
+        may_create,
+        ..Default::default()
+    };
+    if let Some(draft) = &page.security {
+        prompt.security = true;
+        prompt.hours = PAUSE_HOURS
+            .iter()
+            .position(|hours| *hours == draft.hours)
+            .map_or(1, |index| i32::try_from(index).unwrap_or_default());
+        prompt.pause_invites = draft.invites;
+        prompt.pause_dms = draft.dms;
+        prompt.may_save = draft.changed();
+        prompt.saving = draft.saving;
+        prompt.security_error = draft.error.as_deref().unwrap_or_default().into();
+    }
+    prompt
+}
+
+/// What Invites and Security Actions sent: what was done, with a text or a
+/// number.
+fn invite_input(what: i32, text: SharedString, number: i32) -> Option<InviteInput> {
+    Some(match what {
+        0 => InviteInput::Revoke(text.into()),
+        1 => InviteInput::Create,
+        2 => InviteInput::Security,
+        3 => InviteInput::Hours(*PAUSE_HOURS.get(usize::try_from(number).ok()?)?),
+        4 => InviteInput::PauseInvites,
+        5 => InviteInput::PauseDms,
+        6 => InviteInput::SaveSecurity,
+        7 => InviteInput::CloseSecurity,
+        _ => return None,
+    })
 }
 
 /// What Bans sent: what was done, with a text or a number.
@@ -1032,6 +1317,8 @@ pub(super) fn bind(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
     act!(on_remove_server_picture(kind) => Some(Action::RemoveServerPicture(picture(kind))));
     act!(on_role_input(what, text, number) => role_input(what, text, number).map(Action::Roles));
     act!(on_ban_input(what, text, number) => ban_input(what, text, number).map(Action::Bans));
+    act!(on_members_input(what, text, number) => member_input(what, text, number));
+    act!(on_invites_input(what, text, number) => invite_input(what, text, number).map(Action::Invites));
     {
         let state = adapter.clone();
         let weak = window.as_weak();

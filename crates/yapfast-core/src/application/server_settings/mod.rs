@@ -18,6 +18,9 @@ mod audit_log;
 mod bans;
 mod boost;
 mod engagement;
+mod invites;
+mod members;
+mod people_input;
 mod permissions;
 mod profile;
 mod role_input;
@@ -32,6 +35,8 @@ pub use audit_log::{
 pub use bans::{BANS_BATCH, BANS_PER_PAGE, BanInput, BansPage};
 pub use boost::BoostPage;
 pub use engagement::{AFK_TIMEOUTS, BOOSTED, EngagementPage, SETUP_TIPS, WELCOME, WELCOME_STICKER};
+pub use invites::{InviteInput, InvitesPage, PAUSE_HOURS, SecurityDraft};
+pub use members::{MEMBER_PAGE_SIZES, MEMBER_SORTS, MEMBERS_CHUNK, MemberInput, MembersPage};
 pub use permissions::{PermissionGroup, PermissionInfo, ROLE_PERMISSIONS};
 pub use profile::{DESCRIPTION_LIMIT, ProfilePage, SettingsText};
 pub use role_input::RoleInput;
@@ -66,7 +71,9 @@ pub enum Page {
     Profile(ProfilePage),
     Engagement(EngagementPage),
     BoostPerks(BoostPage),
+    Members(Box<MembersPage>),
     Roles(Box<RolesPage>),
+    Invites(Box<InvitesPage>),
     Safety(SafetyPage),
     AuditLog(Box<AuditLogPage>),
     Bans(Box<BansPage>),
@@ -114,7 +121,11 @@ impl ServerSettings {
             Page::BoostPerks(page) => page.change(),
             Page::Roles(page) => page.change(),
             // Saved as they're made, as in Discord's client.
-            Page::Safety(_) | Page::AuditLog(_) | Page::Bans(_) => None,
+            Page::Members(_)
+            | Page::Invites(_)
+            | Page::Safety(_)
+            | Page::AuditLog(_)
+            | Page::Bans(_) => None,
         }
     }
 
@@ -122,7 +133,11 @@ impl ServerSettings {
     pub fn immediate(&self) -> bool {
         matches!(
             self.section,
-            SettingsSection::Safety | SettingsSection::AuditLog | SettingsSection::Bans
+            SettingsSection::Members
+                | SettingsSection::Invites
+                | SettingsSection::Safety
+                | SettingsSection::AuditLog
+                | SettingsSection::Bans
         )
     }
 
@@ -133,6 +148,8 @@ impl ServerSettings {
             Page::Roles(page) => page.problem(),
             Page::Engagement(_)
             | Page::BoostPerks(_)
+            | Page::Members(_)
+            | Page::Invites(_)
             | Page::Safety(_)
             | Page::AuditLog(_)
             | Page::Bans(_) => None,
@@ -161,8 +178,23 @@ impl Application {
                 SettingsSection::BoostPerks,
             ]);
         }
+        // Discord's People.
+        let moderates = [
+            Permission::ManageServer,
+            Permission::Ban,
+            Permission::Kick,
+            Permission::Moderate,
+            Permission::ManageRoles,
+            Permission::ManageNicknames,
+        ];
+        if moderates.into_iter().any(|bit| self.may(server, bit)) {
+            sections.push(SettingsSection::Members);
+        }
         if self.may(server, Permission::ManageRoles) {
             sections.push(SettingsSection::Roles);
+        }
+        if self.may(server, Permission::ManageServer) {
+            sections.push(SettingsSection::Invites);
         }
         // Discord's Moderation.
         if self.may(server, Permission::ManageServer) {
@@ -752,7 +784,14 @@ impl Application {
             Some(Page::Engagement(page)) => *page = EngagementPage::new(page.original.clone()),
             Some(Page::BoostPerks(page)) => *page = BoostPage::new(page.original.clone()),
             Some(Page::Roles(page)) => page.undo(),
-            Some(Page::Safety(_) | Page::AuditLog(_) | Page::Bans(_)) | None => {}
+            Some(
+                Page::Members(_)
+                | Page::Invites(_)
+                | Page::Safety(_)
+                | Page::AuditLog(_)
+                | Page::Bans(_),
+            )
+            | None => {}
         }
     }
 
@@ -829,7 +868,15 @@ impl Application {
             Some(Page::Engagement(page)) => page.follow(changed),
             Some(Page::BoostPerks(page)) => page.follow(changed),
             Some(Page::Safety(page)) => page.settings = changed,
-            Some(Page::Profile(_) | Page::Roles(_) | Page::AuditLog(_) | Page::Bans(_)) | None => {}
+            Some(Page::Invites(page)) => page.settings = changed,
+            Some(
+                Page::Profile(_)
+                | Page::Members(_)
+                | Page::Roles(_)
+                | Page::AuditLog(_)
+                | Page::Bans(_),
+            )
+            | None => {}
         }
     }
 
@@ -908,6 +955,12 @@ impl Page {
             }
             (SettingsSection::Safety, ServerSettingsPage::Guild(settings)) => {
                 Self::Safety(SafetyPage::new(settings))
+            }
+            (SettingsSection::Members, ServerSettingsPage::Members { members, total }) => {
+                Self::Members(Box::new(MembersPage::new(members, total)))
+            }
+            (SettingsSection::Invites, ServerSettingsPage::Invites { invites, settings }) => {
+                Self::Invites(Box::new(InvitesPage::new(invites, settings)))
             }
             (SettingsSection::Bans, ServerSettingsPage::Bans(bans)) => {
                 Self::Bans(Box::new(BansPage::new(bans)))

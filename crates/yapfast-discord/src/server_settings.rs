@@ -60,6 +60,10 @@ pub struct GuildSettings {
     pub verification_level: u8,
     pub explicit_content_filter: u8,
     pub mfa_level: u8,
+    /// When its paused invites and DMs resume, in Unix seconds, from its
+    /// `incidents_data`.
+    pub invites_paused_until: Option<u64>,
+    pub dms_paused_until: Option<u64>,
 }
 
 impl GuildSettings {
@@ -102,7 +106,143 @@ pub fn parse_guild(guild: &Value) -> GuildSettings {
             .as_u64()
             .unwrap_or_default() as u8,
         mfa_level: field("mfa_level").as_u64().unwrap_or_default() as u8,
+        invites_paused_until: parse_incidents(field("incidents_data")).0,
+        dms_paused_until: parse_incidents(field("incidents_data")).1,
     }
+}
+
+/// When a server's paused invites and DMs resume, in Unix seconds, from
+/// its `incidents_data`.
+pub fn parse_incidents(incidents: &Value) -> (Option<u64>, Option<u64>) {
+    let until = |key: &str| {
+        incidents[key]
+            .as_str()
+            .and_then(crate::message::iso_ms)
+            .map(|ms| ms / 1000)
+    };
+    (until("invites_disabled_until"), until("dms_disabled_until"))
+}
+
+/// An invite to a server, as Invites in its settings lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Invite {
+    pub code: String,
+    pub inviter: Option<BannedUser>,
+    /// The channel it leads to, by id and name.
+    pub channel: Option<(String, String)>,
+    pub uses: u64,
+    /// Its limit, 0 for none.
+    pub max_uses: u64,
+    /// When it expires, in Unix seconds; none for never.
+    pub expires: Option<u64>,
+    /// The roles it gives, by id.
+    pub roles: Vec<String>,
+    /// It skips join applications: Discord's `IS_APPLICATION_BYPASS` flag.
+    pub bypass: bool,
+}
+
+/// An invite from `GET /guilds/{id}/invites`.
+pub fn parse_invite(invite: &Value) -> Option<Invite> {
+    let created = invite["created_at"]
+        .as_str()
+        .and_then(crate::message::iso_ms)
+        .unwrap_or_default()
+        / 1000;
+    let max_age = invite["max_age"].as_u64().unwrap_or_default();
+    Some(Invite {
+        code: invite["code"].as_str()?.to_owned(),
+        inviter: parse_banned_user(&invite["inviter"]),
+        channel: invite["channel"]["id"].as_str().map(|id| {
+            let name = invite["channel"]["name"].as_str().unwrap_or_default();
+            (id.to_owned(), name.to_owned())
+        }),
+        uses: invite["uses"].as_u64().unwrap_or_default(),
+        max_uses: invite["max_uses"].as_u64().unwrap_or_default(),
+        expires: (max_age > 0).then_some(created + max_age),
+        // Ids, or role objects.
+        roles: invite["roles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|role| role.as_str().or_else(|| role["id"].as_str()))
+            .map(str::to_owned)
+            .collect(),
+        bypass: invite["flags"].as_u64().unwrap_or_default() & INVITE_BYPASS != 0,
+    })
+}
+
+/// Discord's invite flag for an invite that skips join applications.
+const INVITE_BYPASS: u64 = 1 << 3;
+
+/// A member as Members' search finds them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FoundMember {
+    pub user: BannedUser,
+    pub nick: Option<String>,
+    pub roles: Vec<String>,
+    /// When they joined the server, in Unix milliseconds.
+    pub joined_at: u64,
+    /// Until when they're timed out, and when Discord last saw them send
+    /// unusual DMs, in Unix milliseconds; 0 for neither.
+    pub timed_out_until: u64,
+    pub unusual_dms_until: u64,
+    /// Discord's member `flags`, which mark a quarantined name.
+    pub flags: u64,
+    /// Discord flagged the account for spam.
+    pub spammer: bool,
+    /// How they joined: Discord's `join_source_type`, the invite's code,
+    /// and an integration's type.
+    pub join_source: u8,
+    pub invite_code: Option<String>,
+    pub integration: Option<String>,
+}
+
+/// Discord's user flag for an account it suspects of spam.
+const SPAMMER: u64 = 1 << 20;
+
+/// The members of a `members-search` answer, and how many match in all.
+pub fn parse_members_search(found: &Value) -> (Vec<FoundMember>, Option<u64>) {
+    let time = |value: &Value| {
+        value
+            .as_str()
+            .and_then(crate::message::iso_ms)
+            .unwrap_or_default()
+    };
+    let members = found["members"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|found| {
+            let member = &found["member"];
+            let user = &member["user"];
+            let user_flags = user["public_flags"]
+                .as_u64()
+                .or_else(|| user["flags"].as_u64())
+                .unwrap_or_default();
+            Some(FoundMember {
+                user: parse_banned_user(user)?,
+                nick: member["nick"]
+                    .as_str()
+                    .filter(|nick| !nick.is_empty())
+                    .map(str::to_owned),
+                roles: member["roles"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|role| Some(role.as_str()?.to_owned()))
+                    .collect(),
+                joined_at: time(&member["joined_at"]),
+                timed_out_until: time(&member["communication_disabled_until"]),
+                unusual_dms_until: time(&member["unusual_dm_activity_until"]),
+                flags: member["flags"].as_u64().unwrap_or_default(),
+                spammer: user_flags & SPAMMER != 0,
+                join_source: found["join_source_type"].as_u64().unwrap_or_default() as u8,
+                invite_code: found["source_invite_code"].as_str().map(str::to_owned),
+                integration: found["integration_type"].as_str().map(str::to_owned),
+            })
+        })
+        .collect();
+    (members, found["total_result_count"].as_u64())
 }
 
 /// Someone banned from a server, as Bans lists them.

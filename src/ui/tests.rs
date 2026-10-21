@@ -4038,6 +4038,9 @@ fn server_settings_open_from_the_menu_and_hold_their_changes_until_saved() {
             (false, "Server Profile".into()),
             (false, "Engagement".into()),
             (false, "Boost Perks".into()),
+            (true, "PEOPLE".into()),
+            (false, "Members".into()),
+            (false, "Invites".into()),
             (true, "MODERATION".into()),
             (false, "Safety Setup".into())
         ]
@@ -4376,6 +4379,186 @@ fn audit_log_shows_rows_that_open_their_numbered_lines() {
     assert_eq!(log.action, 9);
 }
 
+#[cfg(feature = "discord")]
+#[test]
+fn members_and_invites_list_as_discords_pages_do() {
+    use slint::Model;
+    use yapfast_core::{
+        chat::{
+            GuildSettings, JoinMethod, ListedMember, RoleMember, ServerInvite, ServerSettingsPage,
+            SettingsSection,
+        },
+        yapfast_discord::ready::permission,
+    };
+    let (window, adapter, _directory) = discord_server_window_changed(
+        permission::KICK_MEMBERS | permission::MANAGE_GUILD | permission::CREATE_INSTANT_INVITE,
+        |server| {
+            server.put_role(
+                &serde_json::json!({"id": "20", "name": "Mods", "position": 2,
+                                                "color": 0x3498db, "permissions": "0"}),
+            );
+            server.put_role(
+                &serde_json::json!({"id": "30", "name": "Helpers", "position": 1,
+                                                "permissions": "0"}),
+            );
+        },
+    );
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    window.invoke_choose_menu("header:discord:10".into(), false, "server-settings".into());
+    let rows: Vec<String> = window
+        .get_server_settings_prompt()
+        .rows
+        .iter()
+        .map(|row| row.text.to_string())
+        .collect();
+    let people = rows.iter().position(|row| row == "PEOPLE").unwrap();
+    assert_eq!(
+        rows[people..people + 4],
+        ["PEOPLE", "Members", "Invites", "MODERATION"]
+    );
+
+    // Members: a moderator joined three days ago, timed out, and someone
+    // whose join Discord doesn't know.
+    window.invoke_server_settings_section(7);
+    let now = yapfast_core::clock::now_ms();
+    let member = |id: &str, name: &str, roles: &[&str], joined_by| ListedMember {
+        person: RoleMember {
+            id: id.into(),
+            name: name.into(),
+            username: Some(name.to_lowercase()),
+            avatar: String::new(),
+        },
+        roles: roles.iter().map(|role| (*role).to_owned()).collect(),
+        joined: now - 3 * 86_400_000,
+        timed_out_until: 0,
+        unusual_dms: false,
+        spammer: false,
+        quarantined: false,
+        joined_by,
+    };
+    let mut mod_ = member(
+        "1400000000000000005",
+        "Mallory",
+        &["30", "20"],
+        JoinMethod::Invite("abc".into()),
+    );
+    mod_.timed_out_until = now + 3_660_000;
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section: SettingsSection::Members,
+            result: Ok(ServerSettingsPage::Members {
+                members: vec![mod_, member("6", "trent", &[], JoinMethod::Unknown)],
+                total: Some(2),
+            }),
+        });
+        adapter.refresh(&window);
+    }
+    let prompt = window.get_server_settings_prompt();
+    assert!(prompt.immediate && prompt.section == 7);
+    let members = prompt.members;
+    assert!(!members.searched && members.join_method);
+    assert_eq!((members.count.as_str(), members.total), ("2", 2));
+    let first = members.rows.row_data(0).unwrap();
+    assert_eq!(
+        (first.name.as_str(), first.username.as_str()),
+        ("Mallory", "mallory")
+    );
+    assert_eq!(first.name_color, server_settings::role_color(0x3498db));
+    assert_eq!(
+        (first.role.as_str(), first.more_roles.as_str()),
+        ("Mods", "+1")
+    );
+    assert_eq!(
+        (first.since.as_str(), first.join.as_str()),
+        ("3 days ago", "abc")
+    );
+    // Its id's time, in 2025, however long ago that is now.
+    assert!(first.age.ends_with(" ago") && !first.age.contains("day"));
+    assert!(first.timed_out.starts_with("Timed out for 1h 1m"));
+    let second = members.rows.row_data(1).unwrap();
+    assert!(second.join_unknown && second.role.is_empty());
+
+    // An order starts again, as Search Results.
+    window.invoke_members_input(1, "".into(), 2);
+    let members = window.get_server_settings_prompt().members;
+    assert!(members.searched && members.fetching && members.rows.row_count() == 0);
+    assert_eq!((members.sort, members.count.as_str()), (2, "..."));
+
+    // Invites: by inviter, counting down, and Security Actions.
+    window.invoke_server_settings_section(8);
+    let invite = |code: &str, inviter: &str, max_uses, expires| ServerInvite {
+        code: code.into(),
+        inviter: Some(RoleMember {
+            id: "2".into(),
+            name: inviter.to_uppercase(),
+            username: Some(inviter.into()),
+            avatar: String::new(),
+        }),
+        channel: "#general".into(),
+        uses: 3,
+        max_uses,
+        expires,
+        roles: vec!["20".into()],
+        bypass: false,
+    };
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section: SettingsSection::Invites,
+            result: Ok(ServerSettingsPage::Invites {
+                invites: vec![
+                    invite("zzz", "carol", 10, Some(now / 1000 + 90_000)),
+                    invite("bob1", "bob", 0, None),
+                ],
+                settings: GuildSettings::default(),
+            }),
+        });
+        adapter.refresh(&window);
+    }
+    let invites = window.get_server_settings_prompt().invites;
+    assert!(!invites.paused && invites.may_create && !invites.security);
+    let rows: Vec<(String, String, String, i32)> = invites
+        .rows
+        .iter()
+        .map(|row| {
+            (
+                row.inviter.to_string(),
+                row.uses.to_string(),
+                row.role.to_string(),
+                row.expires_in,
+            )
+        })
+        .collect();
+    assert_eq!(rows[0], ("bob".into(), "3".into(), "Mods".into(), -1));
+    assert_eq!(rows[1].1, "3/10");
+    assert!((89_990..=90_000).contains(&rows[1].3));
+    // A refresh keeps the rows, changed in place, and gives the second
+    // their countdowns count from again.
+    let shown = window.get_server_settings_prompt().invites;
+    adapter.borrow_mut().refresh(&window);
+    let again = window.get_server_settings_prompt().invites;
+    assert!(again.rows == shown.rows, "the same rows");
+    assert!(again.counted >= shown.counted && again.counted > 0);
+    window.invoke_invites_input(2, "".into(), 0);
+    let invites = window.get_server_settings_prompt().invites;
+    assert!(invites.security && !invites.may_save);
+    assert_eq!(invites.hours, 1, "two hours, as Discord's");
+    window.invoke_invites_input(4, "".into(), 0);
+    let invites = window.get_server_settings_prompt().invites;
+    assert!(invites.pause_invites && invites.may_save);
+
+    // A refresh with nothing new keeps the lists.
+    let shown = window.get_server_settings_prompt();
+    adapter.borrow_mut().refresh(&window);
+    let again = window.get_server_settings_prompt();
+    assert!(again.invites.rows == shown.invites.rows);
+    window.invoke_invites_input(7, "".into(), 0);
+    assert!(!window.get_server_settings_prompt().invites.security);
+}
+
 #[test]
 #[cfg(feature = "discord")]
 fn roles_lock_what_ranks_above_her_and_the_permissions_she_lacks() {
@@ -4405,7 +4588,14 @@ fn roles_lock_what_ranks_above_her_and_the_permissions_she_lacks() {
         .iter()
         .map(|row| (row.heading, row.text.to_string()))
         .collect();
-    assert_eq!(rows, [(true, "PEOPLE".into()), (false, "Roles".into())]);
+    assert_eq!(
+        rows,
+        [
+            (true, "PEOPLE".into()),
+            (false, "Members".into()),
+            (false, "Roles".into())
+        ]
+    );
     window.invoke_server_settings_section(3);
     {
         let mut adapter = adapter.borrow_mut();

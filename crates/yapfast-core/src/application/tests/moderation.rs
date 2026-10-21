@@ -71,7 +71,10 @@ fn asked(effects: &[Effect]) -> Option<&BansAction> {
 fn moderation_lists_safety_setup_with_manage_server_the_log_with_its_permission_and_bans_with_either()
  {
     let app = granting(permission::BAN_MEMBERS);
-    assert_eq!(app.settings_sections(SERVER), [SettingsSection::Bans]);
+    assert_eq!(
+        app.settings_sections(SERVER),
+        [SettingsSection::Members, SettingsSection::Bans]
+    );
     let app = granting(permission::VIEW_AUDIT_LOG);
     assert_eq!(
         app.settings_sections(SERVER),
@@ -84,6 +87,8 @@ fn moderation_lists_safety_setup_with_manage_server_the_log_with_its_permission_
             SettingsSection::Profile,
             SettingsSection::Engagement,
             SettingsSection::BoostPerks,
+            SettingsSection::Members,
+            SettingsSection::Invites,
             SettingsSection::Safety
         ]
     );
@@ -160,7 +165,7 @@ fn safety_setup_saves_each_choice_as_its_made_and_puts_it_back_if_refused() {
 #[test]
 fn bans_page_search_and_revoke_as_discords_client_does() {
     let mut app = granting(permission::BAN_MEMBERS);
-    let loading = app.dispatch(Action::OpenServerSettings(SERVER.into()));
+    let loading = open(&mut app, SettingsSection::Bans);
     assert!(matches!(
         loading.as_slice(),
         [Effect::Backend(Command::Discord(

@@ -2883,6 +2883,7 @@ async fn talks_to_the_fake_server() {
     changes_roles_as_discords_client_does(&discord, server, &guild).await;
     changes_channel_permissions_as_discords_client_does(&discord, server, &guild).await;
     moderates_as_discords_client_does(&discord, server, &guild).await;
+    lists_members_and_invites_as_discords_client_does(&discord, server, &guild).await;
 
     // Leaving "Server", which Bob owns, takes it out of her list; the fake
     // lets her back in, so the tests after these find it again.
@@ -3456,6 +3457,138 @@ async fn moderates_as_discords_client_does(discord: &Discord, server: &str, guil
     assert_eq!(actions(&next).len(), 16);
     post_control(server, "/_control/audit-reset", "");
     post_control(server, "/_control/members-reset", "");
+}
+
+/// Members and Invites in Server Settings, as Discord's client asks for
+/// them; part of [`talks_to_the_fake_server`], whose session it shares.
+async fn lists_members_and_invites_as_discords_client_does(
+    discord: &Discord,
+    server: &str,
+    guild: &str,
+) {
+    use serde_json::json;
+    use yapfast_discord::api::MembersSearch;
+    let search = |body: serde_json::Value| async move {
+        match discord.members_search(guild, &body).await.unwrap() {
+            MembersSearch::Found(found) => {
+                yapfast_discord::server_settings::parse_members_search(&found)
+            }
+            MembersSearch::Indexing(wait) => panic!("indexing for {wait} s"),
+        }
+    };
+    let names = |found: &[yapfast_discord::server_settings::FoundMember]| {
+        found
+            .iter()
+            .map(|member| member.user.username.clone())
+            .collect::<Vec<_>>()
+    };
+    // Newest first, with how each joined.
+    let (found, total) = search(json!({"or_query": {}, "and_query": {}, "limit": 250})).await;
+    assert_eq!(names(&found), ["dave", "carol", "alice", "bob"]);
+    assert_eq!(total, Some(4));
+    assert_eq!(
+        (found[1].join_source, found[1].invite_code.as_deref()),
+        (5, Some("carol1"))
+    );
+    assert!(found[1].unusual_dms_until > 0 && found[0].unusual_dms_until == 0);
+    // By name or id, and in another order.
+    let carol = found[1].user.id.clone();
+    let (found, _) = search(json!({"or_query": {}, "and_query": {
+        "usernames": {"or_query": ["BO"]}, "user_id": {"or_query": [carol]}}, "limit": 250}))
+    .await;
+    assert!(found.is_empty(), "both must match, as and_query asks");
+    let (found, _) = search(
+        json!({"or_query": {}, "and_query": {"usernames": {"or_query": ["bo", "car"]}},
+               "limit": 250, "sort": 2}),
+    )
+    .await;
+    assert_eq!(names(&found), ["bob", "carol"]);
+    // A chunk at a time, after the last member of the one before.
+    post_control(server, "/_control/members", r#"{"count": 260}"#);
+    let (first, total) = search(json!({"or_query": {}, "and_query": {}, "limit": 250})).await;
+    assert_eq!((first.len(), total), (250, Some(264)));
+    let last = first.last().unwrap();
+    let (rest, _) = search(json!({"or_query": {}, "and_query": {}, "limit": 250,
+        "after": {"guild_joined_at": last.joined_at, "user_id": last.user.id}}))
+    .await;
+    assert_eq!(
+        names(&rest),
+        [
+            "member_10",
+            "member_9",
+            "member_8",
+            "member_7",
+            "member_6",
+            "member_5",
+            "member_4",
+            "member_3",
+            "member_2",
+            "member_1",
+            "dave",
+            "carol",
+            "alice",
+            "bob"
+        ]
+    );
+    // While Discord indexes the server, it asks to wait.
+    post_control(
+        server,
+        "/_control/members",
+        r#"{"indexing": true, "count": 0}"#,
+    );
+    assert!(matches!(
+        discord
+            .members_search(guild, &json!({"or_query": {}, "and_query": {}, "limit": 250}))
+            .await
+            .unwrap(),
+        MembersSearch::Indexing(wait) if wait > 0.0
+    ));
+
+    // Invites, and revoking one.
+    let invites = discord.guild_invites(guild).await.unwrap();
+    let codes: Vec<&str> = invites.iter().map(|invite| invite.code.as_str()).collect();
+    assert!(codes.starts_with(&["bobinvite", "carol1"]), "{codes:?}");
+    let carols = &invites[1];
+    assert_eq!(
+        (carols.uses, carols.max_uses, carols.roles.len()),
+        (3, 10, 1)
+    );
+    assert!(carols.expires.is_some() && invites[0].expires.is_none());
+    assert_eq!(carols.channel.as_ref().unwrap().1, "general");
+    discord.revoke_invite("carol1").await.unwrap();
+    assert!(discord.revoke_invite("carol1").await.is_err());
+    assert!(
+        !discord
+            .guild_invites(guild)
+            .await
+            .unwrap()
+            .iter()
+            .any(|invite| invite.code == "carol1")
+    );
+
+    // Security Actions: invites paused for two hours, then resumed, which
+    // GUILD_UPDATE tells.
+    let mut live = discord.live();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let (invites, dms) = discord.pause_server(guild, true, false, 2).await.unwrap();
+    assert!(invites.is_some_and(|until| until.abs_diff(now + 7200) < 60));
+    assert_eq!(dms, None);
+    live_where(&mut live, |live| match live {
+        Live::ServerSettings {
+            guild: changed,
+            settings,
+        } if changed == guild && settings.invites_paused_until == invites => Some(()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        discord.pause_server(guild, false, false, 2).await.unwrap(),
+        (None, None)
+    );
+    post_control(server, "/_control/guild-reset", "");
 }
 
 /// Editing her main profile as Discord's client does, then putting it

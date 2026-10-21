@@ -1339,6 +1339,53 @@ impl Discord {
         self.api.audit_log(guild, before, user, action).await
     }
 
+    /// A chunk of Members' search; see [`crate::api::Api::search_members`].
+    pub async fn members_search(
+        &self,
+        guild: &str,
+        body: &Value,
+    ) -> Result<crate::api::MembersSearch> {
+        self.api.search_members(guild, body).await
+    }
+
+    pub async fn guild_invites(&self, guild: &str) -> Result<Vec<server_settings::Invite>> {
+        let invites = self.api.guild_invites(guild).await?;
+        Ok(invites
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(server_settings::parse_invite)
+            .collect())
+    }
+
+    pub async fn revoke_invite(&self, code: &str) -> Result<()> {
+        self.api.revoke_invite(code).await
+    }
+
+    /// Pauses invites and DMs for `hours`, or resumes them; gives back when
+    /// each pause ends, in Unix seconds.
+    pub async fn pause_server(
+        &self,
+        guild: &str,
+        invites: bool,
+        dms: bool,
+        hours: u8,
+    ) -> Result<(Option<u64>, Option<u64>)> {
+        let until = (invites || dms).then(|| {
+            let end = std::time::SystemTime::now()
+                + std::time::Duration::from_secs(u64::from(hours) * 3600);
+            chrono::DateTime::<chrono::Utc>::from(end)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        });
+        let body = serde_json::json!({
+            "invites_disabled_until": until.as_ref().filter(|_| invites),
+            "dms_disabled_until": until.as_ref().filter(|_| dms),
+            "lockdown_duration_hours": (invites || dms).then_some(hours),
+        });
+        let incidents = self.api.incident_actions(guild, &body).await?;
+        Ok(server_settings::parse_incidents(&incidents))
+    }
+
     pub async fn unban(&self, guild: &str, user: &str) -> Result<()> {
         self.api.unban(guild, user).await
     }

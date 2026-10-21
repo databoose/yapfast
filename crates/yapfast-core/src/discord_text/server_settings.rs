@@ -126,6 +126,27 @@ pub(super) fn command(
                         .audit_log(&guild, None, None, None)
                         .await
                         .map(|log| ServerSettingsPage::AuditLog(super::audit_log::parse(&log))),
+                    SettingsSection::Members => {
+                        let query = Default::default();
+                        super::people::members(&discord, &guild, &server, &query, &events)
+                            .await
+                            .map(|(members, total)| ServerSettingsPage::Members { members, total })
+                            .map_err(anyhow::Error::msg)
+                    }
+                    SettingsSection::Invites => {
+                        let (invites, settings) = tokio::join!(
+                            super::people::list(&discord, &guild),
+                            discord.guild_settings(&guild)
+                        );
+                        match (invites, settings) {
+                            (Ok(invites), Ok(settings)) => Ok(ServerSettingsPage::Invites {
+                                invites,
+                                settings: guild_settings(settings),
+                            }),
+                            (Err(error), _) => Err(anyhow::Error::msg(error)),
+                            (_, Err(error)) => Err(error),
+                        }
+                    }
                     SettingsSection::Bans => discord
                         .bans(&guild, None)
                         .await
@@ -341,6 +362,8 @@ pub(super) fn guild_settings(settings: DiscordSettings) -> GuildSettings {
         verification_level: settings.verification_level,
         explicit_content_filter: settings.explicit_content_filter,
         mfa_level: settings.mfa_level,
+        invites_paused_until: settings.invites_paused_until,
+        dms_paused_until: settings.dms_paused_until,
     }
 }
 

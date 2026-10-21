@@ -195,6 +195,8 @@ export component YapfastWindow inherits Window {
     callback ban-input(int, string, int);
     /// Something done on Audit Log; see ServerSettingsScreen.
     callback audit-log-input(int, int);
+    callback members-input(int, string, int);
+    callback invites-input(int, string, int);
     callback write-server-setting(int, string);
     callback toggle-server-setting(int);
     callback choose-server-setting(int, int);
@@ -3073,6 +3075,9 @@ export component YapfastWindow inherits Window {
         role(what, text, number) => { root.role-input(what, text, number); }
         ban(what, text, number) => { root.ban-input(what, text, number); }
         audit-log(what, number) => { root.audit-log-input(what, number); }
+        member(what, text, number) => { root.members-input(what, text, number); }
+        invite(what, text, number) => { root.invites-input(what, text, number); }
+        member-menu(id, x, y) => { root.open-context-menu(id, true, x, y); }
         write(field, text) => { root.write-server-setting(field, text); }
         toggle(which) => { root.toggle-server-setting(which); }
         pick-choice(list, index) => { root.choose-server-setting(list, index); }

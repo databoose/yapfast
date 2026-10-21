@@ -76,11 +76,11 @@ fn server_settings_open_only_with_a_page_she_may_change() {
         app.dispatch(Action::OpenServerSettings("discord:10".into()))
             .is_empty()
     );
-    // Manage Roles opens Roles.
+    // Manage Roles opens Roles, and Members with Kick Members.
     grant_mods(&mut app, 0);
     assert_eq!(
         app.settings_sections("discord:10"),
-        [SettingsSection::Roles]
+        [SettingsSection::Members, SettingsSection::Roles]
     );
 
     grant_mods(&mut app, yapfast_discord::ready::permission::MANAGE_GUILD);
@@ -98,7 +98,9 @@ fn server_settings_open_only_with_a_page_she_may_change() {
             SettingsSection::Profile,
             SettingsSection::Engagement,
             SettingsSection::BoostPerks,
+            SettingsSection::Members,
             SettingsSection::Roles,
+            SettingsSection::Invites,
             SettingsSection::Safety
         ]
     );

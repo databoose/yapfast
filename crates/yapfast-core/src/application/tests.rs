@@ -8062,4 +8062,6 @@ mod channel_settings;
 #[cfg(feature = "discord")]
 mod moderation;
 #[cfg(feature = "discord")]
+mod people;
+#[cfg(feature = "discord")]
 mod server_settings;
