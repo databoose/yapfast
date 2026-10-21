@@ -9,18 +9,21 @@ use super::*;
 use crate::{
     application::profile_editor::PictureEdit,
     chat::{
-        GuildSettings, Permission, PickedPicture, ServerPicture, ServerSettingsChange,
-        ServerSettingsPage, SettingsSection,
+        Ban, BansAction, GuildSettings, Permission, PickedPicture, ServerPicture,
+        ServerSettingsChange, ServerSettingsPage, SettingsSection,
     },
 };
 
+mod bans;
 mod boost;
 mod engagement;
 mod permissions;
 mod profile;
 mod role_input;
 mod roles;
+mod safety;
 
+pub use bans::{BANS_BATCH, BANS_PER_PAGE, BanInput, BansPage};
 pub use boost::BoostPage;
 pub use engagement::{AFK_TIMEOUTS, BOOSTED, EngagementPage, SETUP_TIPS, WELCOME, WELCOME_STICKER};
 pub use permissions::{PermissionGroup, PermissionInfo, ROLE_PERMISSIONS};
@@ -31,6 +34,7 @@ pub use roles::{
     ROLE_ICON_LIMIT, ROLE_NAME_LIMIT, RoleConfirm, RoleDraft, RoleLock, RoleRules, RoleTab,
     RolesPage,
 };
+pub use safety::{FILTER_ALL, HIGHEST_VERIFICATION, MfaRule, SafetyChoice, SafetyPage};
 
 /// The settings of a Discord server, while they're open.
 #[derive(Clone, Debug)]
@@ -57,6 +61,8 @@ pub enum Page {
     Engagement(EngagementPage),
     BoostPerks(BoostPage),
     Roles(Box<RolesPage>),
+    Safety(SafetyPage),
+    Bans(Box<BansPage>),
 }
 
 /// A switch of a settings page: one of Engagement's system messages, by
@@ -78,6 +84,8 @@ pub enum SettingsChoice {
     AfkChannel(Option<String>),
     /// Seconds, one of [`AFK_TIMEOUTS`].
     AfkTimeout(u32),
+    /// Safety Setup's, saved as it's made.
+    Safety(SafetyChoice),
 }
 
 impl ServerSettings {
@@ -98,7 +106,17 @@ impl ServerSettings {
             Page::Engagement(page) => page.change(),
             Page::BoostPerks(page) => page.change(),
             Page::Roles(page) => page.change(),
+            // Saved as they're made, as in Discord's client.
+            Page::Safety(_) | Page::Bans(_) => None,
         }
+    }
+
+    /// Whether the page saves each change as it's made, without the bar.
+    pub fn immediate(&self) -> bool {
+        matches!(
+            self.section,
+            SettingsSection::Safety | SettingsSection::Bans
+        )
     }
 
     /// Why the draft can't be saved as it is.
@@ -106,7 +124,7 @@ impl ServerSettings {
         match self.page.as_ref()? {
             Page::Profile(page) => page.problem(),
             Page::Roles(page) => page.problem(),
-            Page::Engagement(_) | Page::BoostPerks(_) => None,
+            Page::Engagement(_) | Page::BoostPerks(_) | Page::Safety(_) | Page::Bans(_) => None,
         }
     }
 
@@ -134,6 +152,13 @@ impl Application {
         }
         if self.may(server, Permission::ManageRoles) {
             sections.push(SettingsSection::Roles);
+        }
+        // Discord's Moderation.
+        if self.may(server, Permission::ManageServer) {
+            sections.push(SettingsSection::Safety);
+        }
+        if self.may(server, Permission::Ban) || self.may(server, Permission::ViewAuditLog) {
+            sections.push(SettingsSection::Bans);
         }
         sections
     }
@@ -245,10 +270,14 @@ impl Application {
         }
     }
 
-    /// Takes a choice from one of the page's lists.
-    pub(super) fn choose_server_setting(&mut self, choice: SettingsChoice) {
+    /// Takes a choice from one of the page's lists; Safety Setup's goes
+    /// to Discord at once.
+    pub(super) fn choose_server_setting(&mut self, choice: SettingsChoice) -> Vec<Effect> {
+        if let SettingsChoice::Safety(choice) = choice {
+            return self.choose_safety(choice);
+        }
         let Some(Page::Engagement(page)) = self.editable_page() else {
-            return;
+            return vec![];
         };
         match choice {
             SettingsChoice::SystemChannel(channel) => page.system_channel = channel,
@@ -263,6 +292,172 @@ impl Application {
                 page.afk_timeout = seconds;
             }
             _ => {}
+        }
+        vec![]
+    }
+
+    /// Who may change whether a server's moderators need two-factor
+    /// authentication: its owner, with it on.
+    pub fn mfa_rule(&self, server: &str) -> MfaRule {
+        #[cfg(feature = "discord")]
+        if let Some((known, _, me)) = self.discord_place(server)
+            && known.owner_id.as_deref() == Some(me)
+        {
+            let on = self
+                .discord
+                .as_ref()
+                .and_then(|snapshot| snapshot.account.as_ref())
+                .is_some_and(|account| account.mfa_enabled);
+            return if on {
+                MfaRule::May
+            } else {
+                MfaRule::OwnerWithoutMfa
+            };
+        }
+        let _ = server;
+        MfaRule::NotOwner
+    }
+
+    /// Sends a choice on Safety Setup, which shows while Discord takes it.
+    fn choose_safety(&mut self, choice: SafetyChoice) -> Vec<Effect> {
+        let Some(server) = self
+            .state
+            .server_settings
+            .as_ref()
+            .map(|settings| settings.server.clone())
+        else {
+            return vec![];
+        };
+        let rule = self.mfa_rule(&server);
+        let Some(settings) = self.state.server_settings.as_mut() else {
+            return vec![];
+        };
+        let Some(Page::Safety(page)) = settings.page.as_mut().filter(|_| !settings.saving) else {
+            return vec![];
+        };
+        let Some(change) = page.choose(choice, rule) else {
+            return vec![];
+        };
+        page.choosing = Some(choice);
+        settings.saving = true;
+        settings.error = None;
+        vec![Effect::Backend(Command::Discord(
+            DiscordCommand::SaveServerSettings {
+                server,
+                change: Box::new(change),
+            },
+        ))]
+    }
+
+    /// Something done on Bans.
+    pub(super) fn ban_input(&mut self, input: BanInput) -> Vec<Effect> {
+        let Some(settings) = self.state.server_settings.as_ref() else {
+            return vec![];
+        };
+        let server = settings.server.clone();
+        let may_unban = self.may(&server, Permission::Ban);
+        let Some(Page::Bans(page)) = self
+            .state
+            .server_settings
+            .as_mut()
+            .and_then(|settings| settings.page.as_mut())
+        else {
+            return vec![];
+        };
+        let action = match input {
+            BanInput::Query(query) => {
+                page.write(query);
+                None
+            }
+            BanInput::Search => page.search().map(BansAction::Search),
+            BanInput::Page(to) => page.go(to).map(BansAction::More),
+            BanInput::Open(user) => {
+                if page.bans.iter().any(|ban| ban.user.id == user) {
+                    page.close();
+                    page.open = Some(user);
+                }
+                None
+            }
+            BanInput::Close => {
+                page.close();
+                None
+            }
+            BanInput::Unban => {
+                let user = page.open.clone().filter(|_| may_unban && !page.unbanning);
+                if user.is_some() {
+                    page.unbanning = true;
+                    page.open_error = None;
+                }
+                user.map(BansAction::Unban)
+            }
+        };
+        action
+            .map(|action| {
+                Effect::Backend(Command::Discord(DiscordCommand::Bans { server, action }))
+            })
+            .into_iter()
+            .collect()
+    }
+
+    /// The open Bans, if it's this server's.
+    fn bans_page(&mut self, server: &str) -> Option<&mut BansPage> {
+        let settings = self
+            .state
+            .server_settings
+            .as_mut()
+            .filter(|settings| settings.server == server)?;
+        match settings.page.as_mut()? {
+            Page::Bans(page) => Some(page),
+            _ => None,
+        }
+    }
+
+    pub(super) fn bans_loaded(
+        &mut self,
+        server: String,
+        searched: bool,
+        result: Result<Vec<Ban>, String>,
+    ) {
+        let error = match result {
+            Ok(bans) => {
+                if let Some(page) = self.bans_page(&server) {
+                    page.take(bans, searched);
+                }
+                return;
+            }
+            Err(error) => error,
+        };
+        if let Some(page) = self.bans_page(&server) {
+            page.fetching = false;
+            if let Some(settings) = self.state.server_settings.as_mut() {
+                settings.error = Some(error);
+            }
+        }
+    }
+
+    pub(super) fn unbanned(&mut self, server: String, user: String, result: Result<(), String>) {
+        let Some(page) = self.bans_page(&server) else {
+            return;
+        };
+        match result {
+            Ok(()) => {
+                let ban = page.bans.iter().find(|ban| ban.user.id == user).cloned();
+                if let Some(ban) = ban {
+                    page.follow(ban, false);
+                }
+            }
+            Err(error) if page.open.as_ref() == Some(&user) => {
+                page.unbanning = false;
+                page.open_error = Some(error);
+            }
+            Err(_) => {}
+        }
+    }
+
+    /// A ban made or lifted, for an open Bans.
+    pub(super) fn server_ban(&mut self, server: String, ban: Ban, banned: bool) {
+        if let Some(page) = self.bans_page(&server) {
+            page.follow(ban, banned);
         }
     }
 
@@ -465,7 +660,7 @@ impl Application {
             Some(Page::Engagement(page)) => *page = EngagementPage::new(page.original.clone()),
             Some(Page::BoostPerks(page)) => *page = BoostPage::new(page.original.clone()),
             Some(Page::Roles(page)) => page.undo(),
-            None => {}
+            Some(Page::Safety(_) | Page::Bans(_)) | None => {}
         }
     }
 
@@ -518,7 +713,12 @@ impl Application {
                     (new, _) => new,
                 };
             }
-            Err(error) => settings.error = Some(error),
+            Err(error) => {
+                if let Some(Page::Safety(page)) = &mut settings.page {
+                    page.choosing = None;
+                }
+                settings.error = Some(error);
+            }
         }
     }
 
@@ -536,7 +736,8 @@ impl Application {
         match &mut settings.page {
             Some(Page::Engagement(page)) => page.follow(changed),
             Some(Page::BoostPerks(page)) => page.follow(changed),
-            Some(Page::Profile(_) | Page::Roles(_)) | None => {}
+            Some(Page::Safety(page)) => page.settings = changed,
+            Some(Page::Profile(_) | Page::Roles(_) | Page::Bans(_)) | None => {}
         }
     }
 
@@ -612,6 +813,12 @@ impl Page {
             }
             (SettingsSection::Roles, ServerSettingsPage::Roles(roles)) => {
                 Self::Roles(Box::new(RolesPage::new(roles)))
+            }
+            (SettingsSection::Safety, ServerSettingsPage::Guild(settings)) => {
+                Self::Safety(SafetyPage::new(settings))
+            }
+            (SettingsSection::Bans, ServerSettingsPage::Bans(bans)) => {
+                Self::Bans(Box::new(BansPage::new(bans)))
             }
             _ => return None,
         })

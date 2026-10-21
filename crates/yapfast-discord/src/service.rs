@@ -82,6 +82,10 @@ pub struct Account {
     /// Its Nitro: 0 none, 1 Nitro Classic, 2 Nitro, 3 Nitro Basic; see
     /// [`crate::api::upload_limit`].
     pub premium_type: u8,
+    /// It has two-factor authentication on, which a server owner needs to
+    /// change whether moderators do.
+    #[serde(default)]
+    pub mfa_enabled: bool,
 }
 
 /// A DM or group DM, as the DM list shows it.
@@ -426,6 +430,13 @@ pub enum Live {
     ServerRoleDeleted {
         guild: String,
         role: String,
+    },
+    /// Someone was banned, as GUILD_BAN_ADD gives them, without a reason,
+    /// or unbanned, for Bans while it's open.
+    ServerBan {
+        guild: String,
+        ban: Box<server_settings::Ban>,
+        banned: bool,
     },
 }
 
@@ -1286,6 +1297,49 @@ impl Discord {
     ) -> Result<server_settings::GuildSettings> {
         let settings = self.api.modify_guild(guild, body).await?;
         Ok(server_settings::parse_guild(&settings))
+    }
+
+    /// Up to [`api::BANS_PAGE`] of a server's bans, after a user's id.
+    pub async fn bans(
+        &self,
+        guild: &str,
+        after: Option<&str>,
+    ) -> Result<Vec<server_settings::Ban>> {
+        let bans = self.api.bans(guild, after).await?;
+        Ok(parse_bans(&bans))
+    }
+
+    /// Bans' search: the first name in `query` and every user id in it,
+    /// split at commas, as Discord's client splits it.
+    pub async fn search_bans(&self, guild: &str, query: &str) -> Result<Vec<server_settings::Ban>> {
+        let (ids, names): (Vec<&str>, Vec<&str>) = query
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .partition(|part| {
+                (17..=19).contains(&part.len()) && part.bytes().all(|byte| byte.is_ascii_digit())
+            });
+        let ids: Vec<String> = ids.into_iter().map(str::to_owned).collect();
+        let bans = self
+            .api
+            .search_bans(guild, names.first().copied(), &ids)
+            .await?;
+        Ok(parse_bans(&bans))
+    }
+
+    pub async fn unban(&self, guild: &str, user: &str) -> Result<()> {
+        self.api.unban(guild, user).await
+    }
+
+    /// Sets whether a server's moderators need two-factor authentication,
+    /// giving the server's settings as they then stand.
+    pub async fn set_mfa_level(
+        &self,
+        guild: &str,
+        level: u8,
+    ) -> Result<server_settings::GuildSettings> {
+        self.api.set_mfa_level(guild, level).await?;
+        self.guild_settings(guild).await
     }
 
     /// What Roles shows: the server's roles in full and how many members
@@ -2549,6 +2603,15 @@ fn now_ms() -> u64 {
 /// Keeps the favourite GIFs on disk, off the async threads.
 pub async fn keep_favorite_gifs(favorites: Vec<crate::gifs::Favorite>) {
     let _ = tokio::task::spawn_blocking(move || cache::keep_favorite_gifs(&favorites)).await;
+}
+
+/// The bans in a list of them, skipping any without a user.
+fn parse_bans(bans: &Value) -> Vec<server_settings::Ban> {
+    bans.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(server_settings::parse_ban)
+        .collect()
 }
 
 /// An overwrite as Discord's client sends it: type 0 for a role and 1 for

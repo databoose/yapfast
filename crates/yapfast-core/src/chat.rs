@@ -432,6 +432,7 @@ pub enum Permission {
     MuteMembers,
     DeafenMembers,
     MoveMembers,
+    ViewAuditLog,
 }
 
 /// Which messages notify, in a Discord server or channel.
@@ -2058,6 +2059,23 @@ pub enum DiscordCommand {
         server: String,
         action: RoleAction,
     },
+    /// Do something on Bans in a Discord server's settings.
+    Bans {
+        server: String,
+        action: BansAction,
+    },
+}
+
+/// What Bans asks of Discord.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BansAction {
+    /// The next batch, after a user's id; [`Event::BansLoaded`] follows.
+    More(String),
+    /// Bans of users named, or by id, as Discord's search finds them;
+    /// [`Event::BansLoaded`] follows.
+    Search(String),
+    /// Lift a user's ban; [`Event::Unbanned`] follows.
+    Unban(String),
 }
 
 /// What Roles does at once: each but [`RoleAction::Members`] and
@@ -2110,6 +2128,8 @@ pub enum SettingsSection {
     Engagement,
     BoostPerks,
     Roles,
+    Safety,
+    Bans,
 }
 
 /// A picture of a Discord server's.
@@ -2130,6 +2150,18 @@ pub enum ServerSettingsPage {
     /// Engagement's and Boost Perks', which the guild object holds.
     Guild(GuildSettings),
     Roles(ServerRoles),
+    /// The first batch of the server's bans.
+    Bans(Vec<Ban>),
+}
+
+/// Someone banned from a Discord server, as Bans lists them: their name,
+/// and their username under it once they have a display name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ban {
+    pub user: RoleMember,
+    /// Why, as the moderator gave it; none from a ban made while Bans was
+    /// open, as in Discord's client.
+    pub reason: Option<String>,
 }
 
 /// What Roles shows: a server's roles and what they may have.
@@ -2251,6 +2283,13 @@ pub struct GuildSettings {
     /// unlocks, such as `BANNER`.
     pub premium_tier: u8,
     pub features: Vec<String>,
+    /// Safety Setup's: what members must have done before they may talk,
+    /// 0 nothing to 4 a verified phone; whose images Discord filters, 0 no
+    /// one, 1 those without roles, 2 everyone's; and whether moderators
+    /// need two-factor authentication, 1, or not, 0.
+    pub verification_level: u8,
+    pub explicit_content_filter: u8,
+    pub mfa_level: u8,
 }
 
 impl GuildSettings {
@@ -2291,7 +2330,12 @@ pub enum ServerSettingsChange {
         banner: Option<Option<PickedPicture>>,
         splash: Option<Option<PickedPicture>>,
         progress_bar: Option<bool>,
+        verification_level: Option<u8>,
+        explicit_content_filter: Option<u8>,
     },
+    /// Whether moderators need two-factor authentication, 1, or not, 0,
+    /// saved with `POST /guilds/{id}/mfa`.
+    MfaLevel(u8),
     /// Roles': the roles that move, as `(id, position)`, then the open
     /// role, if it changed.
     Roles {
@@ -2708,6 +2752,26 @@ pub enum Event {
     ServerRoleDeleted {
         server: String,
         role: String,
+    },
+    /// Bans Discord sent for [`BansAction::More`] or [`BansAction::Search`],
+    /// or why not.
+    BansLoaded {
+        server: String,
+        searched: bool,
+        result: Result<Vec<Ban>, String>,
+    },
+    /// Whether Discord lifted a user's ban, or why not.
+    Unbanned {
+        server: String,
+        user: String,
+        result: Result<(), String>,
+    },
+    /// Someone was banned elsewhere, or unbanned, as GUILD_BAN_ADD and
+    /// GUILD_BAN_REMOVE say, for an open Bans to follow.
+    ServerBan {
+        server: String,
+        ban: Box<Ban>,
+        banned: bool,
     },
     /// The members [`RoleAction::Members`] found holding a role, or why
     /// not.

@@ -6,7 +6,9 @@
 use serde_json::{Map, Value};
 use yapfast_discord::{
     mfa,
-    server_settings::{GuildSettings as DiscordSettings, ServerProfile as DiscordProfile},
+    server_settings::{
+        Ban as DiscordBan, GuildSettings as DiscordSettings, ServerProfile as DiscordProfile,
+    },
 };
 
 use super::{
@@ -15,8 +17,8 @@ use super::{
     *,
 };
 use crate::chat::{
-    GuildSettings, MfaMethod, ServerPicture, ServerProfile, ServerSettingsChange,
-    ServerSettingsPage, SettingsSection,
+    Ban, BansAction, GuildSettings, MfaMethod, RoleMember, ServerPicture, ServerProfile,
+    ServerSettingsChange, ServerSettingsPage, SettingsSection,
 };
 
 /// A server icon as Discord's client crops it, and its preview at the
@@ -110,7 +112,9 @@ pub(super) fn command(
                         .guild_profile(&guild)
                         .await
                         .map(|profile| ServerSettingsPage::Profile(server_profile(profile))),
-                    SettingsSection::Engagement | SettingsSection::BoostPerks => discord
+                    SettingsSection::Engagement
+                    | SettingsSection::BoostPerks
+                    | SettingsSection::Safety => discord
                         .guild_settings(&guild)
                         .await
                         .map(|settings| ServerSettingsPage::Guild(guild_settings(settings))),
@@ -118,6 +122,10 @@ pub(super) fn command(
                         .roles_page(&guild)
                         .await
                         .map(|roles| ServerSettingsPage::Roles(super::roles::page(roles))),
+                    SettingsSection::Bans => discord
+                        .bans(&guild, None)
+                        .await
+                        .map(|bans| ServerSettingsPage::Bans(bans.into_iter().map(ban).collect())),
                 };
                 let result = result.map_err(|error| {
                     tracing::warn!(
@@ -184,6 +192,10 @@ pub(super) fn command(
                     ServerSettingsChange::Roles { positions, role } => {
                         super::roles::save(&discord, &guild, positions, role).await
                     }
+                    ServerSettingsChange::MfaLevel(level) => discord
+                        .stepping_up(|| discord.set_mfa_level(&guild, level))
+                        .await
+                        .map(|settings| ServerSettingsPage::Guild(guild_settings(settings))),
                 };
                 let result = result.map_err(|error| {
                     tracing::warn!(
@@ -195,9 +207,88 @@ pub(super) fn command(
                 let _ = events.send(Event::ServerSettingsSaved { server, result });
             });
         }
+        DiscordCommand::Bans { server, action } => {
+            let (Ok(discord), Some(guild)) = (discord, discord::parse_server(&server)) else {
+                let why = discord.err().unwrap_or(NOT_DISCORD).to_owned();
+                let _ = events.send(match action {
+                    BansAction::Unban(user) => Event::Unbanned {
+                        server,
+                        user,
+                        result: Err(why),
+                    },
+                    BansAction::More(_) | BansAction::Search(_) => Event::BansLoaded {
+                        server,
+                        searched: matches!(action, BansAction::Search(_)),
+                        result: Err(why),
+                    },
+                });
+                return None;
+            };
+            let (discord, guild) = (discord.clone(), guild.to_owned());
+            tokio::spawn(async move { bans(&discord, &guild, server, action, &events).await });
+        }
         other => return Some(Command::Discord(other)),
     }
     None
+}
+
+/// Does what Bans asked, and says how it went.
+async fn bans(
+    discord: &Discord,
+    guild: &str,
+    server: String,
+    action: BansAction,
+    events: &UnboundedSender<Event>,
+) {
+    let (searched, result) = match action {
+        BansAction::Unban(user) => {
+            let result = discord
+                .stepping_up(|| discord.unban(guild, &user))
+                .await
+                .map_err(|error| {
+                    tracing::info!(error = format!("{error:#}"), "Discord kept a ban");
+                    format!("Couldn't revoke the ban: {error}")
+                });
+            let _ = events.send(Event::Unbanned {
+                server,
+                user,
+                result,
+            });
+            return;
+        }
+        BansAction::More(after) => (false, discord.bans(guild, Some(&after)).await),
+        BansAction::Search(query) => (true, discord.search_bans(guild, &query).await),
+    };
+    let result = result
+        .map(|bans| bans.into_iter().map(ban).collect())
+        .map_err(|error| {
+            tracing::warn!(error = format!("{error:#}"), "could not fetch bans");
+            format!("Discord didn't send the bans: {error}")
+        });
+    let _ = events.send(Event::BansLoaded {
+        server,
+        searched,
+        result,
+    });
+}
+
+/// A ban as Bans shows it: the user's display name, with their username
+/// under it, or their username alone.
+pub(super) fn ban(ban: DiscordBan) -> Ban {
+    let user = ban.user;
+    let (name, username) = match user.global_name {
+        Some(name) => (name, Some(user.username)),
+        None => (user.username, None),
+    };
+    Ban {
+        user: RoleMember {
+            id: user.id,
+            name,
+            username,
+            avatar: user.avatar,
+        },
+        reason: ban.reason,
+    }
 }
 
 /// A prompt's method as the Discord service names it.
@@ -243,6 +334,9 @@ pub(super) fn guild_settings(settings: DiscordSettings) -> GuildSettings {
         progress_bar: settings.progress_bar,
         premium_tier: settings.premium_tier,
         features: settings.features,
+        verification_level: settings.verification_level,
+        explicit_content_filter: settings.explicit_content_filter,
+        mfa_level: settings.mfa_level,
     }
 }
 
@@ -259,6 +353,8 @@ fn guild_body(change: &ServerSettingsChange) -> Value {
         banner,
         splash,
         progress_bar,
+        verification_level,
+        explicit_content_filter,
     } = change
     else {
         return Value::Object(body);
@@ -286,6 +382,12 @@ fn guild_body(change: &ServerSettingsChange) -> Value {
     }
     if let Some(shown) = progress_bar {
         body.insert("premium_progress_bar_enabled".into(), (*shown).into());
+    }
+    if let Some(level) = verification_level {
+        body.insert("verification_level".into(), (*level).into());
+    }
+    if let Some(level) = explicit_content_filter {
+        body.insert("explicit_content_filter".into(), (*level).into());
     }
     Value::Object(body)
 }
@@ -340,11 +442,14 @@ mod tests {
             banner: None,
             splash: None,
             progress_bar: Some(true),
+            verification_level: Some(2),
+            explicit_content_filter: None,
         };
         assert_eq!(
             guild_body(&change),
             json!({"system_channel_id": null, "system_channel_flags": 5,
-                   "afk_channel_id": "14", "premium_progress_bar_enabled": true})
+                   "afk_channel_id": "14", "premium_progress_bar_enabled": true,
+                   "verification_level": 2})
         );
     }
 }

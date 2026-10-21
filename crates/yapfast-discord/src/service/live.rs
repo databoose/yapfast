@@ -74,6 +74,16 @@ pub(super) fn live_events(
             })
             .into_iter()
             .collect(),
+        Event::GuildBanAdd | Event::GuildBanRemove => data["guild_id"]
+            .as_str()
+            .zip(crate::server_settings::parse_banned_user(&data["user"]))
+            .map(|(guild, user)| Live::ServerBan {
+                guild: guild.to_owned(),
+                ban: Box::new(crate::server_settings::Ban { user, reason: None }),
+                banned: *event == Event::GuildBanAdd,
+            })
+            .into_iter()
+            .collect(),
         Event::MessageCreate | Event::MessageUpdate => {
             let Some(message) = message.cloned() else {
                 return vec![];

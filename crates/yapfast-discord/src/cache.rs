@@ -628,6 +628,7 @@ mod tests {
                 name: "Alice".into(),
                 avatar: "a.png".into(),
                 premium_type: 0,
+                mfa_enabled: false,
             }),
             servers: vec![Arc::new(Server {
                 id: "10".into(),

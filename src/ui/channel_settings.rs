@@ -129,6 +129,18 @@ impl Adapter {
         if screen.section == ChannelSection::Permissions {
             self.permissions_prompt(&mut prompt);
         }
+        // Lists already shown stay, so their rows keep a click under way.
+        let old = window.get_channel_settings_prompt();
+        // While Discord is away its sections show none; the sidebar waits.
+        prompt.rows = if app.state.discord_online {
+            same_list(&old.rows, prompt.rows)
+        } else {
+            old.rows.clone()
+        };
+        prompt.overwrites = same_list(&old.overwrites, prompt.overwrites);
+        prompt.permissions = same_list(&old.permissions, prompt.permissions);
+        prompt.roles_to_add = same_list(&old.roles_to_add, prompt.roles_to_add);
+        prompt.members_found = same_list(&old.members_found, prompt.members_found);
         window.set_channel_settings_prompt(prompt);
     }
 

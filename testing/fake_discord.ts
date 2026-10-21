@@ -295,7 +295,7 @@ const STICKER_BOUNCE = "1400000000000000311";
 const ALICE = "1400000000000000001";
 
 // Dave has no avatar, so he gets a default one; Carol set another for the server.
-type User = { id: string; username: string; global_name: string; avatar: string | null; bot?: boolean };
+type User = { id: string; username: string; global_name: string | null; avatar: string | null; bot?: boolean };
 const users: Record<string, User> = {
   alice: { id: ALICE, username: "alice", global_name: "Alice", avatar: "alice1" },
   bob: { id: "1400000000000000002", username: "bob", global_name: "Bob", avatar: "bob1" },
@@ -489,6 +489,16 @@ function serverProfile(id: string) {
 }
 const timeouts = new Map<string, string>();
 const removed = new Set<string>();
+/** "Server"'s bans by user id, as Bans lists them: two from before, and
+ *  those Alice makes. GET /guilds/{id}/bans pages through them by id, as
+ *  Discord does, `/bans/search` finds them by name or id, and DELETE lifts
+ *  one, with GUILD_BAN_REMOVE. POST /_control/bans with `{"count": n}` adds
+ *  n more, for paging; members-reset puts back the two. */
+const bans = new Map<string, { user: ReturnType<typeof wireUser>; reason: string | null }>();
+const BANNED: User[] = [
+  { id: "1400000000000000901", username: "mallory", global_name: "Mallory", avatar: null },
+  { id: "1400000000000000902", username: "trent_42", global_name: null, avatar: null },
+];
 /** What Alice's PATCH of a member changed in voice, oldest first, for GET
  *  /_control/voice-changes. */
 const voiceChanges: Record<string, unknown>[] = [];
@@ -504,6 +514,9 @@ function resetMembers() {
   serverProfile(users.bob.id).bio = "Keeps #general tidy.";
   timeouts.clear();
   removed.clear();
+  bans.clear();
+  bans.set(BANNED[0]!.id, { user: wireUser(BANNED[0]!), reason: "Spamming invites in #general" });
+  bans.set(BANNED[1]!.id, { user: wireUser(BANNED[1]!), reason: null });
 }
 resetMembers();
 
@@ -1673,7 +1686,7 @@ let madeRoles = 0;
 
 /** The highest position of a member's roles; the owner is above all. */
 function rank(user: string): number {
-  if (user === users.bob.id) return Infinity;
+  if (user === serverSettings.owner) return Infinity;
   const positions = (memberRoles.get(user) ?? []).map((id) => serverRoles.find((role) => role.id === id)?.position ?? 0);
   return Math.max(0, ...positions);
 }
@@ -1682,7 +1695,7 @@ function rank(user: string): number {
  * and only viewing channels and reading their history for others while timed out. */
 function serverPermissions(user: string): bigint {
   const all = (1n << 53n) - 1n;
-  if (user === users.bob.id) return all;
+  if (user === serverSettings.owner) return all;
   let held = BigInt(EVERYONE);
   for (const id of memberRoles.get(user) ?? []) held |= BigInt(serverRoles.find((role) => role.id === id)?.permissions ?? "0");
   if (held & (1n << 3n)) return all;
@@ -1838,7 +1851,13 @@ function guildChannels(): GuildChannel[] {
 // /auth/mfa/sms/send answers with a hidden phone number. GET
 // /_control/mfa lists the confirmations tried. POST /_control/guild sets
 // the boost level and features, as `{"premium_tier": 2, "features":
-// ["BANNER"]}`.
+// ["BANNER"]}`, the owner, as `{"owner": "<user id>"}`, and whether Alice
+// has 2FA on, as `{"alice_mfa": true}`, which USER_UPDATE tells her.
+// Safety Setup: PATCH /guilds/{id} takes `verification_level`, 0 to 4,
+// and `explicit_content_filter`, 0 to 2, a Community server neither the
+// lowest. POST /guilds/{id}/mfa `{"level": 1}` has moderators need 2FA,
+// as /_control/mfa does, or 0 not; only the owner may, with 2FA on, and
+// Discord asks her to confirm it.
 const SERVER_SETTINGS = {
   name: "Server",
   icon: "server1" as string | null,
@@ -1853,6 +1872,10 @@ const SERVER_SETTINGS = {
   premium_progress_bar_enabled: false,
   premium_tier: 0,
   features: [] as string[],
+  verification_level: 0,
+  explicit_content_filter: 0,
+  owner: users.bob.id,
+  alice_mfa: false,
 };
 const serverSettings = { ...SERVER_SETTINGS };
 const mfa = {
@@ -1873,6 +1896,8 @@ function resetGuild() {
 
 /** Whether Discord holds `method` on `path` back for 2FA while it's on. */
 function needsMfa(method: string, path: string): boolean {
+  // Discord always asks the owner to confirm this, as she has 2FA on.
+  if (method === "POST" && /^\/guilds\/\d+\/mfa$/.test(path)) return serverSettings.alice_mfa;
   if (!mfa.on) return false;
   if (method === "PATCH" && /^\/guilds\/\d+(\/profile)?$/.test(path)) return true;
   if (method !== "GET" && /^\/guilds\/\d+\/roles/.test(path)) return true;
@@ -1917,16 +1942,16 @@ function guild() {
   const properties = {
     id: GUILD,
     name: serverSettings.name,
-    owner_id: users.bob.id,
+    owner_id: serverSettings.owner,
     icon: serverSettings.icon,
     banner: serverSettings.banner,
     splash: serverSettings.splash,
     description: serverSettings.description,
     features: serverSettings.features,
     preferred_locale: "en-US",
-    verification_level: 0,
+    verification_level: serverSettings.verification_level,
     default_message_notifications: serverSettings.default_message_notifications,
-    explicit_content_filter: 0,
+    explicit_content_filter: serverSettings.explicit_content_filter,
     mfa_level: mfa.on ? 1 : 0,
     nsfw_level: 0,
     premium_tier: serverSettings.premium_tier,
@@ -2094,7 +2119,7 @@ function ready(ws: Socket) {
       ...wireUser(users.alice),
       email: world?.email ?? "alice@example.org",
       verified: true,
-      mfa_enabled: false,
+      mfa_enabled: serverSettings.alice_mfa,
       premium_type: nitro ? 2 : 0,
       flags: 0,
       bot: false,
@@ -3966,6 +3991,22 @@ async function api(req: Request, path: string, origin: string): Promise<Response
         changes.default_message_notifications = body.default_message_notifications;
       }
       if ("premium_progress_bar_enabled" in body) changes.premium_progress_bar_enabled = !!body.premium_progress_bar_enabled;
+      // Safety Setup's; a Community server can't go below its lowest.
+      const community = has("COMMUNITY");
+      if ("verification_level" in body) {
+        const level = body.verification_level;
+        if (![0, 1, 2, 3, 4].includes(level) || (community && level === 0)) {
+          return invalid("verification_level", "BASE_TYPE_CHOICES", "Value must be one of {1, 2, 3, 4}.");
+        }
+        changes.verification_level = level;
+      }
+      if ("explicit_content_filter" in body) {
+        const level = body.explicit_content_filter;
+        if (![0, 1, 2].includes(level) || (community && level !== 2)) {
+          return invalid("explicit_content_filter", "BASE_TYPE_CHOICES", "Value must be one of {2}.");
+        }
+        changes.explicit_content_filter = level;
+      }
       for (const [field, level, feature] of [["banner", 2, "BANNER"], ["splash", 1, "INVITE_SPLASH"]] as const) {
         if (!(field in body)) continue;
         if (body[field] === null) {
@@ -5003,6 +5044,56 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return json(guildMemberProfile(ALICE));
   }
 
+  // Bans in Server Settings: the list, its search, and lifting one; see
+  // "Server members" above.
+  if ((m = path.match(/^\/guilds\/(\d+)\/bans(?:\/(search|\d+))?$/)) && (method === "GET" || method === "DELETE")) {
+    if (m[1] !== GUILD) return notFound("Unknown Guild", 10004);
+    const refused = () => json({ message: "Missing Permissions", code: 50013 }, 403);
+    const which = m[2];
+    if (method === "DELETE" && which !== undefined && which !== "search") {
+      if (!aliceMay(2)) return refused();
+      const ban = bans.get(which);
+      if (!ban) return notFound("Unknown Ban", 10026);
+      bans.delete(which);
+      dispatch("GUILD_BAN_REMOVE", { guild_id: GUILD, user: ban.user });
+      return empty();
+    }
+    if (method !== "GET" || (which !== undefined && which !== "search")) return notFound("Unknown Ban", 10026);
+    if (!aliceMay(2) && !aliceMay(7)) return refused();
+    const query = url.searchParams;
+    const limit = Math.min(Number(query.get("limit") ?? 1000) || 1000, which === "search" ? 10 : 1000);
+    const byId = (a: string, b: string) => (BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0);
+    let found = [...bans.values()].sort((a, b) => byId(a.user.id, b.user.id));
+    if (which === "search") {
+      const name = (query.get("query") ?? "").toLowerCase();
+      const ids = query.getAll("user_ids");
+      found = found.filter(({ user }) =>
+        ids.includes(user.id) ||
+        (name !== "" && (user.username.toLowerCase().startsWith(name) || (user.global_name ?? "").toLowerCase().startsWith(name))));
+    } else {
+      const after = query.get("after");
+      if (after) found = found.filter(({ user }) => byId(user.id, after) > 0);
+    }
+    return json(found.slice(0, limit));
+  }
+
+  // Safety Setup: whether moderators need 2FA, which only the owner may
+  // change, with 2FA on.
+  if (method === "POST" && (m = path.match(/^\/guilds\/(\d+)\/mfa$/))) {
+    if (m[1] !== GUILD) return notFound("Unknown Guild", 10004);
+    if (serverSettings.owner !== ALICE || !serverSettings.alice_mfa) {
+      return json({ message: "Missing Permissions", code: 50013 }, 403);
+    }
+    const body: any = await req.json().catch(() => ({}));
+    if (![0, 1].includes(body.level)) {
+      return json({ message: "Invalid Form Body", code: 50035, errors: { level: { _errors: [{ code: "BASE_TYPE_CHOICES", message: "Value must be one of {0, 1}." }] } } }, 400);
+    }
+    mfa.on = body.level === 1;
+    const { properties } = guild();
+    dispatch("GUILD_UPDATE", { ...properties, roles: serverRoles, emojis: guild().emojis });
+    return json({ level: body.level });
+  }
+
   // A member's menu in "Server": nicknames, roles, timeouts, kicks and
   // bans, as far as Alice's roles allow; see "Server members" above.
   if ((m = path.match(/^\/guilds\/(\d+)\/(members|bans)\/(\d+|@me)(?:\/roles\/(\d+))?$/))) {
@@ -5105,6 +5196,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       if (!aliceMay(kind === "bans" ? 2 : 1, user.id)) return refused();
       const body: any = kind === "bans" ? await req.json().catch(() => ({})) : {};
       audit(kind === "bans" ? "ban" : "kick");
+      if (kind === "bans") bans.set(user.id, { user: wireUser(user), reason: header === null ? null : decodeURIComponent(header) });
       changeMembers(() => {
         removed.add(user.id);
         if (kind === "bans") {
@@ -6213,6 +6305,15 @@ const server = Bun.serve<SocketData>({
     if (path === "/_control/cookies") return Response.json(cookieCounts);
     if (path === "/_control/list-requests") return Response.json(listRequests);
     if (path === "/_control/audit-log") return Response.json(auditLog);
+    if (req.method === "POST" && path === "/_control/bans") {
+      const body: any = await req.json().catch(() => ({}));
+      const count = Number(body.count) || 0;
+      for (let n = 0; n < count; n++) {
+        const id = String(1500000000000000000n + BigInt(bans.size + 1));
+        bans.set(id, { user: wireUser({ id, username: `banned_${bans.size + 1}`, global_name: null, avatar: null }), reason: n % 2 ? null : "Raid" });
+      }
+      return new Response(`${bans.size} bans\n`);
+    }
     if (req.method === "POST" && path === "/_control/members-reset") {
       changeMembers(() => {
         const changed = [...memberRoles.keys(), ...memberNicks.keys(), ...timeouts.keys()];
@@ -6603,12 +6704,19 @@ const server = Bun.serve<SocketData>({
       const body: any = await req.json().catch(() => ({}));
       if (typeof body.premium_tier === "number") serverSettings.premium_tier = body.premium_tier;
       if (Array.isArray(body.features)) serverSettings.features = body.features.map(String);
+      if (typeof body.owner === "string") serverSettings.owner = body.owner;
+      if (typeof body.alice_mfa === "boolean") {
+        serverSettings.alice_mfa = body.alice_mfa;
+        dispatch("USER_UPDATE", { ...wireUser(users.alice), mfa_enabled: body.alice_mfa });
+      }
       const { properties } = guild();
       dispatch("GUILD_UPDATE", { ...properties, roles: serverRoles, emojis: guild().emojis });
       return new Response(`Server is at boost level ${serverSettings.premium_tier}\n`);
     }
     if (req.method === "POST" && path === "/_control/guild-reset") {
+      const hadMfa = serverSettings.alice_mfa;
       resetGuild();
+      if (hadMfa) dispatch("USER_UPDATE", { ...wireUser(users.alice), mfa_enabled: false });
       const { properties } = guild();
       dispatch("GUILD_UPDATE", { ...properties, roles: serverRoles, emojis: guild().emojis });
       return new Response("Server is as it started\n");

@@ -62,6 +62,8 @@ pub(super) struct Tracker {
     pub(super) session: Option<String>,
     /// This account's Nitro, as [`Account::premium_type`].
     premium: u8,
+    /// Whether this account has two-factor authentication on.
+    mfa: bool,
     /// Changed through [`Self::server_mut`], which copies one a snapshot
     /// still shares.
     pub(super) servers: Vec<Arc<Server>>,
@@ -127,6 +129,7 @@ impl Tracker {
             me,
             session: ready["session_id"].as_str().map(str::to_owned),
             premium: premium_type(&ready["user"]),
+            mfa: ready["user"]["mfa_enabled"].as_bool().unwrap_or_default(),
             servers: ready::servers(ready).into_iter().map(Arc::new).collect(),
             published: HashMap::new(),
             names,
@@ -412,8 +415,10 @@ impl Tracker {
                 };
                 let before = shown(self);
                 self.learn_user(data);
-                let changed = premium != self.premium || shown(self) != before;
+                let mfa = data["mfa_enabled"].as_bool().unwrap_or(self.mfa);
+                let changed = premium != self.premium || mfa != self.mfa || shown(self) != before;
                 self.premium = premium;
+                self.mfa = mfa;
                 changed
             }
             // An outage, with `unavailable`, keeps the server as last known
@@ -1452,6 +1457,7 @@ impl Tracker {
                 name: name.to_owned(),
                 avatar: names.avatar(None, &self.me),
                 premium_type: self.premium,
+                mfa_enabled: self.mfa,
             }),
             servers,
             folders: self.folders.clone(),

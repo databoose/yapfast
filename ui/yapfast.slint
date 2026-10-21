@@ -36,6 +36,7 @@ import { InvitePrompt, InviteDialog, JoinPrompt, JoinDialog, ChannelPrompt, Chan
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
 import { BoostPicture, BoostPrompt, EngagementPrompt, ServerProfilePrompt, ServerSettingsPrompt, ServerSettingsScreen } from "server_settings.slint";
 import { PermissionRow, RoleMemberRow, RoleRow, RoleSwatch, RolesPrompt } from "roles.slint";
+import { BansPrompt, SafetyOption, SafetyPrompt } from "moderation.slint";
 import { ChannelSettingsPrompt, ChannelSettingsScreen, OverwriteRow, ThreeStateRow } from "channel_settings.slint";
 import { MfaChoice, MfaPrompt, MfaDialog } from "mfa.slint";
 import { FoundRow, PickRow, ThreadRow, HeaderSearch, PinsPopover, ThreadsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
@@ -190,6 +191,8 @@ export component YapfastWindow inherits Window {
     callback server-settings-section(int);
     /// Something done on Roles; see ServerSettingsScreen.
     callback role-input(int, string, int);
+    /// Something done on Bans; see ServerSettingsScreen.
+    callback ban-input(int, string, int);
     callback write-server-setting(int, string);
     callback toggle-server-setting(int);
     callback choose-server-setting(int, int);
@@ -3066,6 +3069,7 @@ export component YapfastWindow inherits Window {
         role-name <=> root.server-settings-role-name;
         choose(section) => { root.server-settings-section(section); }
         role(what, text, number) => { root.role-input(what, text, number); }
+        ban(what, text, number) => { root.ban-input(what, text, number); }
         write(field, text) => { root.write-server-setting(field, text); }
         toggle(which) => { root.toggle-server-setting(which); }
         pick-choice(list, index) => { root.choose-server-setting(list, index); }

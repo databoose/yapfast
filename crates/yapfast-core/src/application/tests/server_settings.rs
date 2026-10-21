@@ -98,7 +98,8 @@ fn server_settings_open_only_with_a_page_she_may_change() {
             SettingsSection::Profile,
             SettingsSection::Engagement,
             SettingsSection::BoostPerks,
-            SettingsSection::Roles
+            SettingsSection::Roles,
+            SettingsSection::Safety
         ]
     );
 
@@ -298,9 +299,9 @@ fn engagement(effects: Vec<Effect>) -> Engagement {
             afk_timeout,
             ..
         } => (system_channel, system_flags, afk_channel, afk_timeout),
-        ServerSettingsChange::Profile { .. } | ServerSettingsChange::Roles { .. } => {
-            panic!("a guild change")
-        }
+        ServerSettingsChange::Profile { .. }
+        | ServerSettingsChange::Roles { .. }
+        | ServerSettingsChange::MfaLevel(_) => panic!("a guild change"),
     }
 }
 

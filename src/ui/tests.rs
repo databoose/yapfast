@@ -4037,7 +4037,9 @@ fn server_settings_open_from_the_menu_and_hold_their_changes_until_saved() {
             (true, "TEST".into()),
             (false, "Server Profile".into()),
             (false, "Engagement".into()),
-            (false, "Boost Perks".into())
+            (false, "Boost Perks".into()),
+            (true, "MODERATION".into()),
+            (false, "Safety Setup".into())
         ]
     );
 
@@ -4157,6 +4159,129 @@ fn engagement_and_boost_perks_show_their_choices_and_locks() {
     assert!(!boost.banner.shown && !boost.progress_bar);
     window.invoke_toggle_server_setting(4);
     assert!(window.get_server_settings_prompt().boost.progress_bar);
+}
+
+#[cfg(feature = "discord")]
+#[test]
+fn moderation_shows_safety_setup_and_bans_as_discords_pages_do() {
+    use slint::Model;
+    use yapfast_core::{
+        chat::{Ban, GuildSettings, RoleMember, ServerSettingsPage, SettingsSection},
+        yapfast_discord::ready::permission,
+    };
+    let (window, adapter, _directory) =
+        discord_server_window_granting(permission::BAN_MEMBERS | permission::MANAGE_GUILD);
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    window.invoke_choose_menu("header:discord:10".into(), false, "server-settings".into());
+    let rows: Vec<String> = window
+        .get_server_settings_prompt()
+        .rows
+        .iter()
+        .map(|row| row.text.to_string())
+        .collect();
+    assert_eq!(
+        rows[rows.len() - 3..],
+        ["MODERATION", "Safety Setup", "Bans"]
+    );
+
+    // Safety Setup: Discord's levels, and the 2FA switch only its owner moves.
+    window.invoke_server_settings_section(4);
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section: SettingsSection::Safety,
+            result: Ok(ServerSettingsPage::Guild(GuildSettings {
+                verification_level: 2,
+                features: vec!["COMMUNITY".into()],
+                ..Default::default()
+            })),
+        });
+        adapter.refresh(&window);
+    }
+    let prompt = window.get_server_settings_prompt();
+    assert!(prompt.immediate);
+    let safety = prompt.safety;
+    let levels: Vec<(String, bool)> = safety
+        .verification_options
+        .iter()
+        .map(|option| (option.title.to_string(), option.enabled))
+        .collect();
+    assert_eq!(
+        levels[0],
+        ("None".into(), false),
+        "not on a Community server"
+    );
+    assert_eq!(levels[4], ("Highest".into(), true));
+    assert_eq!(safety.verification, 2);
+    assert_eq!(
+        safety.mfa_lock.as_str(),
+        "This setting can only be changed by a server owner with 2FA enabled on their account."
+    );
+    // Choosing one goes to Discord at once, without the bar.
+    window.invoke_choose_server_setting(10, 4);
+    let prompt = window.get_server_settings_prompt();
+    assert!(prompt.saving && !prompt.changed);
+    assert_eq!(prompt.safety.verification, 4);
+    adapter.borrow_mut().app.apply(Event::ServerSettingsSaved {
+        server: "discord:10".into(),
+        result: Ok(ServerSettingsPage::Guild(GuildSettings {
+            verification_level: 4,
+            ..Default::default()
+        })),
+    });
+
+    // Bans: the list, and a ban's dialog.
+    window.invoke_server_settings_section(5);
+    {
+        let mut adapter = adapter.borrow_mut();
+        let ban = |id: &str, name: &str, username: Option<&str>, reason: Option<&str>| Ban {
+            user: RoleMember {
+                id: id.into(),
+                name: name.into(),
+                username: username.map(str::to_owned),
+                avatar: String::new(),
+            },
+            reason: reason.map(str::to_owned),
+        };
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section: SettingsSection::Bans,
+            result: Ok(ServerSettingsPage::Bans(vec![
+                ban("5", "Mallory", Some("mallory"), Some("spam")),
+                ban("6", "trent", None, None),
+            ])),
+        });
+        adapter.refresh(&window);
+    }
+    let bans = window.get_server_settings_prompt().bans;
+    let names: Vec<(String, String)> = bans
+        .rows
+        .iter()
+        .map(|row| (row.name.to_string(), row.username.to_string()))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("Mallory".into(), "mallory".into()),
+            ("trent".into(), String::new())
+        ]
+    );
+    assert_eq!(bans.pages, 1);
+    window.invoke_ban_input(3, "6".into(), 0);
+    let bans = window.get_server_settings_prompt().bans;
+    assert!(bans.open && bans.may_unban);
+    assert_eq!(bans.open_name.as_str(), "trent");
+    assert_eq!(bans.open_reason.as_str(), "No reason provided");
+    window.invoke_ban_input(4, "".into(), 0);
+    assert!(!window.get_server_settings_prompt().bans.open);
+
+    // A refresh with nothing new keeps the lists on screen: rows made
+    // again between a click's press and release would lose the click.
+    let shown = window.get_server_settings_prompt();
+    adapter.borrow_mut().refresh(&window);
+    let again = window.get_server_settings_prompt();
+    assert!(again.rows == shown.rows && again.bans.rows == shown.bans.rows);
 }
 
 #[test]

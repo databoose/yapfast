@@ -4,10 +4,10 @@
 
 use yapfast_core::{
     application::{
-        AFK_TIMEOUTS, BOOSTED, DEFAULT_ROLE_COLOR, PermissionLock, PictureEdit, ROLE_COLORS,
-        ROLE_PERMISSIONS, RoleConfirm, RoleInput, RoleLock, RoleRules, RoleTab, RolesPage,
-        SETUP_TIPS, SettingsChoice, SettingsPage, SettingsText, SettingsToggle, WELCOME,
-        WELCOME_STICKER,
+        AFK_TIMEOUTS, BOOSTED, BanInput, BansPage, DEFAULT_ROLE_COLOR, MfaRule, PermissionLock,
+        PictureEdit, ROLE_COLORS, ROLE_PERMISSIONS, RoleConfirm, RoleInput, RoleLock, RoleRules,
+        RoleTab, RolesPage, SETUP_TIPS, SafetyChoice, SafetyPage, SettingsChoice, SettingsPage,
+        SettingsText, SettingsToggle, WELCOME, WELCOME_STICKER,
     },
     chat::{MfaMethod, RoleManager, RoleMember, ServerPicture, SettingsSection},
 };
@@ -21,6 +21,8 @@ fn section_id(section: SettingsSection) -> i32 {
         SettingsSection::Engagement => 1,
         SettingsSection::BoostPerks => 2,
         SettingsSection::Roles => 3,
+        SettingsSection::Safety => 4,
+        SettingsSection::Bans => 5,
     }
 }
 
@@ -30,6 +32,8 @@ fn section(id: i32) -> Option<SettingsSection> {
         1 => Some(SettingsSection::Engagement),
         2 => Some(SettingsSection::BoostPerks),
         3 => Some(SettingsSection::Roles),
+        4 => Some(SettingsSection::Safety),
+        5 => Some(SettingsSection::Bans),
         _ => None,
     }
 }
@@ -107,7 +111,17 @@ impl Adapter {
             text: name.to_uppercase().into(),
             ..Default::default()
         }];
+        let mut moderation = false;
         for section in self.app.settings_sections(&settings.server) {
+            // Safety Setup and Bans under Discord's Moderation.
+            if matches!(section, SettingsSection::Safety | SettingsSection::Bans) && !moderation {
+                moderation = true;
+                rows.push(SettingsRow {
+                    heading: true,
+                    text: "MODERATION".into(),
+                    ..Default::default()
+                });
+            }
             let (text, icon) = match section {
                 SettingsSection::Profile => ("Server Profile", &self.icons.edit),
                 SettingsSection::Engagement => ("Engagement", &self.icons.unmute),
@@ -121,6 +135,8 @@ impl Adapter {
                     });
                     ("Roles", &self.icons.roles)
                 }
+                SettingsSection::Safety => ("Safety Setup", &self.icons.lock),
+                SettingsSection::Bans => ("Bans", &self.icons.ban),
             };
             rows.push(SettingsRow {
                 heading: false,
@@ -155,6 +171,7 @@ impl Adapter {
             may_save: settings.ready(),
             nudge: i32::try_from(settings.nudge % 1_000_000).unwrap_or_default(),
             reading: settings.reading.is_some(),
+            immediate: settings.immediate(),
             ..Default::default()
         };
         match &settings.page {
@@ -237,8 +254,19 @@ impl Adapter {
                 }
                 prompt.roles = roles_prompt(page, &rules);
             }
+            Some(SettingsPage::Safety(page)) => {
+                prompt.safety = safety_prompt(page, self.app.mfa_rule(&settings.server));
+            }
+            Some(SettingsPage::Bans(page)) => {
+                prompt.bans = bans_prompt(
+                    page,
+                    self.app
+                        .may(&settings.server, yapfast_core::chat::Permission::Ban),
+                );
+            }
             None => {}
         }
+        keep_lists(&window.get_server_settings_prompt(), &mut prompt);
         window.set_server_settings_prompt(prompt);
     }
 
@@ -590,6 +618,206 @@ fn hex_color(text: &str) -> Option<u32> {
     u32::from_str_radix(hex, 16).ok()
 }
 
+/// Keeps each list the prompt already shows, where it's unchanged: a new
+/// one would make its rows again, and a click on a row made again between
+/// its press and release would be lost.
+fn keep_lists(old: &ServerSettingsPrompt, new: &mut ServerSettingsPrompt) {
+    macro_rules! keep {
+        ($($field:ident).+) => {
+            new.$($field).+ = same_list(&old.$($field).+, new.$($field).+.clone());
+        };
+    }
+    keep!(rows);
+    keep!(engagement.system_channels);
+    keep!(engagement.afk_channels);
+    keep!(roles.rows);
+    keep!(roles.bright);
+    keep!(roles.dark);
+    keep!(roles.permissions);
+    keep!(roles.members);
+    keep!(roles.candidates);
+    keep!(safety.verification_options);
+    keep!(safety.filter_options);
+    keep!(bans.rows);
+}
+
+/// Discord's colours for the verification levels and content filters.
+const GREEN: u32 = 0x23a55a;
+const YELLOW: u32 = 0xf0b232;
+const ORANGE: u32 = 0xf57731;
+const RED: u32 = 0xf23f43;
+
+/// Discord's words for a choice a Community server can't make.
+const NOT_FOR_COMMUNITY: &str = "This option is not available for Community Servers.";
+
+/// Safety Setup, as Discord words it for the kind of server.
+fn safety_prompt(page: &SafetyPage, rule: MfaRule) -> SafetyPrompt {
+    let community = page.community();
+    let option = |value: u8, title: &str, description: &str, color: Option<u32>, offered: bool| {
+        SafetyOption {
+            value: i32::from(value),
+            title: title.into(),
+            description: if offered {
+                description
+            } else {
+                NOT_FOR_COMMUNITY
+            }
+            .into(),
+            color: color.map_or(slint::Color::from_argb_u8(0, 0, 0, 0), |rgb| {
+                slint::Color::from_rgb_u8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+            }),
+            enabled: offered,
+        }
+    };
+    let levels = [
+        (0, "None", "Unrestricted", None),
+        (
+            1,
+            "Low",
+            "Must have a verified email on their Discord account.",
+            Some(GREEN),
+        ),
+        (
+            2,
+            "Medium",
+            "Must also be registered on Discord for longer than 5 minutes.",
+            Some(YELLOW),
+        ),
+        (
+            3,
+            "High",
+            "Must also be a member of this server for longer than 10 minutes.",
+            Some(ORANGE),
+        ),
+        (
+            4,
+            "Highest",
+            "Must have a verified phone on their Discord account.",
+            Some(RED),
+        ),
+    ];
+    let filters = [
+        (
+            2,
+            "Filter messages from all members",
+            "All messages will be filtered for sensitive image-based media.",
+            Some(RED),
+        ),
+        (
+            1,
+            "Filter messages from server members without roles",
+            "Messages from server members without a role will be filtered for sensitive image-based media.",
+            Some(YELLOW),
+        ),
+        (
+            0,
+            "Do not filter",
+            "Messages will not be filtered for sensitive image-based media.",
+            None,
+        ),
+    ];
+    let verification_options: Vec<SafetyOption> = levels
+        .iter()
+        .map(|&(value, title, description, color)| {
+            option(
+                value,
+                title,
+                description,
+                color,
+                page.offers_verification(value),
+            )
+        })
+        .collect();
+    let filter_options: Vec<SafetyOption> = filters
+        .iter()
+        .map(|&(value, title, description, color)| {
+            option(value, title, description, color, page.offers_filter(value))
+        })
+        .collect();
+    let moderators = "Moderators must have two-factor authentication enabled to ban, kick, or timeout members and delete messages.";
+    let (mfa_text, mfa_note) = match (community, rule) {
+        (false, MfaRule::OwnerWithoutMfa) => (
+            format!(
+                "{moderators} Only the server owner can change this setting if they have 2FA enabled."
+            ),
+            "In order to change this setting, you must have 2FA enabled on your account.",
+        ),
+        (false, _) => (
+            format!(
+                "{moderators} Only the server owner can change this setting if they have 2FA enabled."
+            ),
+            "",
+        ),
+        (true, MfaRule::May) => (moderators.to_owned(), ""),
+        (true, MfaRule::OwnerWithoutMfa) => (
+            format!("{moderators} To change this setting, first enable 2FA on your account."),
+            "",
+        ),
+        (true, MfaRule::NotOwner) => (
+            format!(
+                "{moderators} Only the server owner can change this setting if they have 2FA enabled."
+            ),
+            "",
+        ),
+    };
+    SafetyPrompt {
+        verification_options: ModelRc::new(VecModel::from(verification_options)),
+        verification: i32::from(page.verification()),
+        filter_options: ModelRc::new(VecModel::from(filter_options)),
+        filter: i32::from(page.content_filter()),
+        verification_text: if community {
+            "Members of the server must meet the following criteria before they can send messages. If a member has an assigned role and server onboarding is not enabled, this does not apply."
+        } else {
+            "Members of the server must meet the following criteria before they can send messages in text channels or initiate a direct message conversation. If a member has an assigned role and server onboarding is not enabled, this does not apply. We recommend setting a verification level for a Community Server."
+        }
+        .into(),
+        mfa_on: page.requires_mfa(),
+        mfa_text: mfa_text.into(),
+        mfa_lock: page.mfa_lock(rule).unwrap_or_default().into(),
+        mfa_note: mfa_note.into(),
+    }
+}
+
+/// Bans, a page of them, and the one shown.
+fn bans_prompt(page: &BansPage, may_unban: bool) -> BansPrompt {
+    let rows: Vec<RoleMemberRow> = page
+        .on_page()
+        .into_iter()
+        .map(|ban| member_row(&ban.user, false))
+        .collect();
+    let mut prompt = BansPrompt {
+        rows: ModelRc::new(VecModel::from(rows)),
+        page: i32::try_from(page.page).unwrap_or_default(),
+        pages: i32::try_from(page.pages()).unwrap_or_default(),
+        fetching: page.fetching,
+        may_unban,
+        ..Default::default()
+    };
+    if let Some(ban) = page.open_ban() {
+        let user = &ban.user;
+        prompt.open = true;
+        // Discord's title is the username alone.
+        prompt.open_name = user.username.as_deref().unwrap_or(&user.name).into();
+        prompt.open_reason = ban.reason.as_deref().unwrap_or("No reason provided").into();
+        prompt.open_error = page.open_error.as_deref().unwrap_or_default().into();
+        prompt.unbanning = page.unbanning;
+    }
+    prompt
+}
+
+/// What Bans sent: what was done, with a text or a number.
+fn ban_input(what: i32, text: SharedString, number: i32) -> Option<BanInput> {
+    Some(match what {
+        0 => BanInput::Query(text.into()),
+        1 => BanInput::Search,
+        2 => BanInput::Page(usize::try_from(number).ok()?),
+        3 => BanInput::Open(text.into()),
+        4 => BanInput::Close,
+        5 => BanInput::Unban,
+        _ => return None,
+    })
+}
+
 /// What Roles' screen sent: what was done, with a text or a number.
 fn role_input(what: i32, text: SharedString, number: i32) -> Option<RoleInput> {
     let text = || text.to_string();
@@ -663,6 +891,7 @@ pub(super) fn bind(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
     )));
     act!(on_remove_server_picture(kind) => Some(Action::RemoveServerPicture(picture(kind))));
     act!(on_role_input(what, text, number) => role_input(what, text, number).map(Action::Roles));
+    act!(on_ban_input(what, text, number) => ban_input(what, text, number).map(Action::Bans));
     act!(on_undo_server_settings() => Some(Action::UndoServerSettings));
     act!(on_save_server_settings() => Some(Action::SaveServerSettings));
     act!(on_close_server_settings() => Some(Action::CloseServerSettings));
@@ -691,15 +920,22 @@ pub(super) fn bind(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
                         .map(|(id, _)| id.clone()),
                 )
             };
-            let choice = match list {
-                0 => channel(false).map(SettingsChoice::SystemChannel),
-                1 => u8::try_from(index).ok().map(SettingsChoice::Notifications),
-                2 => channel(true).map(SettingsChoice::AfkChannel),
-                _ => usize::try_from(index)
-                    .ok()
-                    .and_then(|index| AFK_TIMEOUTS.get(index))
-                    .map(|seconds| SettingsChoice::AfkTimeout(*seconds)),
-            };
+            let level = || u8::try_from(index).ok();
+            let choice =
+                match list {
+                    10 => level()
+                        .map(|level| SettingsChoice::Safety(SafetyChoice::Verification(level))),
+                    11 => level()
+                        .map(|level| SettingsChoice::Safety(SafetyChoice::ContentFilter(level))),
+                    12 => Some(SettingsChoice::Safety(SafetyChoice::RequireMfa(index != 0))),
+                    0 => channel(false).map(SettingsChoice::SystemChannel),
+                    1 => u8::try_from(index).ok().map(SettingsChoice::Notifications),
+                    2 => channel(true).map(SettingsChoice::AfkChannel),
+                    _ => usize::try_from(index)
+                        .ok()
+                        .and_then(|index| AFK_TIMEOUTS.get(index))
+                        .map(|seconds| SettingsChoice::AfkTimeout(*seconds)),
+                };
             if let Some(choice) = choice {
                 state
                     .borrow_mut()

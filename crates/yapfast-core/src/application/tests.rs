@@ -2873,6 +2873,7 @@ fn discord_mentions_search_the_server_and_name_roles() {
             name: "Alice".into(),
             avatar: String::new(),
             premium_type: 2,
+            mfa_enabled: false,
         }),
         servers: vec![Arc::new(Server {
             id: "10".into(),
@@ -6288,6 +6289,7 @@ fn a_server_profile_is_edited_as_discords_per_server_profile_editor_does() {
         name: "Alice".into(),
         avatar: "alice.png".into(),
         premium_type: 2,
+        mfa_enabled: false,
     });
     app.apply(discord_event(snapshot));
     app.dispatch(Action::EditServerProfile("discord:10".into()));
@@ -6511,6 +6513,7 @@ fn the_main_profile_is_edited_as_discords_profile_editor_does() {
         name: "Alice".into(),
         avatar: "alice.png".into(),
         premium_type: 2,
+        mfa_enabled: false,
     });
     app.apply(discord_event(snapshot));
     app.dispatch(Action::EditProfile);
@@ -8054,5 +8057,7 @@ fn going_idle_while_signed_out_tells_nobody() {
 
 #[cfg(feature = "discord")]
 mod channel_settings;
+#[cfg(feature = "discord")]
+mod moderation;
 #[cfg(feature = "discord")]
 mod server_settings;

@@ -87,6 +87,10 @@ pub const PAGE: usize = 50;
 /// How many archived threads a page of a channel's list of threads holds,
 /// as Discord's client asks for them.
 pub const THREAD_PAGE: u32 = 25;
+
+/// How many bans Bans fetches at a time, as Discord's client does; a
+/// batch this full may have more after it.
+pub const BANS_PAGE: usize = 1000;
 /// How many posts' messages Discord's client asks a forum for at a time.
 pub const POSTS_PER_ASK: usize = 10;
 
@@ -1167,6 +1171,53 @@ impl Api {
         let path = format!("/guilds/{guild}");
         self.json(with_json(self.request(Method::PATCH, &path), body))
             .await
+    }
+
+    /// Up to [`BANS_PAGE`] of a server's bans, after a user's id, as Bans
+    /// fetches them; it takes Ban Members or View Audit Log.
+    pub async fn bans(&self, guild: &str, after: Option<&str>) -> Result<Value> {
+        let mut path = format!("/guilds/{guild}/bans?limit={BANS_PAGE}");
+        if let Some(after) = after {
+            path.push_str(&format!("&after={after}"));
+        }
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// A server's bans of users named like `query`, or by id, up to 10,
+    /// as Bans' search asks; `user_ids` repeats for each.
+    pub async fn search_bans(
+        &self,
+        guild: &str,
+        query: Option<&str>,
+        user_ids: &[String],
+    ) -> Result<Value> {
+        let mut path = format!("/guilds/{guild}/bans/search?limit=10");
+        if let Some(query) = query {
+            path.push_str(&format!("&query={}", encode(query)));
+        }
+        for id in user_ids {
+            path.push_str(&format!("&user_ids={}", encode(id)));
+        }
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Lifts a ban, as Bans' Revoke Ban does, without a reason; Discord
+    /// sends GUILD_BAN_REMOVE.
+    pub async fn unban(&self, guild: &str, user: &str) -> Result<()> {
+        let path = format!("/guilds/{guild}/bans/{user}");
+        self.empty(self.request(Method::DELETE, &path)).await
+    }
+
+    /// Whether a server's moderators need two-factor authentication, 1, or
+    /// not, 0; only its owner may, with two-factor authentication on.
+    /// Discord answers with `{level}`.
+    pub async fn set_mfa_level(&self, guild: &str, level: u8) -> Result<Value> {
+        let path = format!("/guilds/{guild}/mfa");
+        self.json(with_json(
+            self.request(Method::POST, &path),
+            &json!({ "level": level }),
+        ))
+        .await
     }
 
     /// How many members hold each role, by role id.

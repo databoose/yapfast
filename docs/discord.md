@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [push-to-talk](#push-to-talk) on a recorded key, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio, cameras and push-to-talk on real Windows, and of push-to-talk on real Wayland desktops; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, [joining by invite](#joining-by-invite), making and changing channels, [server settings](#server-settings)' Server Profile, Engagement, Boost Perks and [Roles](#roles), [channel settings](#channel-settings) and their permissions, [two-factor authentication](#two-factor-authentication), threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, most of a server's settings and its privacy, membership forms when joining |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, [joining by invite](#joining-by-invite), making and changing channels, [server settings](#server-settings)' Server Profile, Engagement, Boost Perks, [Roles](#roles), [Safety Setup](#safety-setup) and [Bans](#bans), [channel settings](#channel-settings) and their permissions, [two-factor authentication](#two-factor-authentication), threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, most of a server's settings and its privacy, membership forms when joining |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, [editing one's profile](#editing-ones-main-profile) and [server profiles](#editing-ones-server-profile), notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored; changing the username |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -2333,6 +2333,11 @@ permission:
   bar.
 - Roles, with Manage Roles, under People: the server's roles, their order,
   and each role's name, colour, icon, permissions and members.
+- [Safety Setup](#safety-setup), with Manage Server, under Moderation: the
+  verification level, whether moderators need two-factor authentication,
+  and the sensitive content filter.
+- [Bans](#bans), with Ban Members or View Audit Log, under Moderation: the
+  server's bans, and revoking one, which takes Ban Members.
 
 A heading with no page under it doesn't show, so someone who may only
 manage roles sees People alone.
@@ -2342,7 +2347,8 @@ the repository.
 
 Only the open page's settings are held, from when it opens to when it
 closes: opening a page asks Discord for it, and leaving it drops it. Each
-page edits a draft against what Discord sent. Once the draft differs,
+page but Safety Setup and Bans, which act at once as Discord's do, edits a
+draft against what Discord sent. Once the draft differs,
 Discord's bar shows over the bottom of the page, "Careful — you have
 unsaved changes!", with Reset and Save Changes; until one is chosen,
 choosing another page, Escape and the close button shake the bar red
@@ -2483,6 +2489,77 @@ or above Staff, or a permission Alice doesn't hold, with 50013, a role
 icon below level 2 with its 50035, and sends the GUILD_ROLE events. `POST
 /_control/roles-reset` puts the roles back. `scripts/ui-session do 'pick
 role-icon PATH'` chooses the open role's icon, as the file chooser would.
+
+#### Safety Setup
+
+Safety Setup is Discord's page of that name for a server that isn't a
+Community one, without what Yapfast leaves out: member prune, Activity
+Alerts, the mod queue and Member Verification. Each choice goes to Discord
+as it's made, without the bar, and shows while Discord takes it; a refusal
+puts back what Discord has, with its words.
+
+- **Verification Level**: None, Low, Medium, High and Highest, each with
+  Discord's colour and what it asks of members, from a verified email to a
+  verified phone. A Community server can't have None, which says "This
+  option is not available for Community Servers." Saved with `PATCH
+  /guilds/{id}`, `{verification_level}`.
+- **Require 2FA for moderator actions**: only the owner, with two-factor
+  authentication on, may move it, as Discord's client decides. For anyone
+  else its lock's tooltip says why: "This setting can only be changed by a
+  server owner with 2FA enabled on their account.", or for an owner
+  without 2FA, "To change this setting, first enable 2FA on your
+  account.", with Discord's note under it; a Discoverable server keeps it
+  on. Saved with `POST /guilds/{id}/mfa`, `{level}`, 1 or 0, which Discord
+  holds back until the owner [confirms](#two-factor-authentication).
+  Whether this account has 2FA on comes from READY's `mfa_enabled`, kept
+  current by USER_UPDATE.
+- **Sensitive content filters**: everyone's images, those of members
+  without roles, or no one's; a Community server filters everyone's. Saved
+  with `PATCH /guilds/{id}`, `{explicit_content_filter}`.
+
+On a Community server Discord's client spreads these over its own Safety
+Setup pages; Yapfast keeps them on one, with Discord's Community wording.
+
+#### Bans
+
+Bans is Discord's Server Ban List: the server's bans in Discord's order, 100
+to a page with Previous and Next, each with its avatar, name, and username
+under a display name. `GET /guilds/{id}/bans?limit=1000` fetches them, and
+while the last batch was full, a page past those fetched asks for the next
+batch after its last user's id, as Discord's client does. Search, or Enter
+in its box, asks `GET /guilds/{id}/bans/search` with the first name typed
+as `query` and every user id, 17 to 19 digits, as `user_ids`, split at
+commas, and shows those fetched that match; emptying the box shows them
+all again.
+
+A ban opens a dialog with the username, its reason or "No reason
+provided", and, with Ban Members, Revoke Ban and Done. Revoke Ban sends
+`DELETE /guilds/{id}/bans/{user}`, which Discord may hold back for
+[two-factor authentication](#two-factor-authentication); the ban goes from
+the list once Discord lifts it, and a refusal shows in the dialog. While
+Bans is open, GUILD_BAN_ADD adds a ban made elsewhere, without a reason as
+in Discord's client, and GUILD_BAN_REMOVE takes one off. The page holds the
+bans fetched, and only the page shown has rows and asks for avatars.
+
+Heap in use (window-control `stats`, `measure` builds, the fake's
+"Server", three runs each): 7.70 to 7.73 MiB on #general, as before; 8.58
+to 8.59 with Server Profile open (8.53 to 8.55 before, the sidebar's
+Moderation added); 8.70 to 8.74 on Safety Setup and 8.66 to 8.70 on Bans
+with its two bans; 9.27 to 9.28 with the first 1000 of 1500 more fetched,
+about 0.6 KiB a ban. Closed after Server Profile alone, 8.31 to 8.33, as
+before; after Bans with those 1000, 8.60 to 8.62, and four rounds of it
+stayed at 8.60.
+
+The fake's "Server" has two bans from before, Mallory's with a reason and
+trent_42's without, and keeps those Alice makes. It answers these requests
+for Ban Members or View Audit Log, revokes for Ban Members, and sends
+GUILD_BAN_REMOVE; `POST /_control/bans` with `{"count": n}` adds n more,
+for paging, and `/_control/members-reset` puts back the two. It takes
+Safety Setup's fields, refuses the lowest for a Community server, and lets
+Alice set whether moderators need 2FA only once `POST /_control/guild`
+makes her the owner with 2FA on, as `{"owner": "1400000000000000001",
+"alice_mfa": true}`; she confirms it, and it then holds back moderation as
+`/_control/mfa` does.
 
 ### Channel settings
 

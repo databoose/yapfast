@@ -58,6 +58,7 @@ fn bits(permission: Permission) -> u64 {
         Permission::MuteMembers => permission::MUTE_MEMBERS,
         Permission::DeafenMembers => permission::DEAFEN_MEMBERS,
         Permission::MoveMembers => permission::MOVE_MEMBERS,
+        Permission::ViewAuditLog => permission::VIEW_AUDIT_LOG,
     }
 }
 

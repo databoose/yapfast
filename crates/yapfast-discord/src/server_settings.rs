@@ -53,6 +53,13 @@ pub struct GuildSettings {
     /// unlocks, such as `BANNER`.
     pub premium_tier: u8,
     pub features: Vec<String>,
+    /// What Safety Setup sets: what members must have done before they
+    /// may talk, 0 none to 4 a verified phone; whose images Discord
+    /// filters, 0 no one, 1 those without roles, 2 everyone; and whether
+    /// moderators need two-factor authentication, 1, or not, 0.
+    pub verification_level: u8,
+    pub explicit_content_filter: u8,
+    pub mfa_level: u8,
 }
 
 impl GuildSettings {
@@ -90,7 +97,57 @@ pub fn parse_guild(guild: &Value) -> GuildSettings {
             .flatten()
             .filter_map(|feature| Some(feature.as_str()?.to_owned()))
             .collect(),
+        verification_level: field("verification_level").as_u64().unwrap_or_default() as u8,
+        explicit_content_filter: field("explicit_content_filter")
+            .as_u64()
+            .unwrap_or_default() as u8,
+        mfa_level: field("mfa_level").as_u64().unwrap_or_default() as u8,
     }
+}
+
+/// Someone banned from a server, as Bans lists them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Ban {
+    pub user: BannedUser,
+    /// Why, as the moderator gave it; none from a GUILD_BAN_ADD.
+    pub reason: Option<String>,
+}
+
+/// A banned user, as the ban gives them: banned users may share no server
+/// with this account, so their names aren't learned.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BannedUser {
+    pub id: String,
+    pub username: String,
+    pub global_name: Option<String>,
+    /// The address of their avatar, or Discord's default one.
+    pub avatar: String,
+}
+
+/// A ban from `GET /guilds/{id}/bans`, its search, or a GUILD_BAN_ADD,
+/// whose `user` Discord's client needs; one without is skipped.
+pub fn parse_ban(ban: &Value) -> Option<Ban> {
+    Some(Ban {
+        user: parse_banned_user(&ban["user"])?,
+        reason: ban["reason"]
+            .as_str()
+            .filter(|reason| !reason.is_empty())
+            .map(str::to_owned),
+    })
+}
+
+/// A user object, as a ban carries it.
+pub fn parse_banned_user(user: &Value) -> Option<BannedUser> {
+    let id = user["id"].as_str()?;
+    Some(BannedUser {
+        id: id.to_owned(),
+        username: user["username"].as_str().unwrap_or_default().to_owned(),
+        global_name: user["global_name"]
+            .as_str()
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned),
+        avatar: ready::avatar(id, user["avatar"].as_str()),
+    })
 }
 
 /// A role in full, as Roles in a server's settings shows and edits it.

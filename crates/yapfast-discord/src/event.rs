@@ -68,6 +68,9 @@ events! {
     RateLimited = "RATE_LIMITED",
     /// The member list of a channel Yapfast subscribed to.
     GuildMemberListUpdate = "GUILD_MEMBER_LIST_UPDATE",
+    /// Someone was banned from a server, or unbanned.
+    GuildBanAdd = "GUILD_BAN_ADD",
+    GuildBanRemove = "GUILD_BAN_REMOVE",
     GuildRoleCreate = "GUILD_ROLE_CREATE",
     GuildRoleUpdate = "GUILD_ROLE_UPDATE",
     GuildRoleDelete = "GUILD_ROLE_DELETE",
@@ -159,6 +162,8 @@ mod tests {
             ("GUILD_MEMBER_REMOVE", Event::GuildMemberRemove),
             ("GUILD_MEMBERS_CHUNK", Event::GuildMembersChunk),
             ("GUILD_MEMBER_LIST_UPDATE", Event::GuildMemberListUpdate),
+            ("GUILD_BAN_ADD", Event::GuildBanAdd),
+            ("GUILD_BAN_REMOVE", Event::GuildBanRemove),
             ("GUILD_ROLE_CREATE", Event::GuildRoleCreate),
             ("GUILD_ROLE_UPDATE", Event::GuildRoleUpdate),
             ("GUILD_ROLE_DELETE", Event::GuildRoleDelete),

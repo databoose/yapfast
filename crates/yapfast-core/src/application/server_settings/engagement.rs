@@ -99,6 +99,8 @@ impl EngagementPage {
             banner: None,
             splash: None,
             progress_bar: None,
+            verification_level: None,
+            explicit_content_filter: None,
         })
     }
 }

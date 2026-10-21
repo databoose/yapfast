@@ -615,6 +615,14 @@ pub fn live(
         });
         return;
     }
+    if let Ok(Live::ServerBan { guild, ban, banned }) = &event {
+        let _ = events.send(Event::ServerBan {
+            server: discord::server_id(guild),
+            ban: Box::new(super::server_settings::ban((**ban).clone())),
+            banned: *banned,
+        });
+        return;
+    }
     if let Ok(Live::ServerRoleDeleted { guild, role }) = &event {
         let _ = events.send(Event::ServerRoleDeleted {
             server: discord::server_id(guild),

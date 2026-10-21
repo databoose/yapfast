@@ -102,6 +102,8 @@ impl BoostPage {
                 banner,
                 splash,
                 progress_bar,
+                verification_level: None,
+                explicit_content_filter: None,
             },
         )
     }

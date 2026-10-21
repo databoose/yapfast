@@ -67,11 +67,13 @@ pub use profile_editor::{
 pub use reactions::{ReactionTip, ReactionsWindow, TIP_PEOPLE};
 pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
 pub use server_settings::{
-    ADD_MEMBERS_LIMIT, AFK_TIMEOUTS, AddMembers, BOOSTED, BoostPage, DEFAULT_ROLE_COLOR,
-    DESCRIPTION_LIMIT, EngagementPage, Page as SettingsPage, PermissionGroup, PermissionInfo,
+    ADD_MEMBERS_LIMIT, AFK_TIMEOUTS, AddMembers, BANS_BATCH, BANS_PER_PAGE, BOOSTED, BanInput,
+    BansPage, BoostPage, DEFAULT_ROLE_COLOR, DESCRIPTION_LIMIT, EngagementPage, FILTER_ALL,
+    HIGHEST_VERIFICATION, MfaRule, Page as SettingsPage, PermissionGroup, PermissionInfo,
     PermissionLock, ProfilePage, ROLE_COLORS, ROLE_NAME_LIMIT, ROLE_PERMISSIONS, RoleConfirm,
-    RoleDraft, RoleInput, RoleLock, RoleRules, RoleTab, RolesPage, SETUP_TIPS, ServerSettings,
-    SettingsChoice, SettingsText, SettingsToggle, WELCOME, WELCOME_STICKER,
+    RoleDraft, RoleInput, RoleLock, RoleRules, RoleTab, RolesPage, SETUP_TIPS, SafetyChoice,
+    SafetyPage, ServerSettings, SettingsChoice, SettingsText, SettingsToggle, WELCOME,
+    WELCOME_STICKER,
 };
 pub use threads::{
     NewThread, THREAD_NAME_LIMIT, ThreadFrom, ThreadList, ThreadSearch, ThreadSections,
@@ -1512,6 +1514,8 @@ pub enum Action {
     CloseServerSettings,
     /// Something done on Roles in a server's settings.
     Roles(RoleInput),
+    /// Something done on Bans in a server's settings.
+    Bans(BanInput),
     /// Answer the two-factor prompt: use another method, or with none
     /// list them; write the code; have Discord text it again; confirm; or
     /// cancel, which fails the request waiting on it.
@@ -1822,9 +1826,21 @@ fn pictures_on_screen<'a>(
                     page.original.banner.as_deref(),
                     page.original.splash.as_deref(),
                 ),
-                Some(server_settings::Page::Engagement(_) | server_settings::Page::Roles(_))
+                Some(
+                    server_settings::Page::Engagement(_)
+                    | server_settings::Page::Roles(_)
+                    | server_settings::Page::Safety(_)
+                    | server_settings::Page::Bans(_),
+                )
                 | None => (None, None),
             };
+            // The page of Bans shown.
+            let banned = match &settings.page {
+                Some(server_settings::Page::Bans(page)) => page.on_page(),
+                _ => vec![],
+            }
+            .into_iter()
+            .map(|ban| ban.user.avatar.as_str());
             // Roles' icons, the open role's members and Add Members' finds.
             let roles = match &settings.page {
                 Some(server_settings::Page::Roles(page)) => Some(page),
@@ -1849,6 +1865,7 @@ fn pictures_on_screen<'a>(
                 .chain(icons)
                 .chain(members)
                 .chain(found)
+                .chain(banned)
         }))
         .chain(state.profile_editor.iter().flat_map(|editor| {
             // The profile's pictures and its fallback's, which show where
@@ -2470,10 +2487,7 @@ impl Application {
                 self.toggle_server_setting(toggle);
                 vec![]
             }
-            Action::ChooseServerSetting(choice) => {
-                self.choose_server_setting(choice);
-                vec![]
-            }
+            Action::ChooseServerSetting(choice) => self.choose_server_setting(choice),
             Action::PickServerPicture { kind, path } => self.pick_server_picture(kind, path),
             Action::RemoveServerPicture(kind) => {
                 self.remove_server_picture(kind);
@@ -2485,6 +2499,7 @@ impl Application {
             }
             Action::SaveServerSettings => self.save_server_settings(),
             Action::Roles(input) => self.role_input(input),
+            Action::Bans(input) => self.ban_input(input),
             Action::CloseServerSettings => {
                 self.close_server_settings();
                 vec![]
@@ -2954,6 +2969,21 @@ impl Application {
             Event::ServerRoleDeleted { server, role } => {
                 self.server_role_changed(server, None, Some(role));
             }
+            Event::BansLoaded {
+                server,
+                searched,
+                result,
+            } => self.bans_loaded(server, searched, result),
+            Event::Unbanned {
+                server,
+                user,
+                result,
+            } => self.unbanned(server, user, result),
+            Event::ServerBan {
+                server,
+                ban,
+                banned,
+            } => self.server_ban(server, *ban, banned),
             Event::RoleHolders {
                 server,
                 role,

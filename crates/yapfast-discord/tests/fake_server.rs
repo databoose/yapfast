@@ -2882,6 +2882,7 @@ async fn talks_to_the_fake_server() {
     changes_server_settings_as_discords_client_does(&discord, server, &guild).await;
     changes_roles_as_discords_client_does(&discord, server, &guild).await;
     changes_channel_permissions_as_discords_client_does(&discord, server, &guild).await;
+    moderates_as_discords_client_does(&discord, server, &guild).await;
 
     // Leaving "Server", which Bob owns, takes it out of her list; the fake
     // lets her back in, so the tests after these find it again.
@@ -3281,6 +3282,124 @@ async fn changes_channel_permissions_as_discords_client_does(
     // An empty body takes every channel's overwrites off.
     post_control(server, "/_control/hide-from-bots", "");
     snapshot_where(discord, |known| overwrites(known) == Some(vec![])).await;
+}
+
+/// Safety Setup and Bans in Server Settings, as Discord's client uses
+/// them; part of [`talks_to_the_fake_server`], whose session it shares.
+async fn moderates_as_discords_client_does(discord: &Discord, server: &str, guild: &str) {
+    use serde_json::json;
+    use yapfast_discord::mfa::Method;
+    // Safety Setup's levels, saved with the guild's PATCH.
+    let settings = discord
+        .save_guild_settings(
+            guild,
+            &json!({"verification_level": 3, "explicit_content_filter": 1}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            settings.verification_level,
+            settings.explicit_content_filter
+        ),
+        (3, 1)
+    );
+    post_control(server, "/_control/guild", r#"{"features": ["COMMUNITY"]}"#);
+    assert!(
+        discord
+            .save_guild_settings(guild, &json!({"verification_level": 0}))
+            .await
+            .is_err(),
+        "a Community server can't have none"
+    );
+
+    // Only the owner, with 2FA on, has moderators need it, and confirms.
+    assert!(discord.set_mfa_level(guild, 1).await.is_err());
+    post_control(
+        server,
+        "/_control/guild",
+        r#"{"owner": "1400000000000000001", "alice_mfa": true, "features": []}"#,
+    );
+    snapshot_where(discord, |snapshot| {
+        snapshot
+            .account
+            .as_ref()
+            .is_some_and(|account| account.mfa_enabled)
+    })
+    .await;
+    let mut live = discord.live();
+    let set = tokio::spawn({
+        let (discord, guild) = (discord.clone(), guild.to_owned());
+        async move {
+            discord
+                .stepping_up(|| discord.set_mfa_level(&guild, 1))
+                .await
+        }
+    });
+    let id = live_where(&mut live, |live| match live {
+        Live::MfaRequired { id, .. } => Some(id),
+        _ => None,
+    })
+    .await;
+    discord
+        .finish_mfa(id, Method::Totp, "123456")
+        .await
+        .unwrap();
+    assert_eq!(set.await.unwrap().unwrap().mfa_level, 1);
+    post_control(server, "/_control/guild-reset", "");
+    snapshot_where(discord, |snapshot| {
+        snapshot
+            .account
+            .as_ref()
+            .is_some_and(|account| !account.mfa_enabled)
+    })
+    .await;
+
+    // Bans, a page at a time by id, and Discord's search by name or id.
+    let (mallory, trent) = ("1400000000000000901", "1400000000000000902");
+    let bans = discord.bans(guild, None).await.unwrap();
+    let listed: Vec<(&str, &str, Option<&str>)> = bans
+        .iter()
+        .map(|ban| {
+            (
+                ban.user.id.as_str(),
+                ban.user.username.as_str(),
+                ban.reason.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            (mallory, "mallory", Some("Spamming invites in #general")),
+            (trent, "trent_42", None)
+        ]
+    );
+    let after = discord.bans(guild, Some(mallory)).await.unwrap();
+    assert_eq!(after.len(), 1);
+    let found = discord.search_bans(guild, "MAL").await.unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].user.global_name.as_deref(), Some("Mallory"));
+    let found = discord
+        .search_bans(guild, &format!("nobody, {trent}"))
+        .await
+        .unwrap();
+    assert_eq!(found[0].user.id, trent);
+
+    // Revoke Ban, which GUILD_BAN_REMOVE follows.
+    discord.unban(guild, mallory).await.unwrap();
+    live_where(&mut live, |live| match live {
+        Live::ServerBan {
+            ban, banned: false, ..
+        } if ban.user.id == mallory => Some(()),
+        _ => None,
+    })
+    .await;
+    assert!(
+        discord.unban(guild, mallory).await.is_err(),
+        "no longer banned"
+    );
+    post_control(server, "/_control/members-reset", "");
 }
 
 /// Editing her main profile as Discord's client does, then putting it
