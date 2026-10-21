@@ -6,6 +6,7 @@ use super::{
     *,
 };
 use crate::chat::ForwardFailure;
+use yapfast_discord::server_settings::GuildSettings as DiscordSettings;
 
 /// Why a Discord command fails for a room that isn't Discord's.
 pub(super) const NOT_DISCORD: &str = "That isn't a Discord room.";
@@ -590,6 +591,15 @@ pub fn live(
             .map(|&method| super::server_settings::method(method))
             .collect();
         let _ = events.send(Event::MfaRequired { id: *id, methods });
+        return;
+    }
+    if let Ok(Live::ServerSettings { guild, settings }) = &event {
+        let _ = events.send(Event::ServerSettingsChanged {
+            server: discord::server_id(guild),
+            settings: Box::new(super::server_settings::guild_settings(
+                DiscordSettings::clone(settings),
+            )),
+        });
         return;
     }
     if let Ok(Live::PlacesUsed(places)) = &event {

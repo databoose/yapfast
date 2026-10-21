@@ -2060,18 +2060,58 @@ pub enum MfaMethod {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsSection {
     Profile,
+    Engagement,
+    BoostPerks,
 }
 
 /// A picture of a Discord server's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServerPicture {
     Icon,
+    Banner,
+    /// The invite background.
+    Splash,
 }
 
 /// What a page of a Discord server's settings shows, as Discord sent it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ServerSettingsPage {
     Profile(ServerProfile),
+    /// Engagement's and Boost Perks', which the guild object holds.
+    Guild(GuildSettings),
+}
+
+/// A Discord server's settings, as its Engagement and Boost Perks pages
+/// show them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GuildSettings {
+    /// The channel system messages go to, by its Discord id.
+    pub system_channel: Option<String>,
+    /// Which system messages Discord leaves out, each bit suppressing one:
+    /// Discord's `system_channel_flags`.
+    pub system_flags: u64,
+    /// Whether members who set nothing are notified of every message, 0,
+    /// or only of mentions, 1.
+    pub default_notifications: u8,
+    /// The voice channel idle members move to, by its Discord id, and
+    /// after how many seconds.
+    pub afk_channel: Option<String>,
+    pub afk_timeout: u32,
+    /// The addresses of its banner and invite background, when set.
+    pub banner: Option<String>,
+    pub splash: Option<String>,
+    pub progress_bar: bool,
+    /// Its boost level, 0 to 3, and Discord's features, which the level
+    /// unlocks, such as `BANNER`.
+    pub premium_tier: u8,
+    pub features: Vec<String>,
+}
+
+impl GuildSettings {
+    /// Whether Discord gives the server a feature.
+    pub fn has(&self, feature: &str) -> bool {
+        self.features.iter().any(|known| known == feature)
+    }
 }
 
 /// A Discord server's profile, as Server Profile shows it.
@@ -2093,6 +2133,18 @@ pub enum ServerSettingsChange {
         description: Option<String>,
         /// A new icon, or `None` to remove it.
         icon: Option<Option<PickedPicture>>,
+    },
+    /// Engagement's and Boost Perks', saved with `PATCH /guilds/{id}`.
+    Guild {
+        /// A channel by its Discord id, or `None` for none.
+        system_channel: Option<Option<String>>,
+        system_flags: Option<u64>,
+        default_notifications: Option<u8>,
+        afk_channel: Option<Option<String>>,
+        afk_timeout: Option<u32>,
+        banner: Option<Option<PickedPicture>>,
+        splash: Option<Option<PickedPicture>>,
+        progress_bar: Option<bool>,
     },
 }
 
@@ -2470,6 +2522,12 @@ pub enum Event {
         kind: ServerPicture,
         path: PathBuf,
         result: Result<PickedPicture, String>,
+    },
+    /// A Discord server's settings changed, by its server id, as
+    /// GUILD_UPDATE gives them, for its open settings to follow.
+    ServerSettingsChanged {
+        server: String,
+        settings: Box<GuildSettings>,
     },
     /// The page Discord took the change to a server's settings on, as it
     /// now stands, or why Discord didn't take it.

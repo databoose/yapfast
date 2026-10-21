@@ -4,7 +4,10 @@
 //! "Server settings" in docs/discord.md.
 
 use serde_json::{Map, Value};
-use yapfast_discord::{mfa, server_settings::ServerProfile as DiscordProfile};
+use yapfast_discord::{
+    mfa,
+    server_settings::{GuildSettings as DiscordSettings, ServerProfile as DiscordProfile},
+};
 
 use super::{
     commands::NOT_DISCORD,
@@ -12,14 +15,18 @@ use super::{
     *,
 };
 use crate::chat::{
-    MfaMethod, ServerPicture, ServerProfile, ServerSettingsChange, ServerSettingsPage,
-    SettingsSection,
+    GuildSettings, MfaMethod, ServerPicture, ServerProfile, ServerSettingsChange,
+    ServerSettingsPage, SettingsSection,
 };
 
 /// A server icon as Discord's client crops it, and its preview at the
 /// size Server Profile shows it.
 const ICON: (u32, u32) = (1024, 1024);
 const ICON_PREVIEW: (u32, u32) = (128, 128);
+/// A banner and an invite background, 16 by 9 as Discord recommends them,
+/// and their previews at the size Boost Perks shows them.
+const BACKGROUND: (u32, u32) = (1920, 1080);
+const BACKGROUND_PREVIEW: (u32, u32) = (480, 270);
 
 /// Carries out a command about a server's settings or a two-factor prompt,
 /// or gives back any other.
@@ -99,6 +106,10 @@ pub(super) fn command(
                         .guild_profile(&guild)
                         .await
                         .map(|profile| ServerSettingsPage::Profile(server_profile(profile))),
+                    SettingsSection::Engagement | SettingsSection::BoostPerks => discord
+                        .guild_settings(&guild)
+                        .await
+                        .map(|settings| ServerSettingsPage::Guild(guild_settings(settings))),
                 };
                 let result = result.map_err(|error| {
                     tracing::warn!(
@@ -118,6 +129,15 @@ pub(super) fn command(
             tokio::task::spawn_blocking(move || {
                 let result = match kind {
                     ServerPicture::Icon => read_shaped(&path, ICON, ICON_PREVIEW, "a server icon"),
+                    ServerPicture::Banner => {
+                        read_shaped(&path, BACKGROUND, BACKGROUND_PREVIEW, "a server banner")
+                    }
+                    ServerPicture::Splash => read_shaped(
+                        &path,
+                        BACKGROUND,
+                        BACKGROUND_PREVIEW,
+                        "an invite background",
+                    ),
                 };
                 let _ = events.send(Event::ServerPicture { kind, path, result });
             });
@@ -141,6 +161,14 @@ pub(super) fn command(
                             .stepping_up(|| discord.save_guild_profile(&guild, &body))
                             .await
                             .map(|profile| ServerSettingsPage::Profile(server_profile(profile)))
+                    }
+                    ServerSettingsChange::Guild { .. } => {
+                        let body = guild_body(&change);
+                        drop(change);
+                        discord
+                            .stepping_up(|| discord.save_guild_settings(&guild, &body))
+                            .await
+                            .map(|settings| ServerSettingsPage::Guild(guild_settings(settings)))
                     }
                 };
                 let result = result.map_err(|error| {
@@ -188,6 +216,66 @@ fn server_profile(profile: DiscordProfile) -> ServerProfile {
     }
 }
 
+/// A server's settings as Yapfast shows them.
+pub(super) fn guild_settings(settings: DiscordSettings) -> GuildSettings {
+    GuildSettings {
+        system_channel: settings.system_channel,
+        system_flags: settings.system_flags,
+        default_notifications: settings.default_notifications,
+        afk_channel: settings.afk_channel,
+        afk_timeout: settings.afk_timeout,
+        banner: settings.banner,
+        splash: settings.splash,
+        progress_bar: settings.progress_bar,
+        premium_tier: settings.premium_tier,
+        features: settings.features,
+    }
+}
+
+/// What Discord's client sends for a change to Engagement or Boost Perks,
+/// for `PATCH /guilds/{id}`: only what changed.
+fn guild_body(change: &ServerSettingsChange) -> Value {
+    let mut body = Map::new();
+    let ServerSettingsChange::Guild {
+        system_channel,
+        system_flags,
+        default_notifications,
+        afk_channel,
+        afk_timeout,
+        banner,
+        splash,
+        progress_bar,
+    } = change
+    else {
+        return Value::Object(body);
+    };
+    if let Some(channel) = system_channel {
+        body.insert("system_channel_id".into(), channel.as_deref().into());
+    }
+    if let Some(flags) = system_flags {
+        body.insert("system_channel_flags".into(), (*flags).into());
+    }
+    if let Some(level) = default_notifications {
+        body.insert("default_message_notifications".into(), (*level).into());
+    }
+    if let Some(channel) = afk_channel {
+        body.insert("afk_channel_id".into(), channel.as_deref().into());
+    }
+    if let Some(seconds) = afk_timeout {
+        body.insert("afk_timeout".into(), (*seconds).into());
+    }
+    if let Some(banner) = banner {
+        body.insert("banner".into(), picture(banner));
+    }
+    if let Some(splash) = splash {
+        body.insert("splash".into(), picture(splash));
+    }
+    if let Some(shown) = progress_bar {
+        body.insert("premium_progress_bar_enabled".into(), (*shown).into());
+    }
+    Value::Object(body)
+}
+
 /// What Discord's client sends for a change to a server's profile, for
 /// `PATCH /guilds/{id}/profile`: only what changed.
 fn profile_body(change: &ServerSettingsChange) -> Value {
@@ -196,7 +284,10 @@ fn profile_body(change: &ServerSettingsChange) -> Value {
         name,
         description,
         icon,
-    } = change;
+    } = change
+    else {
+        return Value::Object(body);
+    };
     if let Some(name) = name {
         body.insert("name".into(), name.as_str().into());
     }
@@ -222,5 +313,24 @@ mod tests {
             icon: Some(None),
         };
         assert_eq!(profile_body(&change), json!({"name": "Crew", "icon": null}));
+    }
+
+    #[test]
+    fn a_guild_change_sends_only_what_changed() {
+        let change = ServerSettingsChange::Guild {
+            system_channel: Some(None),
+            system_flags: Some(5),
+            default_notifications: None,
+            afk_channel: Some(Some("14".into())),
+            afk_timeout: None,
+            banner: None,
+            splash: None,
+            progress_bar: Some(true),
+        };
+        assert_eq!(
+            guild_body(&change),
+            json!({"system_channel_id": null, "system_channel_flags": 5,
+                   "afk_channel_id": "14", "premium_progress_bar_enabled": true})
+        );
     }
 }

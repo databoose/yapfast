@@ -2,12 +2,10 @@
 //! client shows them on that page and saves them with `PATCH
 //! /guilds/{id}/profile`.
 
-use std::path::PathBuf;
-
 use super::*;
 use crate::{
     application::profile_editor::PictureEdit,
-    chat::{PickedPicture, ServerPicture, ServerProfile, ServerSettingsChange},
+    chat::{ServerProfile, ServerSettingsChange},
 };
 
 /// The longest name and description Discord takes, in characters, and the
@@ -31,8 +29,6 @@ pub struct ProfilePage {
     pub name: String,
     pub description: String,
     pub icon: PictureEdit,
-    /// A picture being read for the icon.
-    pub reading: Option<PathBuf>,
 }
 
 impl ProfilePage {
@@ -41,7 +37,6 @@ impl ProfilePage {
             name: original.name.clone(),
             description: original.description.clone(),
             icon: PictureEdit::Keep,
-            reading: None,
             original,
         }
     }
@@ -91,12 +86,6 @@ impl ProfilePage {
             .then(|| format!("The description can be up to {DESCRIPTION_LIMIT} characters."))
     }
 
-    /// Whether the draft may be saved: it has no problem, and no picture is
-    /// being read.
-    pub fn ready(&self) -> bool {
-        self.problem().is_none() && self.reading.is_none()
-    }
-
     /// What saving would change; none when nothing does.
     pub fn change(&self) -> Option<ServerSettingsChange> {
         let text = |written: &str, kept: &str| {
@@ -117,86 +106,6 @@ impl ProfilePage {
                 icon,
             },
         )
-    }
-}
-
-impl Application {
-    /// Reads a picture chosen for the server's icon.
-    pub(in crate::application) fn pick_server_picture(
-        &mut self,
-        kind: ServerPicture,
-        path: PathBuf,
-    ) -> Vec<Effect> {
-        let Some(page) = self
-            .state
-            .server_settings
-            .as_mut()
-            .filter(|settings| !settings.saving)
-            .and_then(ServerSettings::profile)
-        else {
-            return vec![];
-        };
-        page.reading = Some(path.clone());
-        vec![Effect::Backend(Command::Discord(
-            DiscordCommand::ServerPicture { kind, path },
-        ))]
-    }
-
-    pub(in crate::application) fn server_picture_read(
-        &mut self,
-        path: PathBuf,
-        result: Result<PickedPicture, String>,
-    ) {
-        let Some(server) = self
-            .state
-            .server_settings
-            .as_ref()
-            .map(|settings| settings.server.clone())
-        else {
-            return;
-        };
-        let animated = self.premium_tier(&server) >= 1;
-        let Some(settings) = self.state.server_settings.as_mut() else {
-            return;
-        };
-        let Some(page) = settings
-            .profile()
-            .filter(|page| page.reading.as_ref() == Some(&path))
-        else {
-            return;
-        };
-        page.reading = None;
-        let error = match result {
-            // An animated icon takes level 1, as Discord's ANIMATED_ICON.
-            Ok(picked) if picked.mime == "image/gif" && !animated => {
-                Some("An animated icon unlocks at boost level 1.".to_owned())
-            }
-            Ok(picked) => {
-                page.icon = PictureEdit::New(picked);
-                None
-            }
-            Err(error) => Some(error),
-        };
-        settings.error = error;
-    }
-
-    /// Removes the server's icon, as Server Profile's Remove does.
-    pub(in crate::application) fn remove_server_picture(&mut self, _kind: ServerPicture) {
-        let Some(page) = self
-            .state
-            .server_settings
-            .as_mut()
-            .filter(|settings| !settings.saving)
-            .and_then(ServerSettings::profile)
-        else {
-            return;
-        };
-        page.reading = None;
-        page.icon = if page.original.icon.is_some() {
-            PictureEdit::Reset
-        } else {
-            PictureEdit::Keep
-        };
     }
 }
 
@@ -239,11 +148,11 @@ mod tests {
     fn a_name_discord_refuses_holds_the_save_back() {
         let mut page = page();
         page.write(SettingsText::Name, "C".into());
-        assert!(page.problem().is_some() && !page.ready());
+        assert!(page.problem().is_some());
         page.write(SettingsText::Name, "C".repeat(NAME_LIMIT + 1));
-        assert!(!page.ready());
+        assert!(page.problem().is_some());
         page.write(SettingsText::Name, "Co".into());
-        assert!(page.ready());
+        assert!(page.problem().is_none());
     }
 
     #[test]

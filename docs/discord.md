@@ -2328,6 +2328,12 @@ permission:
 
 - Server Profile, with Manage Server: the server's name (2 to 100
   characters), icon and description (up to 300).
+- Engagement, with Manage Server: the channel system messages go to and
+  which of them Discord sends, members' default notifications, and the
+  inactive channel and its timeout.
+- Boost Perks, with Manage Server: the server's banner and invite
+  background, each locked until its boost level, and the boost progress
+  bar.
 
 The rest of Discord's pages come in later stages; the plan is kept outside
 the repository.
@@ -2343,14 +2349,19 @@ Discord's answer replaces the page, so the bar goes. A refusal keeps the
 draft, with Discord's words: a field it refused reads "Name: Must be
 between 2 and 100 in length.", from the `errors` of its 50035. A new
 snapshot closes the settings once this account may change none of their
-pages, or isn't in the server, and a name or icon changed elsewhere, which
-GUILD_UPDATE brings, shows unless the draft changed it.
+pages, or isn't in the server, and a change elsewhere, which GUILD_UPDATE
+brings, shows unless the draft changed the same field.
 
 Heap in use (window-control `stats`, `measure` builds, the fake's
 "Server", three runs each): 7.70 to 7.73 MiB on #general before and after
 Server Profile came, 8.43 to 8.49 with it open, and 8.30 to 8.36 once it
 closed. Opening and closing it four times in a row stayed at 8.48 and 8.36:
 what stays is the renderer's, once.
+With Engagement and Boost Perks: 7.70 to 7.73 on #general, 8.51 to 8.52
+with Server Profile open, 8.55 to 8.59 on Engagement and 8.54 to 8.57 on
+Boost Perks. Closed after Server Profile alone, 8.31 to 8.32, as before
+them; after all three pages 8.38 to 8.41, and four rounds of all three
+stayed at 8.42 to 8.43.
 
 Server Profile reads `GET /guilds/{id}/profile` and saves with `PATCH
 /guilds/{id}/profile`, as Discord's page does, with `name`,
@@ -2361,11 +2372,35 @@ editor](#editing-ones-server-profile) reads an avatar: the middle square,
 at most 1024 pixels, with a 128-pixel preview. An animated icon takes boost
 level 1 (`ANIMATED_ICON`).
 
-The fake's "Server" lets Crew, and so Alice, manage it. It answers both
-requests, refuses a name or description Discord would with its 50035, sends
-GUILD_UPDATE, and `POST /_control/guild-reset` puts "Server" back.
-`scripts/ui-session do 'pick icon PATH'` chooses an icon, as the file
-chooser would.
+Engagement and Boost Perks read `GET /guilds/{id}` and save with `PATCH
+/guilds/{id}`, as Discord's pages do. Engagement sends
+`system_channel_id`, `system_channel_flags`,
+`default_message_notifications`, `afk_channel_id` and `afk_timeout`. Its
+four switches each turn a bit of `system_channel_flags` off, as Discord's
+page has them: welcome messages (1), the sticker reply to them (8), boosts
+(2) and setup tips (4); bits Yapfast doesn't show stay as Discord has
+them. The switches wait for a system channel and the timeout for an
+inactive channel, offering Discord's 1, 5, 15 and 30 minutes and 1 hour.
+The channel lists are the server's text channels, without forums and
+announcement channels, and its voice channels, each in the sidebar's
+order. Boost Perks sends `banner`, `splash` and
+`premium_progress_bar_enabled`: the banner opens at level 2 (`BANNER`), an
+animated one at level 3 (`ANIMATED_BANNER`), and the invite background at
+level 1 (`INVITE_SPLASH`), and below its level each reads "Unlocks at
+Level N", as Discord's do. Both pictures are read as the icon is, cut to
+16:9, at most 1920 by 1080, with a 480 by 270 preview. GUILD_UPDATE, which
+follows each save, reaches the open page, so a level reached elsewhere
+unlocks its pictures; it keeps the snapshot's banner and owner current too.
+
+The fake's "Server" lets Crew, and so Alice, manage it. It answers these
+requests, refuses a name or description Discord would with its 50035, as
+it does a channel of the wrong kind, a timeout Discord doesn't offer, and
+a picture below its level, sends GUILD_UPDATE, and `POST
+/_control/guild-reset` puts "Server" back. `POST /_control/guild` sets its
+boost level and features, as `{"premium_tier": 2, "features":
+["BANNER"]}`. `scripts/ui-session do 'pick icon PATH'` chooses an icon, as
+the file chooser would, and `pick server-banner` and `pick splash` the
+other two pictures.
 
 ### Two-factor authentication
 
@@ -2398,7 +2433,7 @@ cancelled." Requests held back at once each get a prompt, one after
 another.
 
 `POST /_control/mfa` has the fake hold back moderation, channel changes
-and Server Profile's saves, with the methods and code its JSON body
+and server settings' saves, with the methods and code its JSON body
 gives, by default `totp` and `123456`; "password" is the password and
 "12345678" a backup code. `?off` stops it, and `GET /_control/mfa` lists
 the confirmations tried.

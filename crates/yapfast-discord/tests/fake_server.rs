@@ -3030,8 +3030,73 @@ async fn changes_server_settings_as_discords_client_does(
         tried,
         json!([{"mfa_type": "totp", "data": "000000"}, {"mfa_type": "totp", "data": "123456"}])
     );
-
     post_control(server, "/_control/mfa?off", "");
+
+    // Engagement: the fields Discord's page sends, each as GUILD_UPDATE
+    // brings it back.
+    let settings = discord.guild_settings(guild).await.unwrap();
+    assert_eq!(
+        (
+            settings.system_channel.as_deref(),
+            settings.afk_timeout,
+            settings.premium_tier
+        ),
+        (Some("1400000000000000102"), 300, 0)
+    );
+    let lounge = "1400000000000000103";
+    let saved = discord
+        .save_guild_settings(
+            guild,
+            &json!({"system_channel_flags": 5, "default_message_notifications": 0,
+                "afk_channel_id": lounge, "afk_timeout": 900}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            saved.system_flags,
+            saved.default_notifications,
+            saved.afk_channel.as_deref(),
+            saved.afk_timeout
+        ),
+        (5, 0, Some(lounge), 900)
+    );
+    live_where(&mut live, |live| match live {
+        Live::ServerSettings {
+            guild: changed,
+            settings,
+        } if changed == guild && settings.afk_timeout == 900 => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // Boost Perks: a banner waits for level 2.
+    let dot = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    assert!(
+        discord
+            .save_guild_settings(guild, &json!({"banner": dot}))
+            .await
+            .is_err()
+    );
+    post_control(server, "/_control/guild", r#"{"premium_tier": 2}"#);
+    let saved = discord
+        .save_guild_settings(
+            guild,
+            &json!({"banner": dot, "premium_progress_bar_enabled": true}),
+        )
+        .await
+        .unwrap();
+    let banner = saved.banner.expect("a banner at level 2");
+    assert!(banner.contains(&format!("/banners/{guild}/")));
+    assert!(saved.progress_bar);
+    snapshot_where(discord, |snapshot| {
+        snapshot
+            .servers
+            .iter()
+            .any(|known| known.id == guild && known.banner.is_some())
+    })
+    .await;
+
     post_control(server, "/_control/guild-reset", "");
     post_control(server, "/_control/members-reset", "");
     snapshot_where(discord, |snapshot| {

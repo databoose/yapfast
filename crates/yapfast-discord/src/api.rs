@@ -1154,6 +1154,21 @@ impl Api {
             .await
     }
 
+    /// A server's guild object, with its settings.
+    pub async fn guild(&self, guild: &str) -> Result<Value> {
+        self.json(self.request(Method::GET, &format!("/guilds/{guild}")))
+            .await
+    }
+
+    /// Changes a server's settings, as Discord's Engagement, Boost Perks and
+    /// Safety Setup pages do; it takes Manage Server. Discord answers with
+    /// the guild, and GUILD_UPDATE.
+    pub async fn modify_guild(&self, guild: &str, body: &Value) -> Result<Value> {
+        let path = format!("/guilds/{guild}");
+        self.json(with_json(self.request(Method::PATCH, &path), body))
+            .await
+    }
+
     /// Changes this account's user: its display name and avatar, as
     /// Discord's profile editor sends them. Discord answers with the user,
     /// and USER_UPDATE.

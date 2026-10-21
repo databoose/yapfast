@@ -410,6 +410,12 @@ pub enum Live {
         id: u64,
         methods: Vec<mfa::Method>,
     },
+    /// A server's settings changed, as GUILD_UPDATE gives them, for its
+    /// settings' pages while they're open.
+    ServerSettings {
+        guild: String,
+        settings: Box<server_settings::GuildSettings>,
+    },
 }
 
 /// What a call needs to open the voice connection Discord assigned.
@@ -1252,6 +1258,23 @@ impl Discord {
     ) -> Result<server_settings::ServerProfile> {
         let profile = self.api.modify_server_profile(guild, body).await?;
         Ok(server_settings::parse_profile(guild, &profile))
+    }
+
+    /// A server's settings, for its Engagement and Boost Perks pages.
+    pub async fn guild_settings(&self, guild: &str) -> Result<server_settings::GuildSettings> {
+        let settings = self.api.guild(guild).await?;
+        Ok(server_settings::parse_guild(&settings))
+    }
+
+    /// Changes a server's settings with `body`'s fields, giving them as
+    /// they now stand; GUILD_UPDATE follows.
+    pub async fn save_guild_settings(
+        &self,
+        guild: &str,
+        body: &Value,
+    ) -> Result<server_settings::GuildSettings> {
+        let settings = self.api.modify_guild(guild, body).await?;
+        Ok(server_settings::parse_guild(&settings))
     }
 
     /// Changes this account's main profile as Discord's client does:

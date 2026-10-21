@@ -388,6 +388,11 @@ impl Tracker {
                 };
                 known.name = update.name;
                 known.icon = update.icon;
+                known.banner = update.banner;
+                // Every GUILD_UPDATE has its owner; a transfer changes it.
+                if update.owner_id.is_some() {
+                    known.owner_id = update.owner_id;
+                }
                 known.premium_tier = update.premium_tier;
                 known.default_level = update.default_level;
                 known.forwarding_disabled = update.forwarding_disabled;

@@ -81,6 +81,10 @@ export component Choices inherits Rectangle {
     in property <[string]> options;
     in property <string> label;
     in-out property <int> current;
+    /// `current` follows what Rust shows, and a click only reports the
+    /// choice: assigning it would drop the binding, and Reset or a live
+    /// update would no longer show.
+    in property <bool> controlled;
     callback chosen(int);
     height: 36px; max-width: 360px;
     border-radius: 8px; background: Theme.sunken;
@@ -94,7 +98,7 @@ export component Choices inherits Rectangle {
             animate background { duration: Theme.quick; }
             accessible-role: button;
             accessible-label: index == root.current ? option + ", chosen" : option;
-            accessible-action-default => { root.current = index; root.chosen(index); }
+            accessible-action-default => { if !root.controlled { root.current = index; } root.chosen(index); }
             Text {
                 text: option; font-size: 14px;
                 color: index == root.current ? Theme.text : Theme.secondary;
@@ -102,10 +106,19 @@ export component Choices inherits Rectangle {
             }
             choice := TouchArea {
                 mouse-cursor: MouseCursor.pointer;
-                clicked => { root.current = index; root.chosen(index); }
+                clicked => { if !root.controlled { root.current = index; } root.chosen(index); }
             }
         }
     }
+}
+
+// A ComboBox showing `chosen`, which Rust keeps: a pick assigns
+// `current-index`, which drops a binding to it, so each change of `chosen` is
+// assigned again, as after Reset or a live update.
+export component Picker inherits ComboBox {
+    in property <int> chosen;
+    current-index: root.chosen;
+    changed chosen => { root.current-index = root.chosen; }
 }
 
 // Discord's bar once a draft differs from what Discord has: Reset puts it back,

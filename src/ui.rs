@@ -651,6 +651,14 @@ fn control(path: PathBuf, shell: Rc<shell::Shell>) -> slint::Timer {
                                 kind: yapfast_core::chat::ServerPicture::Icon,
                                 path,
                             },
+                            "server-banner" => Action::PickServerPicture {
+                                kind: yapfast_core::chat::ServerPicture::Banner,
+                                path,
+                            },
+                            "splash" => Action::PickServerPicture {
+                                kind: yapfast_core::chat::ServerPicture::Splash,
+                                path,
+                            },
                             "banner" => Action::PickProfilePicture {
                                 kind: ProfilePicture::Banner,
                                 path,

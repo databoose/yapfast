@@ -564,7 +564,7 @@ function picture(path: string): Uint8Array {
   const hue = crc32(new TextEncoder().encode(path));
   const light = [(hue >>> 16) & 255, (hue >>> 8) & 255, hue & 255].map((c) => 96 + (c % 160));
   const dark = light.map((c) => c >> 1);
-  const [width, height] = path.includes("/banners/") ? [600, 240] : [128, 128];
+  const [width, height] = /\/(banners|splashes)\//.test(path) ? [600, 240] : [128, 128];
   return png(width, height, (x, y) => [...(x / width + y / height < 1 ? light : dark), 255]);
 }
 
@@ -1768,8 +1768,25 @@ function guildChannels(): GuildChannel[] {
 // answers with a token the request goes again with in
 // X-Discord-MFA-Authorization; anything else is code 60008. POST
 // /auth/mfa/sms/send answers with a hidden phone number. GET
-// /_control/mfa lists the confirmations tried.
-const serverSettings = { name: "Server", icon: "server1" as string | null, description: null as string | null };
+// /_control/mfa lists the confirmations tried. POST /_control/guild sets
+// the boost level and features, as `{"premium_tier": 2, "features":
+// ["BANNER"]}`.
+const SERVER_SETTINGS = {
+  name: "Server",
+  icon: "server1" as string | null,
+  description: null as string | null,
+  system_channel_id: GENERAL as string | null,
+  system_channel_flags: 0,
+  default_message_notifications: 1,
+  afk_channel_id: null as string | null,
+  afk_timeout: 300,
+  banner: null as string | null,
+  splash: null as string | null,
+  premium_progress_bar_enabled: false,
+  premium_tier: 0,
+  features: [] as string[],
+};
+const serverSettings = { ...SERVER_SETTINGS };
 const mfa = {
   on: false,
   methods: ["totp"] as string[],
@@ -1779,7 +1796,7 @@ const mfa = {
   tried: [] as { mfa_type: string; data: string }[],
 };
 function resetGuild() {
-  Object.assign(serverSettings, { name: "Server", icon: "server1", description: null });
+  Object.assign(serverSettings, SERVER_SETTINGS);
   Object.assign(mfa, { on: false, methods: ["totp"], code: "123456" });
   mfa.tickets.clear();
   mfa.tokens.clear();
@@ -1789,7 +1806,7 @@ function resetGuild() {
 /** Whether Discord holds `method` on `path` back for 2FA while it's on. */
 function needsMfa(method: string, path: string): boolean {
   if (!mfa.on) return false;
-  if (method === "PATCH" && /^\/guilds\/\d+\/profile$/.test(path)) return true;
+  if (method === "PATCH" && /^\/guilds\/\d+(\/profile)?$/.test(path)) return true;
   if (method === "POST" && /^\/guilds\/\d+\/channels$/.test(path)) return true;
   if ((method === "PATCH" || method === "DELETE") && /^\/channels\/\d+$/.test(path)) return true;
   return method !== "GET" && /^\/guilds\/\d+\/(members|bans)\/\d+/.test(path);
@@ -1819,9 +1836,9 @@ function guildProfile() {
     online_count: 1,
     brand_color_primary: null,
     traits: [],
-    features: [],
+    features: serverSettings.features,
     visibility: 1,
-    premium_tier: 0,
+    premium_tier: serverSettings.premium_tier,
     premium_subscription_count: 0,
   };
 }
@@ -1832,20 +1849,22 @@ function guild() {
     name: serverSettings.name,
     owner_id: users.bob.id,
     icon: serverSettings.icon,
-    banner: null,
-    splash: null,
+    banner: serverSettings.banner,
+    splash: serverSettings.splash,
     description: serverSettings.description,
-    features: [],
+    features: serverSettings.features,
     preferred_locale: "en-US",
     verification_level: 0,
-    default_message_notifications: 1,
+    default_message_notifications: serverSettings.default_message_notifications,
     explicit_content_filter: 0,
     mfa_level: mfa.on ? 1 : 0,
     nsfw_level: 0,
-    premium_tier: 0,
-    system_channel_id: GENERAL,
-    afk_channel_id: null,
-    afk_timeout: 300,
+    premium_tier: serverSettings.premium_tier,
+    premium_progress_bar_enabled: serverSettings.premium_progress_bar_enabled,
+    system_channel_id: serverSettings.system_channel_id,
+    system_channel_flags: serverSettings.system_channel_flags,
+    afk_channel_id: serverSettings.afk_channel_id,
+    afk_timeout: serverSettings.afk_timeout,
   };
   return {
     id: GUILD,
@@ -3718,6 +3737,68 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       dispatch("GUILD_UPDATE", { ...properties, roles: serverRoles, emojis: guild().emojis });
       return json(guildProfile());
     }
+  }
+
+  // "Server" itself: Engagement and Boost Perks in Server Settings. A
+  // banner needs boost level 2 or BANNER, a GIF one level 3 or
+  // ANIMATED_BANNER, and an invite background level 1 or INVITE_SPLASH;
+  // the refusals' wording is the fake's.
+  if ((m = path.match(/^\/guilds\/(\d+)$/)) && (method === "GET" || method === "PATCH")) {
+    if (m[1] !== GUILD) return notFound("Unknown Guild", 10004);
+    if (method === "PATCH") {
+      if (!aliceMay(5)) return json({ message: "Missing Permissions", code: 50013 }, 403);
+      const body: any = await req.json().catch(() => ({}));
+      const invalid = (field: string, code: string, message: string) =>
+        json({ message: "Invalid Form Body", code: 50035, errors: { [field]: { _errors: [{ code, message }] } } }, 400);
+      const tier = serverSettings.premium_tier;
+      const has = (feature: string) => serverSettings.features.includes(feature);
+      const channel = (id: unknown, type: number) =>
+        id === null || guildChannels().some((known: any) => known.id === id && known.type === type);
+      const changes: Partial<typeof serverSettings> = {};
+      if ("system_channel_id" in body) {
+        if (!channel(body.system_channel_id, 0)) return invalid("system_channel_id", "CHANNEL_TYPE_INVALID", "Invalid channel type");
+        changes.system_channel_id = body.system_channel_id;
+      }
+      if ("afk_channel_id" in body) {
+        if (!channel(body.afk_channel_id, 2)) return invalid("afk_channel_id", "CHANNEL_TYPE_INVALID", "Invalid channel type");
+        changes.afk_channel_id = body.afk_channel_id;
+      }
+      if ("afk_timeout" in body) {
+        if (![60, 300, 900, 1800, 3600].includes(body.afk_timeout)) {
+          return invalid("afk_timeout", "BASE_TYPE_CHOICES", "Value must be one of {60, 300, 900, 1800, 3600}.");
+        }
+        changes.afk_timeout = body.afk_timeout;
+      }
+      if ("system_channel_flags" in body) changes.system_channel_flags = Number(body.system_channel_flags) || 0;
+      if ("default_message_notifications" in body) {
+        if (![0, 1].includes(body.default_message_notifications)) {
+          return invalid("default_message_notifications", "BASE_TYPE_CHOICES", "Value must be one of {0, 1}.");
+        }
+        changes.default_message_notifications = body.default_message_notifications;
+      }
+      if ("premium_progress_bar_enabled" in body) changes.premium_progress_bar_enabled = !!body.premium_progress_bar_enabled;
+      for (const [field, level, feature] of [["banner", 2, "BANNER"], ["splash", 1, "INVITE_SPLASH"]] as const) {
+        if (!(field in body)) continue;
+        if (body[field] === null) {
+          changes[field] = null;
+          continue;
+        }
+        if (tier < level && !has(feature)) {
+          return invalid(field, "GUILD_FEATURE_REQUIRED", `This server needs boost level ${level} for that.`);
+        }
+        const kept = keepPicture(body[field]);
+        if ("error" in kept) return invalid(field, "IMAGE_INVALID", kept.error);
+        if (kept.hash.startsWith("a_") && (field === "splash" || (tier < 3 && !has("ANIMATED_BANNER")))) {
+          return invalid(field, "GUILD_FEATURE_REQUIRED", "This server needs boost level 3 for that.");
+        }
+        changes[field] = kept.hash;
+      }
+      Object.assign(serverSettings, changes);
+      const { properties } = guild();
+      dispatch("GUILD_UPDATE", { ...properties, roles: serverRoles, emojis: guild().emojis });
+    }
+    const { properties } = guild();
+    return json({ ...properties, roles: serverRoles, emojis: guild().emojis, stickers: [] });
   }
 
   // A live stream's preview, from its streamer: a JPEG as a data URI.
@@ -5736,7 +5817,7 @@ const server = Bun.serve<SocketData>({
     if (req.method === "GET" && /^\/(app-icons\/\d+\/[a-z0-9]+\.png|app-assets\/\d+\/[a-z0-9]+\.png|spotify\/[A-Za-z0-9]+)$/.test(path)) {
       return new Response(picture(path), { headers: { "content-type": "image/png" } });
     }
-    if (req.method === "GET" && /^\/(icons\/\d+|avatars\/\d+|banners\/\d+|embed\/avatars|guilds\/\d+\/users\/\d+\/(avatars|banners))\/[^/]+\.png$/.test(path)) {
+    if (req.method === "GET" && /^\/(icons\/\d+|avatars\/\d+|banners\/\d+|splashes\/\d+|embed\/avatars|guilds\/\d+\/users\/\d+\/(avatars|banners))\/[^/]+\.png$/.test(path)) {
       const uploaded = uploadedPictures.get(path.slice(path.lastIndexOf("/") + 1, -".png".length));
       if (uploaded) return new Response(uploaded.data, { headers: { "content-type": uploaded.type } });
       return new Response(picture(path), { headers: { "content-type": "image/png" } });
@@ -6274,6 +6355,14 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "GET" && path === "/_control/mfa") {
       return Response.json(mfa.tried);
+    }
+    if (req.method === "POST" && path === "/_control/guild") {
+      const body: any = await req.json().catch(() => ({}));
+      if (typeof body.premium_tier === "number") serverSettings.premium_tier = body.premium_tier;
+      if (Array.isArray(body.features)) serverSettings.features = body.features.map(String);
+      const { properties } = guild();
+      dispatch("GUILD_UPDATE", { ...properties, roles: serverRoles, emojis: guild().emojis });
+      return new Response(`Server is at boost level ${serverSettings.premium_tier}\n`);
     }
     if (req.method === "POST" && path === "/_control/guild-reset") {
       resetGuild();

@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::chat::{
-    MfaMethod, PickedPicture, ServerPicture, ServerProfile, ServerSettingsChange,
+    GuildSettings, MfaMethod, PickedPicture, ServerPicture, ServerProfile, ServerSettingsChange,
     ServerSettingsPage, SettingsSection,
 };
 
@@ -82,7 +82,11 @@ fn server_settings_open_only_with_a_page_she_may_change() {
     );
     assert_eq!(
         app.settings_sections("discord:10"),
-        [SettingsSection::Profile]
+        [
+            SettingsSection::Profile,
+            SettingsSection::Engagement,
+            SettingsSection::BoostPerks
+        ]
     );
 
     // Opening asks Discord for the first page.
@@ -139,7 +143,10 @@ fn server_profile_saves_what_changed_and_waits_for_reset_or_save_to_leave() {
         name,
         description,
         icon,
-    } = saved(app.dispatch(Action::SaveServerSettings));
+    } = saved(app.dispatch(Action::SaveServerSettings))
+    else {
+        panic!("Server Profile's change");
+    };
     assert_eq!(
         (name, description.as_deref(), icon.is_none()),
         (None, Some("Where we talk"), true)
@@ -235,8 +242,211 @@ fn an_icon_is_read_then_saved_and_an_animated_one_takes_level_1() {
 
     read(&mut app, "image/png");
     let ServerSettingsChange::Profile { icon, .. } =
-        saved(app.dispatch(Action::SaveServerSettings));
+        saved(app.dispatch(Action::SaveServerSettings))
+    else {
+        panic!("Server Profile's change");
+    };
     assert_eq!(icon.flatten().map(|icon| icon.mime), Some("image/png"));
+}
+
+/// `managing`'s settings open at `section`, with `settings` from Discord.
+fn guild_page(section: SettingsSection, settings: GuildSettings) -> Application {
+    let mut app = managing();
+    app.state.discord_online = true;
+    app.dispatch(Action::OpenServerSettings("discord:10".into()));
+    loaded(&mut app, "Test");
+    assert!(matches!(
+        app.dispatch(Action::ServerSettingsSection(section)).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::ServerSettings { section: asked, .. }))]
+            if *asked == section
+    ));
+    app.apply(Event::ServerSettingsLoaded {
+        server: "discord:10".into(),
+        section,
+        result: Ok(ServerSettingsPage::Guild(settings)),
+    });
+    app
+}
+
+/// Engagement's fields of a save.
+type Engagement = (
+    Option<Option<String>>,
+    Option<u64>,
+    Option<Option<String>>,
+    Option<u32>,
+);
+
+fn engagement(effects: Vec<Effect>) -> Engagement {
+    match saved(effects) {
+        ServerSettingsChange::Guild {
+            system_channel,
+            system_flags,
+            afk_channel,
+            afk_timeout,
+            ..
+        } => (system_channel, system_flags, afk_channel, afk_timeout),
+        ServerSettingsChange::Profile { .. } => panic!("a guild change"),
+    }
+}
+
+#[test]
+fn engagement_picks_channels_and_system_messages_as_discords_page_does() {
+    let mut app = guild_page(
+        SettingsSection::Engagement,
+        GuildSettings {
+            system_channel: Some("11".into()),
+            afk_timeout: 300,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        app.settings_channels("discord:10", false),
+        [
+            ("11".to_owned(), "general".to_owned()),
+            ("12".into(), "news".into()),
+            ("13".into(), "memes".into())
+        ]
+    );
+    assert_eq!(
+        app.settings_channels("discord:10", true),
+        [("14".to_owned(), "Lounge".to_owned())]
+    );
+
+    // No timeout without an inactive channel, as Discord greys it out.
+    app.dispatch(Action::ChooseServerSetting(SettingsChoice::AfkTimeout(900)));
+    assert!(!app.state.server_settings.as_ref().unwrap().changed());
+    app.dispatch(Action::ChooseServerSetting(SettingsChoice::AfkChannel(
+        Some("14".into()),
+    )));
+    app.dispatch(Action::ChooseServerSetting(SettingsChoice::AfkTimeout(900)));
+    app.dispatch(Action::ChooseServerSetting(SettingsChoice::AfkTimeout(7)));
+    app.dispatch(Action::ToggleServerSetting(SettingsToggle::SystemMessage(
+        WELCOME,
+    )));
+    assert_eq!(
+        engagement(app.dispatch(Action::SaveServerSettings)),
+        (None, Some(WELCOME), Some(Some("14".into())), Some(900))
+    );
+
+    // Once saved, Boost Perks opens.
+    let settings = GuildSettings {
+        system_flags: WELCOME,
+        afk_channel: Some("14".into()),
+        afk_timeout: 900,
+        ..Default::default()
+    };
+    app.apply(Event::ServerSettingsSaved {
+        server: "discord:10".into(),
+        result: Ok(ServerSettingsPage::Guild(settings.clone())),
+    });
+    app.apply(Event::ServerSettingsChanged {
+        server: "discord:10".into(),
+        settings: Box::new(settings),
+    });
+    assert!(!app.state.server_settings.as_ref().unwrap().changed());
+    assert!(matches!(
+        app.dispatch(Action::ServerSettingsSection(SettingsSection::BoostPerks))
+            .as_slice(),
+        [Effect::Backend(Command::Discord(
+            DiscordCommand::ServerSettings { .. }
+        ))]
+    ));
+}
+
+#[test]
+fn a_change_elsewhere_reaches_an_open_page_but_not_its_draft() {
+    let mut app = guild_page(
+        SettingsSection::Engagement,
+        GuildSettings {
+            system_channel: Some("11".into()),
+            ..Default::default()
+        },
+    );
+    app.dispatch(Action::ChooseServerSetting(SettingsChoice::Notifications(
+        1,
+    )));
+    app.apply(Event::ServerSettingsChanged {
+        server: "discord:10".into(),
+        settings: Box::new(GuildSettings {
+            system_channel: Some("12".into()),
+            default_notifications: 0,
+            ..Default::default()
+        }),
+    });
+    let Some(SettingsPage::Engagement(page)) = &app.state.server_settings.as_ref().unwrap().page
+    else {
+        panic!("Engagement");
+    };
+    assert_eq!(page.system_channel.as_deref(), Some("12"));
+    assert_eq!(page.default_notifications, 1, "her own choice stays");
+}
+
+#[test]
+fn boost_perks_unlock_each_picture_at_its_level() {
+    let mut app = guild_page(
+        SettingsSection::BoostPerks,
+        GuildSettings {
+            premium_tier: 1,
+            ..Default::default()
+        },
+    );
+    // A banner takes level 2.
+    assert!(
+        app.dispatch(Action::PickServerPicture {
+            kind: ServerPicture::Banner,
+            path: "banner.png".into(),
+        })
+        .is_empty()
+    );
+    assert_eq!(
+        app.dispatch(Action::PickServerPicture {
+            kind: ServerPicture::Splash,
+            path: "splash.gif".into(),
+        })
+        .len(),
+        1
+    );
+    let picked = |mime| PickedPicture {
+        mime,
+        data: Arc::from(&b"picture"[..]),
+        preview: Arc::new(chat::Picture::default()),
+    };
+    app.apply(Event::ServerPicture {
+        kind: ServerPicture::Splash,
+        path: "splash.gif".into(),
+        result: Ok(picked("image/gif")),
+    });
+    let settings = app.state.server_settings.as_ref().unwrap();
+    assert!(settings.error.is_some() && !settings.changed());
+
+    app.dispatch(Action::PickServerPicture {
+        kind: ServerPicture::Splash,
+        path: "splash.png".into(),
+    });
+    assert!(
+        app.dispatch(Action::SaveServerSettings).is_empty(),
+        "while it's read"
+    );
+    app.apply(Event::ServerPicture {
+        kind: ServerPicture::Splash,
+        path: "splash.png".into(),
+        result: Ok(picked("image/png")),
+    });
+    app.dispatch(Action::ToggleServerSetting(SettingsToggle::ProgressBar));
+    let ServerSettingsChange::Guild {
+        splash,
+        progress_bar,
+        banner,
+        ..
+    } = saved(app.dispatch(Action::SaveServerSettings))
+    else {
+        panic!("a guild change");
+    };
+    assert_eq!(
+        splash.flatten().map(|splash| splash.mime),
+        Some("image/png")
+    );
+    assert_eq!((progress_bar, banner.is_none()), (Some(true), true));
 }
 
 #[test]

@@ -1,6 +1,6 @@
 import { Theme, Middle, Label } from "theme.slint";
-import { ActionButton, Avatar, TextField } from "controls.slint";
-import { SettingsFrame, SettingsRow, SettingsTitle, SettingsHeading, UnsavedBar } from "settings.slint";
+import { ActionButton, Avatar, TextField, PictureStore } from "controls.slint";
+import { Choices, Picker, SettingsFrame, SettingsRow, SettingsTitle, SettingsHeading, SettingsSwitch, UnsavedBar } from "settings.slint";
 
 /// What Server Profile shows besides what's written in it.
 export struct ServerProfilePrompt {
@@ -9,10 +9,45 @@ export struct ServerProfilePrompt {
     new-icon: image,
     has-icon: bool,
     initial: string,
-    /// A picture chosen for the icon is being read.
-    reading: bool,
     /// How many characters the description has left; below 0, too many.
     description-left: int,
+}
+
+/// What Engagement shows: each list's choices and the chosen one, and the
+/// system messages' switches.
+export struct EngagementPrompt {
+    /// "No System Messages", then the server's text channels.
+    system-channels: [string],
+    system-channel: int,
+    welcome: bool,
+    welcome-sticker: bool,
+    boosted: bool,
+    setup-tips: bool,
+    /// 0 all messages, 1 only @mentions.
+    notifications: int,
+    /// "No Inactive Channel", then the server's voice channels.
+    afk-channels: [string],
+    afk-channel: int,
+    /// One of the timeouts, "1 minute" to "1 hour".
+    afk-timeout: int,
+}
+
+/// A banner or invite background as Boost Perks shows it.
+export struct BoostPicture {
+    url: string,
+    new: image,
+    shown: bool,
+    /// The server's boost level doesn't unlock it yet: "Unlocks at Level 2".
+    locked: string,
+}
+
+/// What Boost Perks shows.
+export struct BoostPrompt {
+    /// "Level 1", or "No Level" before one.
+    level: string,
+    banner: BoostPicture,
+    splash: BoostPicture,
+    progress-bar: bool,
 }
 
 /// What a Discord server's settings show besides what's written in them.
@@ -20,7 +55,7 @@ export struct ServerSettingsPrompt {
     /// The sidebar: the server's name heading the pages this account may
     /// change, under Discord's groups.
     rows: [SettingsRow],
-    /// The page showing: 0 Server Profile.
+    /// The page showing: 0 Server Profile, 1 Engagement, 2 Boost Perks.
     section: int,
     /// Discord sends the page; it's here; Discord takes the change.
     loading: bool,
@@ -34,7 +69,11 @@ export struct ServerSettingsPrompt {
     may-save: bool,
     /// Goes up each time leaving is refused for unsaved changes.
     nudge: int,
+    /// A picture chosen for the page is being read.
+    reading: bool,
     profile: ServerProfilePrompt,
+    engagement: EngagementPrompt,
+    boost: BoostPrompt,
 }
 
 // A text of a settings page, several lines high, with how many characters
@@ -106,11 +145,11 @@ component ServerProfileSection inherits VerticalLayout {
             }
             VerticalLayout {
                 spacing: 8px; alignment: center;
-                Label { text: root.prompt.profile.reading ? "Reading the picture..." : "We recommend an image of at least 512x512."; }
+                Label { text: root.prompt.reading ? "Reading the picture..." : "We recommend an image of at least 512x512."; }
                 HorizontalLayout {
                     spacing: 8px; alignment: start;
                     ActionButton {
-                        text: "Change Server Icon"; enabled: root.ready && !root.prompt.profile.reading;
+                        text: "Change Server Icon"; enabled: root.ready && !root.prompt.reading;
                         clicked => { root.pick-icon(); }
                     }
                     if root.prompt.profile.has-icon: ActionButton {
@@ -133,6 +172,161 @@ component ServerProfileSection inherits VerticalLayout {
     }
 }
 
+// Engagement: where system messages go and which, how members who set nothing
+// are notified, and where idle members move, as Discord's page has them.
+component EngagementSection inherits VerticalLayout {
+    in property <ServerSettingsPrompt> prompt;
+    /// A switch flipped: 0 the welcome message, 1 its sticker reply, 2 the
+    /// boost message, 3 setup tips.
+    callback toggle(int);
+    /// A list's choice: 0 the system channel, 1 notifications, 2 the
+    /// inactive channel, 3 its timeout; by its index.
+    callback choose(int, int);
+    property <bool> ready: !root.prompt.saving;
+    property <EngagementPrompt> page: root.prompt.engagement;
+    property <bool> system: root.page.system-channel > 0;
+    spacing: 16px;
+    SettingsTitle { text: "Engagement"; }
+    VerticalLayout {
+        spacing: 8px;
+        SettingsHeading { text: "SYSTEM MESSAGES CHANNEL"; }
+        Label { text: "This is the channel we send system event messages to. These can be turned off at any time."; }
+        Picker {
+            model: root.page.system-channels; chosen: root.page.system-channel; enabled: root.ready;
+            accessible-label: "System Messages Channel";
+            selected => { root.choose(0, self.current-index); }
+        }
+    }
+    SettingsSwitch {
+        text: "Send a random welcome message when someone joins this server.";
+        checked: root.page.welcome; enabled: root.ready && root.system;
+        toggled => { root.toggle(0); }
+    }
+    SettingsSwitch {
+        text: "Prompt members to reply to welcome messages with a sticker.";
+        checked: root.page.welcome-sticker; enabled: root.ready && root.system;
+        toggled => { root.toggle(1); }
+    }
+    SettingsSwitch {
+        text: "Send a message when someone boosts this server.";
+        checked: root.page.boosted; enabled: root.ready && root.system;
+        toggled => { root.toggle(2); }
+    }
+    SettingsSwitch {
+        text: "Send helpful tips for server setup.";
+        checked: root.page.setup-tips; enabled: root.ready && root.system;
+        toggled => { root.toggle(3); }
+    }
+    VerticalLayout {
+        spacing: 8px;
+        SettingsHeading { text: "DEFAULT NOTIFICATION SETTINGS"; }
+        Label { text: "This will determine whether members who have not explicitly set their notification settings receive a notification for every message sent in this server or not."; }
+        Choices {
+            label: "Default Notification Settings"; options: ["All Messages", "Only @mentions"];
+            current: root.page.notifications; controlled: true;
+            chosen(index) => { root.choose(1, index); }
+        }
+    }
+    VerticalLayout {
+        spacing: 8px;
+        SettingsHeading { text: "INACTIVE CHANNEL"; }
+        Label { text: "Automatically move members to this channel and mute them when they have been idle for longer than the inactive timeout. This does not affect browsers."; }
+        HorizontalLayout {
+            spacing: 16px;
+            Picker {
+                horizontal-stretch: 2;
+                model: root.page.afk-channels; chosen: root.page.afk-channel; enabled: root.ready;
+                accessible-label: "Inactive Channel";
+                selected => { root.choose(2, self.current-index); }
+            }
+            Picker {
+                horizontal-stretch: 1;
+                model: ["1 minute", "5 minutes", "15 minutes", "30 minutes", "1 hour"];
+                chosen: root.page.afk-timeout; enabled: root.ready && root.page.afk-channel > 0;
+                accessible-label: "Inactive Timeout";
+                selected => { root.choose(3, self.current-index); }
+            }
+        }
+    }
+}
+
+// A banner or invite background on Boost Perks: the picture at 16 by 9, with
+// Upload and Remove, or the level that unlocks it.
+component BoostBackground inherits VerticalLayout {
+    in property <string> heading;
+    in property <string> text;
+    in property <BoostPicture> picture;
+    in property <bool> enabled;
+    callback pick;
+    callback remove;
+    property <image> shown: root.picture.url != "" ? PictureStore.picture(root.picture.url, PictureStore.revision) : root.picture.new;
+    init => { if root.picture.url != "" { PictureStore.request(root.picture.url); } }
+    changed picture => { if root.picture.url != "" { PictureStore.request(root.picture.url); } }
+    spacing: 8px;
+    SettingsHeading { text: root.heading; }
+    Label { text: root.text; }
+    HorizontalLayout {
+        spacing: 16px; alignment: start;
+        Rectangle {
+            width: 240px; height: 135px; border-radius: 8px; clip: true;
+            background: Theme.sunken;
+            if root.shown.width > 0: Image { width: parent.width; height: parent.height; source: root.shown; image-fit: cover; }
+            if root.shown.width == 0: Text {
+                text: root.picture.locked != "" ? root.picture.locked : "No image";
+                color: Theme.muted; font-size: 13px; font-weight: 600;
+            }
+        }
+        VerticalLayout {
+            spacing: 8px; alignment: center;
+            ActionButton {
+                text: "Upload Background"; enabled: root.enabled && root.picture.locked == "";
+                clicked => { root.pick(); }
+            }
+            if root.picture.shown: ActionButton {
+                text: "Remove Background"; ghost: true; enabled: root.enabled;
+                clicked => { root.remove(); }
+            }
+        }
+    }
+}
+
+// Boost Perks: the banner, the invite background and the progress bar, each at
+// the level that unlocks it, as Discord's page has them.
+component BoostSection inherits VerticalLayout {
+    in property <ServerSettingsPrompt> prompt;
+    /// 1 the banner, 2 the invite background.
+    callback pick(int);
+    callback remove(int);
+    callback toggle-progress-bar;
+    property <bool> ready: !root.prompt.saving && !root.prompt.reading;
+    property <BoostPrompt> page: root.prompt.boost;
+    spacing: 16px;
+    HorizontalLayout {
+        SettingsTitle { text: "Boost Perks"; horizontal-stretch: 1; }
+        Middle { Text { text: root.page.level; color: Theme.muted; font-size: 14px; font-weight: 700; } }
+    }
+    SettingsSwitch {
+        text: "Show Boost progress bar";
+        description: "This progress bar will display in your channel list, attached to your server name (or server banner if you have one set).";
+        checked: root.page.progress-bar; enabled: !root.prompt.saving;
+        toggled => { root.toggle-progress-bar(); }
+    }
+    BoostBackground {
+        heading: "SERVER BANNER BACKGROUND";
+        text: "The recommended minimum size is 960x540 and recommended aspect ratio is 16:9.";
+        picture: root.page.banner; enabled: root.ready;
+        pick => { root.pick(1); }
+        remove => { root.remove(1); }
+    }
+    BoostBackground {
+        heading: "SERVER INVITE BACKGROUND";
+        text: "Servers who reach Boosting Level 1 and above get unique invite embeds with custom Server Invite Backgrounds. The recommended minimum size is 1920x1080 and recommended aspect ratio is 16:9.";
+        picture: root.page.splash; enabled: root.ready;
+        pick => { root.pick(2); }
+        remove => { root.remove(2); }
+    }
+}
+
 // A Discord server's settings, covering the window: the pages this account
 // may change down the left, the chosen one on the right, and Discord's bar
 // over its bottom once the page has unsaved changes. Leaving the page or the
@@ -144,8 +338,14 @@ export component ServerSettingsScreen inherits Rectangle {
     callback choose(int);
     /// A text changed: 0 the name, 1 the description.
     callback write(int, string);
-    callback pick-icon;
-    callback remove-icon;
+    /// A switch flipped: Engagement's by number, 4 Boost Perks' progress bar.
+    callback toggle(int);
+    /// A list's choice, by list and index; see EngagementSection.
+    callback pick-choice(int, int);
+    /// Choose or remove a picture: 0 the icon, 1 the banner, 2 the invite
+    /// background.
+    callback pick-picture(int);
+    callback remove-picture(int);
     callback undo;
     callback save;
     callback close;
@@ -159,8 +359,19 @@ export component ServerSettingsScreen inherits Rectangle {
         if root.prompt.loaded && root.prompt.section == 0: ServerProfileSection {
             prompt: root.prompt; name <=> root.name; description <=> root.description;
             write(field, text) => { root.write(field, text); }
-            pick-icon => { root.pick-icon(); }
-            remove-icon => { root.remove-icon(); }
+            pick-icon => { root.pick-picture(0); }
+            remove-icon => { root.remove-picture(0); }
+        }
+        if root.prompt.loaded && root.prompt.section == 1: EngagementSection {
+            prompt: root.prompt;
+            toggle(which) => { root.toggle(which); }
+            choose(list, index) => { root.pick-choice(list, index); }
+        }
+        if root.prompt.loaded && root.prompt.section == 2: BoostSection {
+            prompt: root.prompt;
+            pick(kind) => { root.pick-picture(kind); }
+            remove(kind) => { root.remove-picture(kind); }
+            toggle-progress-bar => { root.toggle(4); }
         }
         if root.prompt.problem != "": Text { text: root.prompt.problem; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
         if root.prompt.error != "": Text { text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }

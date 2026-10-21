@@ -3965,7 +3965,12 @@ fn server_settings_open_from_the_menu_and_hold_their_changes_until_saved() {
         .collect();
     assert_eq!(
         rows,
-        [(true, "TEST".into()), (false, "Server Profile".into())]
+        [
+            (true, "TEST".into()),
+            (false, "Server Profile".into()),
+            (false, "Engagement".into()),
+            (false, "Boost Perks".into())
+        ]
     );
 
     {
@@ -4006,6 +4011,84 @@ fn server_settings_open_from_the_menu_and_hold_their_changes_until_saved() {
     assert!(!window.get_server_settings_prompt().changed);
     window.invoke_close_server_settings();
     assert!(!window.get_server_settings_open());
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn engagement_and_boost_perks_show_their_choices_and_locks() {
+    use slint::Model;
+    use yapfast_core::{
+        chat::{GuildSettings, ServerSettingsPage, SettingsSection},
+        yapfast_discord::ready::permission,
+    };
+    let (window, adapter, _directory) = discord_server_window_granting(permission::MANAGE_GUILD);
+    let names = |list: ModelRc<SharedString>| -> Vec<String> {
+        list.iter().map(|name| name.to_string()).collect()
+    };
+    let load = |section: SettingsSection| {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section,
+            result: Ok(ServerSettingsPage::Guild(GuildSettings {
+                system_channel: Some("11".into()),
+                // Welcome messages left out.
+                system_flags: 1,
+                default_notifications: 1,
+                afk_timeout: 300,
+                premium_tier: 1,
+                ..Default::default()
+            })),
+        });
+        adapter.refresh(&window);
+    };
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    window.invoke_choose_menu("header:discord:10".into(), false, "server-settings".into());
+    window.invoke_server_settings_section(1);
+    load(SettingsSection::Engagement);
+    let engagement = window.get_server_settings_prompt().engagement;
+    assert_eq!(
+        names(engagement.system_channels),
+        ["No System Messages", "general"]
+    );
+    assert_eq!(
+        names(engagement.afk_channels),
+        ["No Inactive Channel", "Lounge"]
+    );
+    assert_eq!(
+        (
+            engagement.system_channel,
+            engagement.afk_channel,
+            engagement.afk_timeout,
+            engagement.notifications
+        ),
+        (1, 0, 1, 1)
+    );
+    assert!(!engagement.welcome && engagement.boosted && engagement.setup_tips);
+
+    // An inactive channel, then its timeout, and welcome messages back on.
+    window.invoke_choose_server_setting(2, 1);
+    window.invoke_choose_server_setting(3, 3);
+    window.invoke_toggle_server_setting(0);
+    let prompt = window.get_server_settings_prompt();
+    assert!(prompt.changed && prompt.may_save);
+    assert_eq!(
+        (prompt.engagement.afk_channel, prompt.engagement.afk_timeout),
+        (1, 3)
+    );
+    assert!(prompt.engagement.welcome);
+    window.invoke_undo_server_settings();
+
+    // At level 1 the invite background is open, the banner locked.
+    window.invoke_server_settings_section(2);
+    load(SettingsSection::BoostPerks);
+    let boost = window.get_server_settings_prompt().boost;
+    assert_eq!(boost.level, "Level 1");
+    assert_eq!(boost.banner.locked, "Unlocks at Level 2");
+    assert_eq!(boost.splash.locked, "");
+    assert!(!boost.banner.shown && !boost.progress_bar);
+    window.invoke_toggle_server_setting(4);
+    assert!(window.get_server_settings_prompt().boost.progress_bar);
 }
 
 #[test]

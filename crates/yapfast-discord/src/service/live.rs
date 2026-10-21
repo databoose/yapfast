@@ -47,6 +47,15 @@ pub(super) fn live_events(
         })
     };
     match event {
+        // Few and small: an open page of the server's settings follows it.
+        Event::GuildUpdate => data["id"]
+            .as_str()
+            .map(|guild| Live::ServerSettings {
+                guild: guild.to_owned(),
+                settings: Box::new(crate::server_settings::parse_guild(data)),
+            })
+            .into_iter()
+            .collect(),
         Event::MessageCreate | Event::MessageUpdate => {
             let Some(message) = message.cloned() else {
                 return vec![];

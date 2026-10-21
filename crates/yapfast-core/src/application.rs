@@ -62,7 +62,9 @@ pub use profile_editor::{
 pub use reactions::{ReactionTip, ReactionsWindow, TIP_PEOPLE};
 pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
 pub use server_settings::{
-    DESCRIPTION_LIMIT, Page as SettingsPage, ProfilePage, ServerSettings, SettingsText,
+    AFK_TIMEOUTS, BOOSTED, BoostPage, DESCRIPTION_LIMIT, EngagementPage, Page as SettingsPage,
+    ProfilePage, SETUP_TIPS, ServerSettings, SettingsChoice, SettingsText, SettingsToggle, WELCOME,
+    WELCOME_STICKER,
 };
 pub use threads::{
     NewThread, THREAD_NAME_LIMIT, ThreadFrom, ThreadList, ThreadSearch, ThreadSections,
@@ -1485,6 +1487,8 @@ pub enum Action {
         field: SettingsText,
         text: String,
     },
+    ToggleServerSetting(SettingsToggle),
+    ChooseServerSetting(SettingsChoice),
     PickServerPicture {
         kind: chat::ServerPicture,
         path: PathBuf,
@@ -1796,15 +1800,17 @@ fn pictures_on_screen<'a>(
                 .filter(|_| state.dm_screen == Some(DmScreen::Friends))
                 .filter_map(|friend| friend.avatar.as_deref()),
         )
-        .chain(
-            state
-                .server_settings
-                .iter()
-                .filter_map(|settings| match &settings.page {
-                    Some(server_settings::Page::Profile(page)) => page.original.icon.as_deref(),
-                    None => None,
-                }),
-        )
+        .chain(state.server_settings.iter().flat_map(|settings| {
+            let (first, second) = match &settings.page {
+                Some(server_settings::Page::Profile(page)) => (page.original.icon.as_deref(), None),
+                Some(server_settings::Page::BoostPerks(page)) => (
+                    page.original.banner.as_deref(),
+                    page.original.splash.as_deref(),
+                ),
+                Some(server_settings::Page::Engagement(_)) | None => (None, None),
+            };
+            first.into_iter().chain(second)
+        }))
         .chain(state.profile_editor.iter().flat_map(|editor| {
             // The profile's pictures and its fallback's, which show where
             // the profile's are reset.
@@ -2419,6 +2425,14 @@ impl Application {
                 self.write_server_setting(field, text);
                 vec![]
             }
+            Action::ToggleServerSetting(toggle) => {
+                self.toggle_server_setting(toggle);
+                vec![]
+            }
+            Action::ChooseServerSetting(choice) => {
+                self.choose_server_setting(choice);
+                vec![]
+            }
             Action::PickServerPicture { kind, path } => self.pick_server_picture(kind, path),
             Action::RemoveServerPicture(kind) => {
                 self.remove_server_picture(kind);
@@ -2877,7 +2891,12 @@ impl Application {
                 section,
                 result,
             } => self.server_settings_loaded(server, section, result),
-            Event::ServerPicture { path, result, .. } => self.server_picture_read(path, result),
+            Event::ServerPicture { kind, path, result } => {
+                self.server_picture_read(kind, path, result);
+            }
+            Event::ServerSettingsChanged { server, settings } => {
+                self.server_settings_changed(server, *settings);
+            }
             Event::ServerSettingsSaved { server, result } => {
                 self.server_settings_saved(server, result);
             }

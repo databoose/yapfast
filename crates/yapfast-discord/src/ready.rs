@@ -1357,6 +1357,11 @@ pub fn banner(user: &str, hash: &str) -> String {
     format!("{}/banners/{user}/{hash}.png?size=600", cdn())
 }
 
+/// A server's invite background, at the width its settings show it.
+pub fn splash(guild: &str, hash: &str) -> String {
+    format!("{}/splashes/{guild}/{hash}.png?size=600", cdn())
+}
+
 /// The banner a member set for one server.
 pub fn member_banner(guild: &str, user: &str, hash: &str) -> String {
     format!(
