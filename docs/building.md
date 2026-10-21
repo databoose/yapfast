@@ -193,11 +193,13 @@ the short form of the revision pinned in Cargo.toml. libDF's is
 `scripts/check` enters the development shell itself. `scripts/check --fast`
 builds with the `fast` profile, as local work does. It runs, in order:
 formatting; `scripts/check-doc-links`, which fails on a Markdown link to a
-missing file or heading; Clippy with warnings denied and the tests for the whole workspace;
-a build; and the desktop smoke test, which runs `target/<profile>/yapfast`, the
-desktop build, from that build. Alongside those, in
-`target/check-combinations/` because Cargo lets one build at a time use a
-target directory, it runs Clippy for the Discord-only, Matrix-only and headless
+missing file or heading; Clippy with warnings denied and the tests for the whole workspace
+(Clippy leaves out the UI crate's own targets, which hold no code to lint, but
+still checks it as a dependency); a build; and the desktop smoke test, which
+runs `target/<profile>/yapfast`, the desktop build, from that build. After
+those, one at a time, as each compile of the UI crate takes several GiB of
+memory, and in `target/check-combinations/` so they don't replace the main
+build's artifacts, it runs Clippy for the Discord-only, Matrix-only and headless
 builds and the headless smoke test, whose binary stays there. Each step prints `=== step` and `rc=N` when it ends,
 with Rust's errors when it fails, and keeps its full log under `target/check/`.
 The script runs every step and exits non-zero if any failed.
