@@ -396,6 +396,7 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     bind!(on_open_add_friend, Action::OpenAddFriend);
     bind!(on_open_requests, Action::OpenDmScreen(DmScreen::Requests));
     bind!(on_open_friends, Action::OpenDmScreen(DmScreen::Friends));
+    bind!(on_open_browse, Action::BrowseChannels);
     bind_item!(on_message_friend, Action::MessagePerson);
     bind!(on_link_discord, Action::LinkDiscord);
     bind_item!(on_link_discord_token, Action::LinkDiscordToken);
@@ -1648,6 +1649,23 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     window.on_friend_filter_edited(move || {
         if let Some(window) = weak.upgrade() {
             state.borrow_mut().show_sidebar(&window);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_browse_filter_edited(move || {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().show_sidebar(&window);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_browse_follow(move |room, follow| {
+        if let Some(window) = weak.upgrade() {
+            let room = room.into();
+            state
+                .borrow_mut()
+                .action(&window, Action::BrowseFollow { room, follow });
         }
     });
     let state = adapter.clone();

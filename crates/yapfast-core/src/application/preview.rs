@@ -24,6 +24,7 @@ impl Application {
                 icon: None,
                 folder: None,
                 hide_muted: false,
+                community: false,
                 pinned: Vec::new(),
             },
             ChatServer {
@@ -40,6 +41,7 @@ impl Application {
                 icon: None,
                 folder: None,
                 hide_muted: false,
+                community: false,
                 pinned: Vec::new(),
             },
         ];

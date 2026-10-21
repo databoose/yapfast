@@ -728,6 +728,20 @@ component DmScreenLinks inherits VerticalLayout {
     }
 }
 
+// Browse Channels, at the top of a Community server's channel list, as in
+// Discord's client.
+component BrowseLink inherits VerticalLayout {
+    in property <bool> browsing;
+    callback open-browse;
+    padding-top: 6px; padding-bottom: 6px;
+    ChannelRow {
+        text: "Browse channels";
+        icon: @image-url("icons/hash.svg");
+        selected: root.browsing;
+        clicked => { root.open-browse(); }
+    }
+}
+
 export component RoomList inherits VerticalLayout {
     in property <[RoomRow]> rooms;
     in property <bool> dms-selected;
@@ -750,6 +764,11 @@ export component RoomList inherits VerticalLayout {
     callback open-chat(string);
     callback open-friends;
     callback open-requests;
+    /// A Community server's list opens Browse Channels, which is on screen
+    /// while `browsing`.
+    in property <bool> browse-offered;
+    in property <bool> browsing;
+    callback open-browse;
     /// A conversation's menu was asked for: its id, and where in the window.
     callback open-room-menu(string, length, length);
     /// A right click on someone in a voice channel: the channel's id,
@@ -769,12 +788,16 @@ export component RoomList inherits VerticalLayout {
     min-height: 96px; vertical-stretch: 1;
     property <bool> screens: root.dms-selected && root.discord-linked && !root.preview;
     // With no rooms the list is empty; what it would start with shows above it.
-    if root.rooms.length == 0 && (root.screens || root.sidebar-empty != ""): VerticalLayout {
+    if root.rooms.length == 0 && (root.screens || root.browse-offered || root.sidebar-empty != ""): VerticalLayout {
         padding-left: 8px; padding-right: 8px; spacing: 2px;
         if root.screens: DmScreenLinks {
             friends-open: root.friends-open; requests-current: root.requests-current; requests-badge: root.requests-badge;
             open-friends => { root.open-friends(); }
             open-requests => { root.open-requests(); }
+        }
+        if root.browse-offered: BrowseLink {
+            browsing: root.browsing;
+            open-browse => { root.open-browse(); }
         }
         if root.sidebar-empty != "": HorizontalLayout { padding: 8px; Label { text: root.sidebar-empty; } }
     }
@@ -789,6 +812,10 @@ export component RoomList inherits VerticalLayout {
                 friends-open: root.friends-open; requests-current: root.requests-current; requests-badge: root.requests-badge;
                 open-friends => { root.open-friends(); }
                 open-requests => { root.open-requests(); }
+            }
+            if index == 0 && root.browse-offered: BrowseLink {
+                browsing: root.browsing;
+                open-browse => { root.open-browse(); }
             }
             // A server's pinned channels end with a line, as in Discord.
             if index > 0 && !room.direct && !room.pinned && root.rooms[index - 1].pinned: Rectangle {

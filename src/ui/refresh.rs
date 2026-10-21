@@ -83,6 +83,51 @@ impl Reach {
 /// How long a picture that arrived waits for others to show with it.
 const PICTURE_BATCH: std::time::Duration = std::time::Duration::from_millis(100);
 
+impl Adapter {
+    /// Browse Channels' rows whose channel's name has its search in it, each
+    /// under its category's heading.
+    fn browse_rows(&self, state: &AppState, window: &YapfastWindow) -> Vec<BrowseRow> {
+        use yapfast_core::application::BrowsedKind;
+        let Some(browse) = &state.browse else {
+            return Vec::new();
+        };
+        let query = window.get_browse_filter().trim().to_lowercase();
+        let row = |channel: &yapfast_core::application::BrowsedChannel| BrowseRow {
+            id: channel.id.as_str().into(),
+            name: channel.name.as_str().into(),
+            topic: channel.topic.as_str().into(),
+            icon: match channel.kind {
+                BrowsedKind::Voice => self.icons.voice.clone(),
+                BrowsedKind::Forum => self.icons.forum.clone(),
+                BrowsedKind::Category | BrowsedKind::Text | BrowsedKind::Announcement => {
+                    self.icons.text.clone()
+                }
+            },
+            category: channel.kind == BrowsedKind::Category,
+            voice: channel.kind == BrowsedKind::Voice,
+            forum: channel.kind == BrowsedKind::Forum,
+            followed: channel.followed,
+            by_category: channel.by_category,
+        };
+        let mut rows = Vec::new();
+        let mut heading = None;
+        for channel in &browse.rows {
+            if channel.kind == BrowsedKind::Category {
+                heading = Some(channel);
+                continue;
+            }
+            if !channel.name.to_lowercase().contains(&query) {
+                continue;
+            }
+            if let Some(category) = heading.take() {
+                rows.push(row(category));
+            }
+            rows.push(row(channel));
+        }
+        rows
+    }
+}
+
 /// What the sidebar was built from, kept to tell whether it changed. The
 /// lists are kept as a hash: copies of them took megabytes on a large account.
 #[derive(PartialEq)]
@@ -93,6 +138,7 @@ pub(super) struct SidebarShown {
     dm_screen: Option<DmScreen>,
     filter: SharedString,
     friend_filter: SharedString,
+    browse_filter: SharedString,
     picture_changes: u64,
     category_changes: u64,
     /// Whether Discord took changes, which the header's invite button needs.
@@ -108,6 +154,7 @@ impl SidebarShown {
             dm_screen: state.dm_screen,
             filter: window.get_filter(),
             friend_filter: window.get_friend_filter(),
+            browse_filter: window.get_browse_filter(),
             picture_changes: state.picture_changes,
             category_changes: state.category_changes,
             discord_online: state.discord_online,
@@ -123,6 +170,7 @@ impl SidebarShown {
             &state.friends,
             &state.friend_requests,
             &state.pinned,
+            &state.browse,
         )
             .hash(&mut hasher);
         hasher.finish()
@@ -135,6 +183,7 @@ impl SidebarShown {
             && self.dm_screen == state.dm_screen
             && self.filter == window.get_filter()
             && self.friend_filter == window.get_friend_filter()
+            && self.browse_filter == window.get_browse_filter()
             && self.picture_changes == state.picture_changes
             && self.category_changes == state.category_changes
             && self.discord_online == state.discord_online
@@ -467,6 +516,20 @@ impl Adapter {
         update_model(&self.models.friends, friend_rows);
         window.set_friend_count(i32::try_from(state.friends.len()).unwrap_or(i32::MAX));
         window.set_friends_open(direct && state.dm_screen == Some(DmScreen::Friends));
+        // Browse Channels, at the top of a Community server's channel list;
+        // its rows only while it shows, filtered by its search.
+        window.set_browse_offered(
+            state.discord_online
+                && match &state.navigation {
+                    Navigation::Server(id) => state
+                        .servers
+                        .iter()
+                        .any(|server| &server.id == id && server.community),
+                    Navigation::DirectMessages => false,
+                },
+        );
+        window.set_browse_open(state.browse.is_some());
+        update_model(&self.models.browse_rows, self.browse_rows(state, window));
         let requests_open = direct && state.dm_screen == Some(DmScreen::Requests);
         window.set_requests_open(requests_open);
         window.set_requests_current(

@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [push-to-talk](#push-to-talk) on a recorded key, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio, cameras and push-to-talk on real Windows, and of push-to-talk on real Wayland desktops; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, [following channels](#following-channels), invites, [joining by invite](#joining-by-invite), making and changing channels, [server settings](#server-settings)' Server Profile, Engagement, Boost Perks, [Roles](#roles), [Safety Setup](#safety-setup), [Audit Log](#audit-log) and [Bans](#bans), [channel settings](#channel-settings) and their permissions, [two-factor authentication](#two-factor-authentication), threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, most of a server's settings and its privacy, membership forms when joining, Browse Channels |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, [following channels](#following-channels), invites, [joining by invite](#joining-by-invite), making and changing channels, [server settings](#server-settings)' Server Profile, Engagement, Boost Perks, [Roles](#roles), [Safety Setup](#safety-setup), [Audit Log](#audit-log) and [Bans](#bans), [channel settings](#channel-settings) and their permissions, [two-factor authentication](#two-factor-authentication), threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, most of a server's settings and its privacy, membership forms when joining |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, [editing one's profile](#editing-ones-main-profile) and [server profiles](#editing-ones-server-profile), notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored; changing the username |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -1679,8 +1679,8 @@ keeps each override's flags and answers the bulk endpoint as Discord does.
 
 A Community server's members may list only the channels they follow, as
 Discord's client has them do from the server's menu by unticking Show
-All Channels, from a channel's menu, and from Browse Channels, which
-Yapfast doesn't have yet. Discord keeps it with the account, so its list
+All Channels, from a channel's menu, and from [Browse
+Channels](#browse-channels). Discord keeps it with the account, so its list
 matches Discord's on every client. Its server menu, and the dropdown of its
 header, tick Show All Channels above Hide muted channels; a server that
 isn't a Community server (`COMMUNITY` among its `features`) has neither the
@@ -1720,6 +1720,35 @@ worked out with the pinned channels when the server's snapshot changes,
 rather than a list of their ids on the server. The channel list drops them as it drops muted channels in a
 server that hides them (`AppState::scoped_rooms`). The fake keeps the server's flags, and its
 control endpoint makes "Server" a Community server.
+
+#### Browse Channels
+
+A Community server's channel list starts with Browse channels, as
+Discord's client has it, which opens Browse Channels in place of the
+conversation: every text and voice channel the account sees, but threads,
+under its category's heading in the channel list's order, with a search of
+their names. Each channel shows its icon, name and topic, a button that
+opens it (View, or Join for a voice channel, Open for a forum) and a box
+ticked while the list follows it; clicking the row ticks or clears it. A
+category's heading has a Follow category switch, and the channels of a
+followed category show ticked and can't change by themselves, as Discord's
+tooltip says: "You must unfollow this category to add or remove specific
+channels."
+
+Ticking or clearing writes what a channel's menu writes, but it also
+turns Show All Channels off, as Discord's client does, in one `PATCH
+/users/@me/guilds/{guild}/settings` with the server's `flags` and the
+channel's. With Show All Channels on and nothing followed every box shows
+ticked, and clearing one follows every other channel the account sees.
+Discord's client lets a page of changes wait and sends them when it
+closes; Yapfast sends each at once and ticks the box when Discord confirms
+it. Its "Channels & Roles" tab of onboarding questions, the Create button
+and the channel's subtitle of active threads and when it was last active
+are left out, and View opens the channel rather than showing it beside the
+list.
+
+`Application::open_browse` keeps the rows in `AppState::browse` only while
+it shows, and works them out again from each snapshot.
 
 ### Threads
 

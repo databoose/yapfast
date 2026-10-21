@@ -380,6 +380,9 @@ pub struct ChatServer {
     /// Its muted channels stay out of the channel list, as this account's
     /// Discord notification settings for it say.
     pub hide_muted: bool,
+    /// A Discord Community server, whose channel list opens Browse
+    /// Channels.
+    pub community: bool,
     /// The room ids of the channels this account pinned to the top of its
     /// channel list, a Discord server's, in the order they show there.
     pub pinned: Vec<String>,

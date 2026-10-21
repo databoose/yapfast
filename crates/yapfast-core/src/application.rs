@@ -17,6 +17,7 @@ use crate::{
 };
 
 mod aside;
+mod browse;
 mod calls;
 mod channel_settings;
 mod compose;
@@ -42,6 +43,7 @@ mod server_settings;
 mod session;
 mod threads;
 
+pub use browse::{BrowseChannels, BrowsedChannel, BrowsedKind};
 pub use channel_settings::{
     ChannelInput, ChannelSection, ChannelSettingsScreen, OverwriteConfirm, OverwriteRules,
     OverwriteState, Overwrites, channel_groups, channel_permission,
@@ -431,6 +433,8 @@ pub struct AppState {
     pub add_friend: Option<AddFriend>,
     /// A screen of the DM list open in place of a conversation.
     pub dm_screen: Option<DmScreen>,
+    /// Browse Channels, open in place of a server's conversation.
+    pub browse: Option<BrowseChannels>,
     /// Whether a one-to-one DM shows its other person's profile beside it.
     pub profile_panel: bool,
     /// That profile, for the open DM.
@@ -1290,6 +1294,15 @@ pub enum Action {
     Befriend(String),
     /// Show a screen of the DM list in place of the conversation.
     OpenDmScreen(DmScreen),
+    /// Show Browse Channels for the Discord server navigated to in place
+    /// of its conversation.
+    BrowseChannels,
+    /// Tick a channel's box in Browse Channels, by its room id, or a
+    /// category's switch, or clear it with `follow` false.
+    BrowseFollow {
+        room: String,
+        follow: bool,
+    },
     /// Open the DM with someone, by Discord user id or Matrix ID, starting
     /// one with a Discord friend or a Matrix user if there's none.
     MessagePerson(String),
@@ -2237,6 +2250,8 @@ impl Application {
             }
             Action::Navigate(navigation) => self.navigate(navigation),
             Action::OpenDmScreen(screen) => self.open_dm_screen(screen),
+            Action::BrowseChannels => self.open_browse(),
+            Action::BrowseFollow { room, follow } => self.browse_follow(room, follow),
             Action::MessagePerson(user) => self.message_person(user),
             Action::ShowProfilePanel(shown) => {
                 self.state.profile_panel = shown;

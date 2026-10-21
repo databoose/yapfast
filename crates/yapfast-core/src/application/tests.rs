@@ -54,6 +54,7 @@ fn connected() -> Application {
             icon: None,
             folder: None,
             hide_muted: false,
+            community: false,
             pinned: Vec::new(),
         }],
     }));
@@ -126,6 +127,7 @@ fn locked_channels_show_without_asking_for_their_messages() {
             icon: None,
             folder: None,
             hide_muted: false,
+            community: false,
             pinned: Vec::new(),
         }],
     }));
@@ -4649,6 +4651,7 @@ fn a_matrix_room_divider_follows_its_read_receipt_once_loaded() {
             icon: None,
             folder: None,
             hide_muted: false,
+            community: false,
             pinned: Vec::new(),
         }],
     }));
@@ -5766,6 +5769,121 @@ fn a_community_server_lists_only_the_channels_followed_as_discords_client_does()
         Some(2048 | 4096),
         "keeps the pin"
     );
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn browse_channels_ticks_the_channels_followed_as_discords_client_does() {
+    use yapfast_discord::notifications::Override;
+    let mut app = discord_server();
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    app.dispatch(Action::SelectRoom("discord:10:11".into()));
+    let settings = |app: &mut Application, server_flags: u64, flags: &[(&str, u64)]| {
+        let flags: Vec<(String, u64)> = flags
+            .iter()
+            .map(|(channel, flags)| ((*channel).to_owned(), *flags))
+            .collect();
+        change_server(app, move |server| {
+            let mut settings =
+                yapfast_discord::notifications::Notifications::clone(&server.notifications);
+            settings.flags = server_flags;
+            for (channel, flags) in flags {
+                let known = settings.overrides.entry(channel).or_default();
+                *known = Override { flags, ..*known };
+            }
+            server.notifications = Arc::new(settings);
+            server.community = true;
+        });
+    };
+    fn ticked(app: &Application) -> Vec<(&str, bool, bool)> {
+        app.state
+            .browse
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .map(|row| (row.name.as_str(), row.followed, row.by_category))
+            .collect()
+    }
+    let tick = |app: &mut Application, room: &str, follow| {
+        app.dispatch(Action::BrowseFollow {
+            room: room.into(),
+            follow,
+        })
+    };
+    app.dispatch(Action::BrowseChannels);
+    assert!(app.state.browse.is_none(), "not a Community server");
+
+    // With Show All Channels on and none followed, every box is ticked.
+    settings(&mut app, 0, &[]);
+    app.dispatch(Action::BrowseChannels);
+    assert_eq!(app.state.selected, None, "in place of the conversation");
+    let browse = app.state.browse.as_ref().unwrap();
+    assert_eq!(browse.server, "discord:10");
+    let kinds: Vec<_> = browse
+        .rows
+        .iter()
+        .map(|row| (row.id.as_str(), row.kind))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("discord:10:4", BrowsedKind::Category),
+            ("discord:10:11", BrowsedKind::Text),
+            ("discord:10:12", BrowsedKind::Text),
+            ("discord:10:13", BrowsedKind::Text),
+            ("discord:10:14", BrowsedKind::Voice),
+        ]
+    );
+    assert!(ticked(&app).iter().all(|(_, followed, _)| *followed));
+    // Clearing one follows the rest and lists only those.
+    assert!(matches!(
+        tick(&mut app, "discord:10:12", false).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::ShowAllChannels { server, flags: 16384, follow }))]
+            if server == "discord:10"
+                && *follow == [("11".into(), 4096), ("13".into(), 4096), ("14".into(), 4096)]
+    ));
+    assert!(
+        tick(&mut app, "discord:10:11", true).is_empty(),
+        "already ticked"
+    );
+
+    // Discord's word shows; ticking a channel or the category follows it.
+    settings(&mut app, 16384, &[("11", 4096), ("13", 4096), ("14", 4096)]);
+    assert_eq!(
+        ticked(&app),
+        [
+            ("Talk", false, false),
+            ("general", true, false),
+            ("news", false, false),
+            ("memes", true, false),
+            ("Lounge", true, false),
+        ]
+    );
+    assert!(matches!(
+        tick(&mut app, "discord:10:4", true).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::FollowChannel { room, flags: 4096 }))]
+            if room == "discord:10:4"
+    ));
+    // A followed category's channels change only with it.
+    settings(&mut app, 16384, &[("4", 4096)]);
+    assert_eq!(ticked(&app)[2], ("news", true, true));
+    assert!(tick(&mut app, "discord:10:12", false).is_empty());
+
+    // With Show All Channels on and some followed, ticking one turns it off.
+    settings(&mut app, 0, &[("4", 0), ("11", 4096), ("13", 0), ("14", 0)]);
+    assert!(matches!(
+        tick(&mut app, "discord:10:12", true).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::ShowAllChannels { flags: 16384, follow, .. }))]
+            if *follow == [("12".into(), 4096)]
+    ));
+
+    // A conversation, or another place, takes its place.
+    app.dispatch(Action::SelectRoom("discord:10:11".into()));
+    assert!(app.state.browse.is_none());
+    app.dispatch(Action::BrowseChannels);
+    app.dispatch(Action::Navigate(Navigation::DirectMessages));
+    assert!(app.state.browse.is_none());
 }
 
 #[test]

@@ -1143,6 +1143,7 @@ async fn room_index(client: &Client) -> RoomIndex {
             icon: None,
             folder: None,
             hide_muted: false,
+            community: false,
             pinned: Vec::new(),
         });
     }

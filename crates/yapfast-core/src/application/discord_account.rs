@@ -478,6 +478,7 @@ impl Application {
         }
         self.discord = Some(snapshot);
         let mut effects = self.list_discord();
+        self.refresh_browse();
         effects.extend(self.follow_server_settings());
         effects.extend(self.follow_channel_settings());
         effects.extend(self.mark_discord_read());
@@ -503,6 +504,7 @@ impl Application {
         self.state.person_dialog = None;
         self.state.server_settings = None;
         self.state.channel_settings = None;
+        self.state.browse = None;
         self.state.mfa.clear();
         self.state.friends.clear();
         self.state.friend_requests.clear();

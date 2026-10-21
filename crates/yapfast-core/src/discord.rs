@@ -760,6 +760,7 @@ fn server_rooms(
         // Index::update sets it, since a folder changes without its servers.
         folder: None,
         hide_muted: server.notifications.hide_muted_channels,
+        community: server.community,
         pinned,
     };
     (rooms, server)

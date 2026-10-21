@@ -397,6 +397,7 @@ impl Application {
         }
         self.state.navigation = navigation;
         self.state.dm_screen = None;
+        self.state.browse = None;
         self.restore_selection()
     }
 
@@ -644,6 +645,7 @@ impl Application {
         self.last_selected
             .insert(self.state.navigation.clone(), id.clone());
         self.state.dm_screen = None;
+        self.state.browse = None;
         // Showing another room forgets a stream to watch in another call.
         self.state.pending_watch.take_if(|(room, _)| *room != id);
         // Discord's client counts each conversation opened.
@@ -816,9 +818,17 @@ impl Application {
         {
             self.state.navigation = Navigation::DirectMessages;
         }
-        // A screen of the DM list stands in for a conversation.
+        // A screen of the DM list stands in for a conversation, as Browse
+        // Channels does for a server's.
         if self.state.dm_screen.is_some() && self.state.navigation == Navigation::DirectMessages {
             return vec![];
+        }
+        match &self.state.browse {
+            Some(browse) if Navigation::Server(browse.server.clone()) == self.state.navigation => {
+                return vec![];
+            }
+            Some(_) => self.state.browse = None,
+            None => {}
         }
         if !self
             .state

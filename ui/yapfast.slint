@@ -42,6 +42,7 @@ import { MfaChoice, MfaPrompt, MfaDialog } from "mfa.slint";
 import { FoundRow, PickRow, ThreadRow, HeaderSearch, PinsPopover, ThreadsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
 import { ThreadPanel, NewThreadPanel } from "thread.slint";
 import { PostTag, PostRow, PostTagChoice, ForumPanel } from "forum.slint";
+import { BrowseRow, BrowseScreen } from "browse.slint";
 
 // Rust sees these, besides YapfastWindow.
 export { Theme, Badges } from "theme.slint";
@@ -682,6 +683,17 @@ export component YapfastWindow inherits Window {
     callback open-friends;
     /// Open the DM with a friend, by user id.
     callback message-friend(string);
+    /// A Community server's channel list opens Browse Channels, which is on
+    /// screen while `browse-open`, with its rows after its search.
+    in property <bool> browse-offered;
+    in property <bool> browse-open;
+    in property <[BrowseRow]> browse-rows;
+    in-out property <string> browse-filter;
+    callback browse-filter-edited;
+    callback open-browse;
+    /// A box or switch in Browse Channels was flipped: the room id, and
+    /// whether to follow it.
+    callback browse-follow(string, bool);
     /// The requests screen, or a request from it, is on screen.
     in property <bool> requests-current;
     /// Requests waiting for an answer, as a badge.
@@ -1291,6 +1303,7 @@ export component YapfastWindow inherits Window {
     property <bool> aside-docked: (root.aside-open || root.new-thread-open) && !root.search-open;
     // Rows remade under the pointer show their tooltip again; it goes with the screen.
     changed friends-open => { Tip.text = ""; }
+    changed browse-open => { Tip.text = ""; }
     property <bool> profile-docked: root.profile-available && root.profile-panel && root.panel-profile-shown && !root.search-open && !root.aside-docked;
     // Search results take the place of the member list or the profile.
     property <length> docked-width: root.search-open ? 420px : root.aside-docked ? root.aside-shown : (root.members-docked ? 240px : 0px) + (root.profile-docked ? 300px : 0px);
@@ -1807,6 +1820,8 @@ export component YapfastWindow inherits Window {
                             RoomList {
                                 rooms: root.rooms; dms-selected: root.dms-selected; discord-linked: root.discord-linked; preview: root.preview;
                                 friends-open: root.friends-open; requests-current: root.requests-current; requests-badge: root.requests-badge;
+                                browse-offered: root.browse-offered; browsing: root.browse-open;
+                                open-browse => { root.open-browse(); }
                                 voice-channel: root.voice-channel; participants: root.participants; sidebar-empty: root.sidebar-empty;
                                 select-room(id) => { root.select-room(id); }
                                 open-voice(id) => { root.open-conversation(id); }
@@ -1963,9 +1978,10 @@ export component YapfastWindow inherits Window {
                         if !root.room-direct && root.room-selected: Image { source: root.room-icon; width: 22px; image-fit: contain; colorize: Theme.muted; }
                         if root.requests-open: Image { source: @image-url("icons/inbox.svg"); width: 22px; image-fit: contain; colorize: Theme.muted; }
                         if root.friends-open: Image { source: @image-url("icons/users.svg"); width: 22px; image-fit: contain; colorize: Theme.muted; }
+                        if root.browse-open: Image { source: @image-url("icons/hash.svg"); width: 22px; image-fit: contain; colorize: Theme.muted; }
                         Text {
-                            text: root.room-selected ? root.room-name : root.requests-open ? "Requests" : root.friends-open ? "Friends" : root.sidebar-title;
-                            color: root.room-selected || root.requests-open || root.friends-open ? Theme.text : Theme.secondary;
+                            text: root.room-selected ? root.room-name : root.requests-open ? "Requests" : root.friends-open ? "Friends" : root.browse-open ? "Browse Channels" : root.sidebar-title;
+                            color: root.room-selected || root.requests-open || root.friends-open || root.browse-open ? Theme.text : Theme.secondary;
                             font-size: 16px; font-weight: 700; overflow: elide; vertical-alignment: center;
                             // The name gives way to what follows it, and fills the bar when nothing does.
                             horizontal-stretch: (root.room-has-activity && root.room-direct) || root.friends-open || root.has-topic ? 0 : 1;
@@ -2586,7 +2602,15 @@ export component YapfastWindow inherits Window {
                                 open-friend-menu(id, x, y) => { root.open-context-menu(id, true, x, y); }
                             }
                             // The conversation's opening, or what to do when none is chosen.
-                            if !root.room-selected && !root.requests-open && !root.friends-open: NoConversation {
+                            if root.browse-open: BrowseScreen {
+                                width: parent.width; height: parent.height;
+                                rows: root.browse-rows;
+                                filter <=> root.browse-filter;
+                                filter-edited => { root.browse-filter-edited(); }
+                                follow(id, on) => { root.browse-follow(id, on); }
+                                view(id) => { root.select-room(id); }
+                            }
+                            if !root.room-selected && !root.requests-open && !root.friends-open && !root.browse-open: NoConversation {
                                 width: parent.width; height: parent.height;
                             }
                             if root.room-selected && root.messages.length == 0 && !root.room-ready: MessagesSkeleton {

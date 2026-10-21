@@ -2791,6 +2791,7 @@ fn a_folder_on_the_rail_holds_its_servers_until_opened() {
             icon: Some(format!("{id}.png")),
             folder: folder.cloned(),
             hide_muted: false,
+            community: false,
             pinned: Vec::new(),
         }
     };
@@ -2945,6 +2946,7 @@ fn friends_in_a_servers_voice_channel_show_where() {
         icon: None,
         folder: None,
         hide_muted: false,
+        community: false,
         pinned: Vec::new(),
     }];
     let rooms_by_id = state
@@ -2985,6 +2987,7 @@ fn a_call_shows_on_its_servers_icon_and_its_closed_folder() {
             icon: None,
             folder: folder.cloned(),
             hide_muted: false,
+            community: false,
             pinned: Vec::new(),
         }
     };
@@ -3688,6 +3691,58 @@ fn a_community_server_lists_the_channels_followed_and_offers_following() {
             "Copy ID"
         ]
     );
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn browse_channels_opens_from_a_community_servers_list_and_searches() {
+    let (window, _adapter, _directory) = discord_server_window_changed(0, |server| {
+        server.community = true;
+        server.text_channels[0].topic = Some("Say **hi**".into());
+    });
+    window.invoke_navigate_server("discord:10".into());
+    assert!(window.get_browse_offered());
+    assert!(!window.get_browse_open());
+    window.invoke_open_browse();
+    assert!(window.get_browse_open());
+    let rows = |window: &YapfastWindow| -> Vec<(String, String, bool, bool)> {
+        window
+            .get_browse_rows()
+            .iter()
+            .map(|row| {
+                (
+                    row.name.to_string(),
+                    row.topic.to_string(),
+                    row.category,
+                    row.followed,
+                )
+            })
+            .collect()
+    };
+    // With none followed, every box is ticked.
+    assert_eq!(
+        rows(&window),
+        [
+            ("Talk".into(), "".into(), true, true),
+            ("general".into(), "Say hi".into(), false, true),
+            ("Lounge".into(), "".into(), false, true),
+        ]
+    );
+    window.set_browse_filter("lou".into());
+    window.invoke_browse_filter_edited();
+    assert_eq!(
+        rows(&window),
+        [
+            ("Talk".into(), "".into(), true, true),
+            ("Lounge".into(), "".into(), false, true),
+        ]
+    );
+    window.set_browse_filter("nothing".into());
+    window.invoke_browse_filter_edited();
+    assert!(rows(&window).is_empty());
+    // A channel takes its place.
+    window.invoke_select_room("discord:10:11".into());
+    assert!(!window.get_browse_open());
 }
 
 #[test]
