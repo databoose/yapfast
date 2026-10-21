@@ -2348,12 +2348,14 @@ permission:
   what in the server.
 - [Bans](#bans), with Ban Members or View Audit Log, under Moderation: the
   server's bans, and revoking one, which takes Ban Members.
+- [Delete Server](#delete-server-and-transfer-ownership), last, in red
+  after a line, for the owner: deleting the server.
 
 A heading with no page under it doesn't show, so someone who may only
 manage roles sees People alone.
 
-The rest of Discord's pages come in later stages; the plan is kept outside
-the repository.
+Discord's other pages, from Server Tag to Templates, are left out on
+purpose; the plan is kept outside the repository.
 
 Only the open page's settings are held, from when it opens to when it
 closes: opening a page asks Discord for it, and leaving it drops it. Each
@@ -2804,6 +2806,66 @@ Alice set whether moderators need 2FA only once `POST /_control/guild`
 makes her the owner with 2FA on, as `{"owner": "1400000000000000001",
 "alice_mfa": true}`; she confirms it, and it then holds back moderation as
 `/_control/mfa` does.
+
+#### Delete Server and Transfer Ownership
+
+Both are the owner's, as in Discord's client: an owner who may give the
+server up, with two-factor authentication on if the server's moderators
+need it (`isOwnerWithRequiredMfaLevel`). Whether the server needs it comes
+from its `mfa_level`, kept current by GUILD_UPDATE.
+
+Delete Server, the sidebar's last row, opens "Delete 'Server'": "Are you
+sure you want to delete **Server**? This action cannot be undone." Without
+two-factor authentication on, it asks for the server's name too, compared
+in any case and untrimmed, as Discord's is, and a wrong one says "You
+didn't enter the server name correctly". Delete Server sends `POST
+/guilds/{id}/delete` with no body, which Discord holds back for
+[two-factor authentication](#two-factor-authentication) when it's on;
+GUILD_DELETE then takes the server away.
+
+Transfer Ownership is in a member's menu on [Members](#members), in its
+own red group before Copy User ID, as Discord's client has it there and
+only there; it isn't offered for this account or a bot. Its dialog says
+"This will transfer ownership of **Server** to **bob**. This cannot be
+undone!" with both owners' avatars, and Transfer Ownership waits for the
+box "I acknowledge that by transferring ownership of this server to
+**bob**, it officially belongs to them." A Verified or Partnered server's
+box stays off, under Discord's notice that the Community team handles
+those. With two-factor authentication on, or without an email address,
+it sends `PATCH /guilds/{id}` with `{"owner_id", "code": null}`, which
+two-factor authentication confirms; otherwise `PUT /guilds/{id}/pincode`
+has Discord email a code, the dialog asks for it, with "Didn't receive a
+code or it expired? Resend it.", and the `PATCH` sends it as `code`.
+Discord's 50164 reads "Server ownership transfer failed. It looks like the
+new owner is ineligible for Server Monetization." Whether the account has
+an email address comes from READY's `user.email`, kept current by
+USER_UPDATE.
+
+Yapfast differs from Discord's client in waiting: Discord's closes each
+dialog as it sends, and drops any refusal but 50164 unseen, where
+Yapfast's dialogs wait for Discord's answer and show a refusal in them.
+Once Discord deletes or gives the server away, the settings close. Left
+out: the server's icon beside its name, a nickname's "AKA" in the
+transfer's text, and the Server Monetization notice.
+
+Heap in use (window-control `stats`, `measure` builds, the fake's "Server"
+made Alice's, three runs each, against Stage 5b's build): 7.73 MiB on
+#general, as before; 8.65 to 8.68 with Server Profile open and the same
+with Delete Server's dialog (8.66 before); 8.94 to 8.97 on Members (8.89
+to 8.90). Transfer Ownership's dialog, 9.98 to 10.02, is mostly the member
+menu that opens it: its first opening keeps about 1.2 MiB, as it did
+before, and closing the settings after it left 9.31 to 9.32, where Stage
+5b's build, its menu opened once, left 9.25.
+
+The fake's "Server" is Bob's; `POST /_control/guild` with `{"owner":
+"1400000000000000001"}` makes it Alice's, and `"alice_mfa": true` turns
+her two-factor authentication on, which then holds both back as
+`/_control/mfa` does. Deleting refuses anyone else with 50013, then acts
+as Alice leaving, until `POST /_control/rejoin`. A transfer refuses anyone
+else, an unknown user and Alice herself; without 2FA its code is always
+"424242", and a wrong one is refused with 50035, which reads "Code:
+Invalid verification code." It logs Discord's audit entry and sends
+GUILD_UPDATE, and `/_control/guild-reset` gives "Server" back to Bob.
 
 ### Channel settings
 

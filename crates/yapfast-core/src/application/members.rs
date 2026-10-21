@@ -103,7 +103,11 @@ impl Application {
 
     /// Someone as the open Members of a server's settings lists them.
     #[cfg(feature = "discord")]
-    fn listed_member(&self, place: &str, user: &str) -> Option<&crate::chat::ListedMember> {
+    pub(super) fn listed_member(
+        &self,
+        place: &str,
+        user: &str,
+    ) -> Option<&crate::chat::ListedMember> {
         let settings = self.state.server_settings.as_ref()?;
         let Some(SettingsPage::Members(page)) = settings.page.as_ref() else {
             return None;
@@ -248,6 +252,10 @@ impl Application {
         }
         if self.may_moderate(place, user, Permission::Ban) {
             choices.push(MenuChoice::Ban);
+        }
+        // Only from Members in the server's settings, as in Discord's.
+        if self.may_transfer_to(place, user) {
+            choices.push(MenuChoice::TransferOwnership);
         }
         choices.push(MenuChoice::CopyId);
         choices

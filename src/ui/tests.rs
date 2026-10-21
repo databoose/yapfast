@@ -4435,6 +4435,7 @@ fn members_and_invites_list_as_discords_pages_do() {
         spammer: false,
         quarantined: false,
         joined_by,
+        bot: false,
     };
     let mut mod_ = member(
         "1400000000000000005",
@@ -4557,6 +4558,38 @@ fn members_and_invites_list_as_discords_pages_do() {
     assert!(again.invites.rows == shown.invites.rows);
     window.invoke_invites_input(7, "".into(), 0);
     assert!(!window.get_server_settings_prompt().invites.security);
+}
+
+#[cfg(feature = "discord")]
+#[test]
+fn delete_server_ends_the_owners_sidebar_and_asks_for_the_name() {
+    use slint::Model;
+    let (window, _adapter, _directory) = discord_server_window_changed(0, |server| {
+        server.owner_id = Some("1".into());
+    });
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    window.invoke_choose_menu("header:discord:10".into(), false, "server-settings".into());
+    let rows = window.get_server_settings_prompt().rows;
+    let count = rows.row_count();
+    let (line, last) = (
+        rows.row_data(count - 2).unwrap(),
+        rows.row_data(count - 1).unwrap(),
+    );
+    assert!(line.heading && line.text.is_empty());
+    assert!(last.danger && last.text == "Delete Server");
+
+    window.invoke_server_settings_section(last.id);
+    let ownership = window.get_server_settings_prompt().ownership;
+    assert_eq!(
+        (ownership.kind, ownership.title.as_str()),
+        (1, "Delete 'Test'")
+    );
+    assert!(ownership.by_name, "without 2FA");
+    window.invoke_ownership_input(0, "nope".into());
+    window.invoke_ownership_input(1, "".into());
+    assert!(window.get_server_settings_prompt().ownership.wrong);
+    window.invoke_ownership_input(2, "".into());
+    assert_eq!(window.get_server_settings_prompt().ownership.kind, 0);
 }
 
 #[cfg(feature = "discord")]

@@ -5,6 +5,7 @@ import { AddMembersDialog, RoleConfirmDialog, RolesPrompt, RolesSection } from "
 import { AuditLogPrompt, AuditLogSection, BanDialog, BansPrompt, BansSection, SafetyPrompt, SafetySection } from "moderation.slint";
 import { InvitesPrompt, InvitesSection, MembersPrompt, MembersSection, SecurityActionsDialog } from "server_people.slint";
 import { EmojiPrompt, EmojiSection, EmojiUploadDialog, StickerDialog, StickersPrompt, StickersSection } from "server_expressions.slint";
+import { DeleteServerDialog, OwnershipPrompt, TransferOwnershipDialog } from "server_ownership.slint";
 
 /// What Server Profile shows besides what's written in it.
 export struct ServerProfilePrompt {
@@ -90,6 +91,7 @@ export struct ServerSettingsPrompt {
     invites: InvitesPrompt,
     emoji: EmojiPrompt,
     stickers: StickersPrompt,
+    ownership: OwnershipPrompt,
 }
 
 // A text of a settings page, several lines high, with how many characters
@@ -385,6 +387,10 @@ export component ServerSettingsScreen inherits Rectangle {
     /// StickersSection and StickerDialog.
     callback emoji(int, string, string);
     callback sticker(int, string);
+    /// Something done in Delete Server's or Transfer Ownership's dialog;
+    /// see DeleteServerDialog and TransferOwnershipDialog. Delete Server
+    /// in the sidebar is 99.
+    callback ownership(int, string);
     /// A member's menu, by id, at a point of the window.
     callback member-menu(string, length, length);
     property <bool> bar: (root.prompt.changed || root.prompt.saving) && !root.prompt.immediate;
@@ -392,9 +398,10 @@ export component ServerSettingsScreen inherits Rectangle {
     // back to the frame, for Escape.
     property <bool> ban-open: root.prompt.bans.open;
     changed ban-open => { if !self.ban-open { frame.focus-keys(); } }
-    // So do the emoji and sticker dialogs once Discord takes what they send.
-    property <bool> expression-open: root.prompt.emoji.uploading || root.prompt.stickers.form;
-    changed expression-open => { if !self.expression-open { frame.focus-keys(); } }
+    // So do the emoji, sticker and ownership dialogs, once closed or
+    // Discord takes what they send.
+    property <bool> dialog-open: root.prompt.emoji.uploading || root.prompt.stickers.form || root.prompt.ownership.kind != 0;
+    changed dialog-open => { if !self.dialog-open { frame.focus-keys(); } }
     frame := SettingsFrame {
         rows: root.prompt.rows; selected: root.prompt.section; label: "Server settings";
         bottom: root.bar ? 140px : 56px;
@@ -503,6 +510,14 @@ export component ServerSettingsScreen inherits Rectangle {
         page: root.prompt.stickers;
         act(what, text) => { root.sticker(what, text); }
         browse => { root.pick-picture(5); }
+    }
+    if root.prompt.ownership.kind == 1: DeleteServerDialog {
+        page: root.prompt.ownership;
+        act(what, text) => { root.ownership(what, text); }
+    }
+    if root.prompt.ownership.kind == 2: TransferOwnershipDialog {
+        page: root.prompt.ownership;
+        act(what, text) => { root.ownership(what, text); }
     }
     if root.prompt.section == 3 && root.prompt.roles.adding: AddMembersDialog {
         page: root.prompt.roles; role-name: root.role-name;

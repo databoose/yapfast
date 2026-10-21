@@ -1232,9 +1232,10 @@ struct Icons {
     history: slint::Image,
     members: slint::Image,
     invites: slint::Image,
-    /// A Discord server's Emoji and Stickers.
+    /// A Discord server's Emoji; its Stickers have `note`.
     emoji: slint::Image,
-    stickers: slint::Image,
+    /// Transfer Ownership in a member's menu.
+    crown: slint::Image,
     // A Discord server's and channel's menus.
     create: slint::Image,
     create_category: slint::Image,
@@ -1444,9 +1445,7 @@ impl Adapter {
             members: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/users.svg"))?,
             invites: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/link.svg"))?,
             emoji: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/smile.svg"))?,
-            stickers: slint::Image::load_from_svg_data(include_bytes!(
-                "../ui/icons/sticky-note.svg"
-            ))?,
+            crown: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/crown.svg"))?,
             create: slint::Image::load_from_svg_data(include_bytes!(
                 "../ui/icons/circle-plus.svg"
             ))?,

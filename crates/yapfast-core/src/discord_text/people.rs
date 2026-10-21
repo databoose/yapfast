@@ -269,6 +269,7 @@ fn listed(member: FoundMember, now: u64) -> ListedMember {
         unusual_dms: member.unusual_dms_until + UNUSUAL_DMS_MS >= now
             && member.unusual_dms_until != 0,
         spammer: member.spammer,
+        bot: member.bot,
         quarantined: member.flags & QUARANTINED != 0,
         joined_by,
     }

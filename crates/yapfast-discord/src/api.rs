@@ -1368,6 +1368,29 @@ impl Api {
         .await
     }
 
+    /// Deletes a server, as only its owner may.
+    pub async fn delete_guild(&self, guild: &str) -> Result<()> {
+        let path = format!("/guilds/{guild}/delete");
+        self.empty(self.request(Method::POST, &path)).await
+    }
+
+    /// Gives a server to `owner`, with the code emailed for it, or none
+    /// when two-factor authentication confirms it instead.
+    pub async fn transfer_guild(&self, guild: &str, owner: &str, code: Option<&str>) -> Result<()> {
+        let path = format!("/guilds/{guild}");
+        self.empty(with_json(
+            self.request(Method::PATCH, &path),
+            &json!({ "owner_id": owner, "code": code }),
+        ))
+        .await
+    }
+
+    /// Has Discord email the owner a code to give the server away.
+    pub async fn send_guild_pincode(&self, guild: &str) -> Result<()> {
+        let path = format!("/guilds/{guild}/pincode");
+        self.empty(self.request(Method::PUT, &path)).await
+    }
+
     /// How many members hold each role, by role id.
     pub async fn role_member_counts(&self, guild: &str) -> Result<Value> {
         let path = format!("/guilds/{guild}/roles/member-counts");

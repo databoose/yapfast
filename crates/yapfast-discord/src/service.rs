@@ -86,6 +86,11 @@ pub struct Account {
     /// change whether moderators do.
     #[serde(default)]
     pub mfa_enabled: bool,
+    /// It has an email address, to which Discord sends the code that gives
+    /// a server away when two-factor authentication is off; only whether,
+    /// not the address.
+    #[serde(default)]
+    pub has_email: bool,
 }
 
 /// A DM or group DM, as the DM list shows it.
@@ -1471,6 +1476,23 @@ impl Discord {
     ) -> Result<server_settings::GuildSettings> {
         self.api.set_mfa_level(guild, level).await?;
         self.guild_settings(guild).await
+    }
+
+    /// Deletes a server, as its owner.
+    pub async fn delete_guild(&self, guild: &str) -> Result<()> {
+        self.api.delete_guild(guild).await
+    }
+
+    /// Gives a server to another member, as its owner: with the code
+    /// Discord emailed, or none when two-factor authentication confirms
+    /// it.
+    pub async fn transfer_guild(&self, guild: &str, owner: &str, code: Option<&str>) -> Result<()> {
+        self.api.transfer_guild(guild, owner, code).await
+    }
+
+    /// Has Discord email this account the code that gives a server away.
+    pub async fn send_guild_pincode(&self, guild: &str) -> Result<()> {
+        self.api.send_guild_pincode(guild).await
     }
 
     /// What Roles shows: the server's roles in full and how many members

@@ -196,6 +196,8 @@ pub struct FoundMember {
     pub flags: u64,
     /// Discord flagged the account for spam.
     pub spammer: bool,
+    /// A bot's account, which can't be given a server.
+    pub bot: bool,
     /// How they joined: Discord's `join_source_type`, the invite's code,
     /// and an integration's type.
     pub join_source: u8,
@@ -242,6 +244,7 @@ pub fn parse_members_search(found: &Value) -> (Vec<FoundMember>, Option<u64>) {
                 unusual_dms_until: time(&member["unusual_dm_activity_until"]),
                 flags: member["flags"].as_u64().unwrap_or_default(),
                 spammer: user_flags & SPAMMER != 0,
+                bot: user["bot"].as_bool().unwrap_or_default(),
                 join_source: found["join_source_type"].as_u64().unwrap_or_default() as u8,
                 invite_code: found["source_invite_code"].as_str().map(str::to_owned),
                 integration: found["integration_type"].as_str().map(str::to_owned),

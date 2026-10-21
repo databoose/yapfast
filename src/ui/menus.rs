@@ -1,7 +1,7 @@
 //! The menus a right click opens: what they offer, and the choices made.
 
 use yapfast_core::{
-    application::{ChannelAsk, MUTE_TIMES, MenuChoice, network_id, network_link},
+    application::{ChannelAsk, MUTE_TIMES, MenuChoice, OwnershipInput, network_id, network_link},
     chat::{
         ChannelKind, MemberChange, Muting, NotificationChange, Notifications, NotifyLevel,
         RelationshipChange,
@@ -144,6 +144,8 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 | MenuChoice::RemoveTimeout
                 | MenuChoice::Kick
                 | MenuChoice::Ban => 5,
+                // Its own group, as in Discord's.
+                MenuChoice::TransferOwnership => 9,
                 MenuChoice::ServerSettings
                 | MenuChoice::EditServerProfile
                 | MenuChoice::CreateChannel
@@ -205,6 +207,7 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                         | MenuChoice::Disconnect
                         | MenuChoice::DeleteChannel
                         | MenuChoice::LeaveServer
+                        | MenuChoice::TransferOwnership
                 ),
                 separated,
                 checkbox,
@@ -281,6 +284,7 @@ fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &sl
         MenuChoice::Timeout => ("Time out", &icons.timeout),
         MenuChoice::Kick => ("Kick", &icons.kick),
         MenuChoice::Ban => ("Ban", &icons.ban),
+        MenuChoice::TransferOwnership => ("Transfer Ownership", &icons.crown),
         MenuChoice::LocalMute | MenuChoice::SelfMute => ("Mute", &icons.mic_off),
         MenuChoice::SelfDeafen => ("Deafen", &icons.deafen),
         MenuChoice::MoveTo => ("Move to", &icons.move_to),
@@ -822,6 +826,9 @@ pub(super) fn choose(
         MenuChoice::Timeout => ask_member(PersonAsk::Timeout),
         MenuChoice::Kick => ask_member(PersonAsk::Kick),
         MenuChoice::Ban => ask_member(PersonAsk::Ban),
+        MenuChoice::TransferOwnership => {
+            Some(Action::Ownership(OwnershipInput::Transfer(target.clone())))
+        }
         MenuChoice::RemoveTimeout => place.clone().map(|place| Action::ChangeMember {
             place,
             user: target.clone(),
@@ -933,7 +940,7 @@ pub(super) fn server_change(
     }
 }
 
-const CHOICES: [MenuChoice; 58] = [
+const CHOICES: [MenuChoice; 59] = [
     MenuChoice::MarkRead,
     MenuChoice::JoinVoice,
     MenuChoice::OpenChat,
@@ -966,6 +973,7 @@ const CHOICES: [MenuChoice; 58] = [
     MenuChoice::RemoveTimeout,
     MenuChoice::Kick,
     MenuChoice::Ban,
+    MenuChoice::TransferOwnership,
     MenuChoice::ChannelMute,
     MenuChoice::ChannelNotifications,
     MenuChoice::MuteServer,
@@ -1028,6 +1036,7 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::RemoveTimeout => "remove-timeout",
         MenuChoice::Kick => "kick",
         MenuChoice::Ban => "ban",
+        MenuChoice::TransferOwnership => "transfer-ownership",
         MenuChoice::ChannelMute => "channel-mute",
         MenuChoice::ChannelNotifications => "channel-notifications",
         MenuChoice::MuteServer => "mute-server",

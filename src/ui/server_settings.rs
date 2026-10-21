@@ -7,10 +7,10 @@ use yapfast_core::{
         AFK_TIMEOUTS, AUDIT_ACTIONS, AuditInput, AuditKind, AuditLogPage, AuditSpan, AuditWords,
         BOOSTED, BanInput, BansPage, DEFAULT_ROLE_COLOR, EmojiInput, EmojiPage, ExpressionRules,
         InviteInput, InvitesPage, LEVEL_BOOSTS, MEMBER_PAGE_SIZES, MemberInput, MembersPage,
-        MfaRule, PAUSE_HOURS, PermissionLock, PictureEdit, ROLE_COLORS, ROLE_PERMISSIONS,
-        RoleConfirm, RoleInput, RoleLock, RoleRules, RoleTab, RolesPage, SETUP_TIPS, SafetyChoice,
-        SafetyPage, SettingsChoice, SettingsPage, SettingsText, SettingsToggle, StickerInput,
-        StickersPage, WELCOME, WELCOME_STICKER,
+        MfaRule, Ownership, OwnershipInput, PAUSE_HOURS, PermissionLock, PictureEdit, ROLE_COLORS,
+        ROLE_PERMISSIONS, RoleConfirm, RoleInput, RoleLock, RoleRules, RoleTab, RolesPage,
+        SETUP_TIPS, SafetyChoice, SafetyPage, SettingsChoice, SettingsPage, SettingsText,
+        SettingsToggle, StickerInput, StickersPage, WELCOME, WELCOME_STICKER,
     },
     chat::{
         JoinMethod, MfaMethod, Permission, RoleManager, RoleMember, ServerPicture, ServerRole,
@@ -54,6 +54,9 @@ fn section(id: i32) -> Option<SettingsSection> {
         _ => None,
     }
 }
+
+/// Delete Server's id in the sidebar, which opens its dialog.
+const DELETE_SERVER: i32 = 99;
 
 /// A picture's id in the screen.
 fn picture(id: i32) -> ServerPicture {
@@ -162,7 +165,7 @@ impl Adapter {
                 SettingsSection::AuditLog => ("Audit Log", &self.icons.history),
                 SettingsSection::Bans => ("Bans", &self.icons.ban),
                 SettingsSection::Emoji => ("Emoji", &self.icons.emoji),
-                SettingsSection::Stickers => ("Stickers", &self.icons.stickers),
+                SettingsSection::Stickers => ("Stickers", &self.icons.note),
             };
             rows.push(SettingsRow {
                 heading: false,
@@ -170,6 +173,20 @@ impl Adapter {
                 icon: icon.clone(),
                 id: section_id(section),
                 danger: false,
+            });
+        }
+        // Delete Server last, after a line, for its owner.
+        if self.app.may_give_up(&settings.server) {
+            rows.push(SettingsRow {
+                heading: true,
+                ..Default::default()
+            });
+            rows.push(SettingsRow {
+                text: "Delete Server".into(),
+                icon: self.icons.delete.clone(),
+                id: DELETE_SERVER,
+                danger: true,
+                ..Default::default()
             });
         }
         // A heading with nothing under it goes, as the server's name does
@@ -312,11 +329,77 @@ impl Adapter {
             }
             None => {}
         }
+        if let Some(ownership) = &settings.ownership {
+            prompt.ownership = self.ownership_prompt(&settings.server, ownership);
+        }
         keep_lists(&window.get_server_settings_prompt(), &mut prompt);
         window.set_server_settings_prompt(prompt);
     }
 
     /// The two-factor prompt showing, if any.
+    /// Delete Server's or Transfer Ownership's dialog, in Discord's words.
+    fn ownership_prompt(&self, server: &str, ownership: &Ownership) -> OwnershipPrompt {
+        let name = self
+            .app
+            .state
+            .servers
+            .iter()
+            .find(|known| known.id == server)
+            .map(|known| known.name.as_str())
+            .unwrap_or_default();
+        let bold = |text: &str| format!("**{}**", escape_markdown(text));
+        match ownership {
+            Ownership::Delete(ask) => OwnershipPrompt {
+                kind: 1,
+                title: format!("Delete '{}'", ask.name).into(),
+                text: styled(&format!(
+                    "Are you sure you want to delete {}? This action cannot be undone.",
+                    bold(&ask.name)
+                )),
+                by_name: ask.by_name,
+                wrong: ask.wrong,
+                sending: ask.sending,
+                may_confirm: !ask.sending,
+                error: ask.error.as_deref().unwrap_or_default().into(),
+                ..Default::default()
+            },
+            Ownership::Transfer(ask) => {
+                let to = &ask.to;
+                // Discord's tag: the username.
+                let tag = to.username.as_deref().unwrap_or(&to.name);
+                let state = &self.app.state;
+                let me = state.account_name.as_deref().unwrap_or_default();
+                OwnershipPrompt {
+                    kind: 2,
+                    title: "Transfer Ownership".into(),
+                    text: styled(&format!(
+                        "This will transfer ownership of {} to {}. This cannot be undone!",
+                        bold(name),
+                        bold(tag)
+                    )),
+                    owner_avatar: state.account_avatar.as_deref().unwrap_or_default().into(),
+                    owner_initial: initials(me),
+                    new_avatar: to.avatar.as_str().into(),
+                    new_initial: initials(&to.name),
+                    acknowledge: styled(&format!(
+                        "I acknowledge that by transferring ownership of this server to {}, it \
+                         officially belongs to them.",
+                        bold(tag)
+                    )),
+                    agreed: ask.agreed,
+                    verified: ask.verified,
+                    code: ask.code.is_some(),
+                    resending: ask.resending,
+                    resent: ask.resent,
+                    sending: ask.sending,
+                    may_confirm: ask.ready(),
+                    error: ask.error.as_deref().unwrap_or_default().into(),
+                    ..Default::default()
+                }
+            }
+        }
+    }
+
     pub(super) fn show_mfa(&self, window: &YapfastWindow) {
         let Some(prompt) = self.app.mfa_prompt() else {
             if window.get_mfa_open() {
@@ -1310,6 +1393,25 @@ fn sticker_input(what: i32, text: SharedString) -> Option<StickerInput> {
     })
 }
 
+/// Discord's words in a dialog, with the names in bold.
+fn styled(markdown: &str) -> slint::StyledText {
+    slint::StyledText::from_markdown(markdown)
+        .unwrap_or_else(|_| slint::StyledText::from_plain_text(markdown))
+}
+
+/// What Delete Server's and Transfer Ownership's dialogs sent: what was
+/// done, with a text.
+fn ownership_input(what: i32, text: SharedString) -> Option<OwnershipInput> {
+    Some(match what {
+        0 => OwnershipInput::Type(text.into()),
+        1 => OwnershipInput::Confirm,
+        2 => OwnershipInput::Cancel,
+        3 => OwnershipInput::Agree,
+        4 => OwnershipInput::Resend,
+        _ => return None,
+    })
+}
+
 /// What Bans sent: what was done, with a text or a number.
 fn ban_input(what: i32, text: SharedString, number: i32) -> Option<BanInput> {
     Some(match what {
@@ -1507,7 +1609,12 @@ pub(super) fn bind(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
             });
         }};
     }
-    act!(on_server_settings_section(id) => section(id).map(Action::ServerSettingsSection));
+    act!(on_server_settings_section(id) => if id == DELETE_SERVER {
+        Some(Action::Ownership(OwnershipInput::Delete))
+    } else {
+        section(id).map(Action::ServerSettingsSection)
+    });
+    act!(on_ownership_input(what, text) => ownership_input(what, text).map(Action::Ownership));
     act!(on_write_server_setting(field, text) => Some(Action::WriteServerSetting {
         field: if field == 1 { SettingsText::Description } else { SettingsText::Name },
         text: text.into(),

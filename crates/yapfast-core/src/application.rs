@@ -69,15 +69,16 @@ pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
 pub use server_settings::{
     ADD_MEMBERS_LIMIT, AFK_TIMEOUTS, AUDIT_ACTIONS, AUDIT_PAGE, AddMembers, AuditInput, AuditKind,
     AuditLine, AuditLogPage, AuditRow, AuditSpan, AuditWords, BANS_BATCH, BANS_PER_PAGE, BOOSTED,
-    BanInput, BansPage, BoostPage, DEFAULT_ROLE_COLOR, DESCRIPTION_LIMIT, EMOJI_NAME_LIMIT,
-    EmojiInput, EmojiPage, EmojiUpload, EngagementPage, ExpressionRules, FILTER_ALL,
-    HIGHEST_VERIFICATION, InviteInput, InvitesPage, LEVEL_BOOSTS, MEMBER_PAGE_SIZES, MEMBER_SORTS,
-    MEMBERS_CHUNK, MemberInput, MembersPage, MfaRule, PAUSE_HOURS, Page as SettingsPage,
-    PermissionGroup, PermissionInfo, PermissionLock, ProfilePage, ROLE_COLORS, ROLE_NAME_LIMIT,
-    ROLE_PERMISSIONS, RoleConfirm, RoleDraft, RoleInput, RoleLock, RoleRules, RoleTab, RolesPage,
-    SETUP_TIPS, STICKER_DESCRIPTION_LIMIT, STICKER_NAME_LIMIT, SafetyChoice, SafetyPage,
-    SecurityDraft, ServerSettings, SettingsChoice, SettingsText, SettingsToggle, StickerCard,
-    StickerDraft, StickerInput, StickersPage, WELCOME, WELCOME_STICKER, emoji_name,
+    BanInput, BansPage, BoostPage, DEFAULT_ROLE_COLOR, DESCRIPTION_LIMIT, DeleteAsk,
+    EMOJI_NAME_LIMIT, EmojiInput, EmojiPage, EmojiUpload, EngagementPage, ExpressionRules,
+    FILTER_ALL, HIGHEST_VERIFICATION, InviteInput, InvitesPage, LEVEL_BOOSTS, MEMBER_PAGE_SIZES,
+    MEMBER_SORTS, MEMBERS_CHUNK, MemberInput, MembersPage, MfaRule, Ownership, OwnershipInput,
+    PAUSE_HOURS, Page as SettingsPage, PermissionGroup, PermissionInfo, PermissionLock,
+    ProfilePage, ROLE_COLORS, ROLE_NAME_LIMIT, ROLE_PERMISSIONS, RoleConfirm, RoleDraft, RoleInput,
+    RoleLock, RoleRules, RoleTab, RolesPage, SETUP_TIPS, STICKER_DESCRIPTION_LIMIT,
+    STICKER_NAME_LIMIT, SafetyChoice, SafetyPage, SecurityDraft, ServerSettings, SettingsChoice,
+    SettingsText, SettingsToggle, StickerCard, StickerDraft, StickerInput, StickersPage,
+    TransferAsk, WELCOME, WELCOME_STICKER, emoji_name,
 };
 pub use threads::{
     NewThread, THREAD_NAME_LIMIT, ThreadFrom, ThreadList, ThreadSearch, ThreadSections,
@@ -1524,6 +1525,8 @@ pub enum Action {
     Stickers(StickerInput),
     /// Something done on Members in a server's settings.
     Members(MemberInput),
+    /// Something done in Delete Server's or Transfer Ownership's dialog.
+    Ownership(OwnershipInput),
     /// Something done on Invites in a server's settings.
     Invites(InviteInput),
     /// Something done on Bans in a server's settings.
@@ -2573,6 +2576,7 @@ impl Application {
             Action::Emoji(input) => self.emoji_input(input),
             Action::Stickers(input) => self.sticker_input(input),
             Action::Members(input) => self.member_input(input),
+            Action::Ownership(input) => self.ownership_input(input),
             Action::Invites(input) => self.invite_input(input),
             Action::Bans(input) => self.ban_input(input),
             Action::AuditLog(input) => self.audit_log_input(input),
@@ -3023,6 +3027,9 @@ impl Application {
             Event::OverwritesChanged { room, result } => self.overwrites_changed(room, result),
             Event::OverwriteNames { room, members } => self.overwrite_names(room, members),
             Event::LeftServer { server, result } => self.left_server(server, result),
+            Event::ServerDeleted { server, result } => self.server_deleted(server, result),
+            Event::ServerTransferred { server, result } => self.server_transferred(server, result),
+            Event::ServerPincodeSent { server, result } => self.server_pincode_sent(server, result),
             Event::OwnProfile { server, result } => self.own_profile_loaded(server, result),
             Event::ProfilePicture { kind, path, result } => {
                 self.profile_picture_read(kind, path, result);

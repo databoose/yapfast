@@ -94,6 +94,9 @@ pub fn command(
     let Some(command) = super::expressions::command(command, discord, events) else {
         return;
     };
+    let Some(command) = super::ownership::command(command, discord, events) else {
+        return;
+    };
     let room = match &command {
         Command::Open(room)
         | Command::Send { room, .. }

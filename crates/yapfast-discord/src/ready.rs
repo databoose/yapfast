@@ -155,6 +155,9 @@ pub struct Server {
     /// as `FORWARDING_DISABLED`.
     #[serde(default)]
     pub forwarding_disabled: bool,
+    /// Verified or Partnered, which Discord's client won't give away.
+    #[serde(default)]
+    pub verified: bool,
     /// Muted in the account's notification settings; set when the service
     /// publishes it.
     pub muted: bool,
@@ -179,6 +182,10 @@ pub struct Server {
     /// Its boost level, from 0 to 3, which raises everyone's upload limit
     /// in it; see [`crate::api::upload_limit`].
     pub premium_tier: u8,
+    /// 1 when its moderators need two-factor authentication, which its
+    /// owner then needs to delete it or give it away.
+    #[serde(default)]
+    pub mfa_level: u8,
     /// Its custom emoji, by name.
     pub emojis: Arc<Vec<Emoji>>,
     /// When this account joined it, as Discord's ISO 8601 time.
@@ -1164,6 +1171,15 @@ pub fn server(guild: &Value) -> Option<Server> {
         .as_str()
         .or_else(|| guild["properties"]["banner"].as_str())
         .map(|hash| self::banner(&id, hash));
+    let features = guild["features"]
+        .as_array()
+        .or_else(|| guild["properties"]["features"].as_array());
+    let has = |name: &str| {
+        features
+            .into_iter()
+            .flatten()
+            .any(|feature| feature.as_str() == Some(name))
+    };
     let premium_tier = guild["premium_tier"]
         .as_u64()
         .or_else(|| guild["properties"]["premium_tier"].as_u64())
@@ -1176,18 +1192,18 @@ pub fn server(guild: &Value) -> Option<Server> {
         member_count: guild["member_count"].as_u64(),
         owner_id,
         premium_tier: u8::try_from(premium_tier).unwrap_or(u8::MAX),
+        mfa_level: guild["mfa_level"]
+            .as_u64()
+            .or_else(|| guild["properties"]["mfa_level"].as_u64())
+            .map_or(0, |level| u8::try_from(level).unwrap_or(1)),
         emojis: Arc::new(emojis(&guild["emojis"])),
         joined_at: guild["joined_at"].as_str().map(str::to_owned),
         default_level: Level::from(&guild["properties"]["default_message_notifications"])
             .or_else(|| Level::from(&guild["default_message_notifications"]))
             .unwrap_or_default(),
         unavailable: guild["unavailable"].as_bool().unwrap_or(false),
-        forwarding_disabled: guild["features"]
-            .as_array()
-            .or_else(|| guild["properties"]["features"].as_array())
-            .into_iter()
-            .flatten()
-            .any(|feature| feature.as_str() == Some("FORWARDING_DISABLED")),
+        forwarding_disabled: has("FORWARDING_DISABLED"),
+        verified: has("VERIFIED") || has("PARTNERED"),
         ..Default::default()
     };
     for role in guild["roles"].as_array().into_iter().flatten() {

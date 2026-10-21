@@ -1975,6 +1975,26 @@ pub enum DiscordCommand {
     LeaveServer {
         server: String,
     },
+    /// Delete a Discord server this account owns, confirming with
+    /// two-factor authentication if Discord asks; [`Event::ServerDeleted`]
+    /// follows.
+    DeleteServer {
+        server: String,
+    },
+    /// Give a Discord server this account owns to a member, by user id,
+    /// with the code Discord emailed or none, confirming with two-factor
+    /// authentication if Discord asks; [`Event::ServerTransferred`]
+    /// follows.
+    TransferServer {
+        server: String,
+        user: String,
+        code: Option<String>,
+    },
+    /// Have Discord email the code that gives a server away;
+    /// [`Event::ServerPincodeSent`] follows.
+    SendServerPincode {
+        server: String,
+    },
     /// Set the Discord custom status, or clear it with `None`;
     /// [`Event::CustomStatusSet`] follows.
     SetCustomStatus(Option<CustomStatus>),
@@ -2464,6 +2484,8 @@ pub struct ListedMember {
     pub spammer: bool,
     pub quarantined: bool,
     pub joined_by: JoinMethod,
+    /// A bot, which can't be given the server.
+    pub bot: bool,
 }
 
 /// How a member joined a server, as Members' Join Method shows it.
@@ -2533,7 +2555,7 @@ pub struct ServerInvite {
 }
 
 /// A member holding a role, as Manage Members lists them.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RoleMember {
     pub id: String,
     pub name: String,
@@ -3135,6 +3157,21 @@ pub enum Event {
     /// Whether this account left a Discord server, by its server id, or why
     /// not.
     LeftServer {
+        server: String,
+        result: Result<(), String>,
+    },
+    /// Whether Discord deleted a server, or why not.
+    ServerDeleted {
+        server: String,
+        result: Result<(), String>,
+    },
+    /// Whether Discord gave a server away, or why not.
+    ServerTransferred {
+        server: String,
+        result: Result<(), String>,
+    },
+    /// Whether Discord emailed the code to give a server away, or why not.
+    ServerPincodeSent {
         server: String,
         result: Result<(), String>,
     },

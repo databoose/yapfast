@@ -2885,6 +2885,7 @@ async fn talks_to_the_fake_server() {
     moderates_as_discords_client_does(&discord, server, &guild).await;
     lists_members_and_invites_as_discords_client_does(&discord, server, &guild).await;
     keeps_emoji_and_stickers_as_discords_client_does(&discord, server, &guild).await;
+    gives_up_the_server_as_discords_client_does(&discord, server, &guild).await;
 
     // Leaving "Server", which Bob owns, takes it out of her list; the fake
     // lets her back in, so the tests after these find it again.
@@ -3722,6 +3723,108 @@ async fn keeps_emoji_and_stickers_as_discords_client_does(
     discord.delete_sticker(guild, &id).await.unwrap();
     assert_eq!(discord.guild_stickers(guild).await.unwrap().len(), 4);
     post_control(server, "/_control/guild-reset", "");
+}
+
+/// Transfer Ownership and Delete Server, as the server's owner: by the code
+/// Discord emails without 2FA, or by confirming with it; part of
+/// [`talks_to_the_fake_server`].
+async fn gives_up_the_server_as_discords_client_does(discord: &Discord, server: &str, guild: &str) {
+    use yapfast_discord::mfa::Method;
+    let (alice, bob) = ("1400000000000000001", "1400000000000000002");
+    let code = |error: anyhow::Error| yapfast_discord::api::code(&error);
+    let owner = |id: &'static str| {
+        move |snapshot: &Snapshot| {
+            snapshot
+                .servers
+                .iter()
+                .any(|known| known.id == guild && known.owner_id.as_deref() == Some(id))
+        }
+    };
+    // Bob's, so not hers to give or delete.
+    assert_eq!(
+        code(discord.delete_guild(guild).await.unwrap_err()),
+        Some(50013)
+    );
+    post_control(
+        server,
+        "/_control/guild",
+        &format!(r#"{{"owner": "{alice}"}}"#),
+    );
+    snapshot_where(discord, owner(alice)).await;
+
+    // Without 2FA, the code Discord emails gives it away.
+    let account = snapshot_where(discord, |snapshot| snapshot.account.is_some()).await;
+    assert!(account.account.as_ref().unwrap().has_email);
+    assert_eq!(
+        code(discord.transfer_guild(guild, bob, None).await.unwrap_err()),
+        Some(50035)
+    );
+    discord.send_guild_pincode(guild).await.unwrap();
+    assert!(
+        discord
+            .transfer_guild(guild, bob, Some("000000"))
+            .await
+            .is_err()
+    );
+    discord
+        .transfer_guild(guild, bob, Some("424242"))
+        .await
+        .unwrap();
+    snapshot_where(discord, owner(bob)).await;
+
+    // With 2FA, confirming it does; then deleting the server takes it away.
+    post_control(
+        server,
+        "/_control/guild",
+        &format!(r#"{{"owner": "{alice}", "alice_mfa": true}}"#),
+    );
+    snapshot_where(discord, owner(alice)).await;
+    let mut live = discord.live();
+    let confirm = |id| discord.finish_mfa(id, Method::Totp, "123456");
+    let transfer = tokio::spawn({
+        let (discord, guild) = (discord.clone(), guild.to_owned());
+        async move {
+            discord
+                .stepping_up(|| discord.transfer_guild(&guild, bob, None))
+                .await
+        }
+    });
+    let id = live_where(&mut live, |live| match live {
+        Live::MfaRequired { id, .. } => Some(id),
+        _ => None,
+    })
+    .await;
+    confirm(id).await.unwrap();
+    transfer.await.unwrap().unwrap();
+    snapshot_where(discord, owner(bob)).await;
+    post_control(
+        server,
+        "/_control/guild",
+        &format!(r#"{{"owner": "{alice}"}}"#),
+    );
+    snapshot_where(discord, owner(alice)).await;
+    let delete = tokio::spawn({
+        let (discord, guild) = (discord.clone(), guild.to_owned());
+        async move { discord.stepping_up(|| discord.delete_guild(&guild)).await }
+    });
+    let id = live_where(&mut live, |live| match live {
+        Live::MfaRequired { id, .. } => Some(id),
+        _ => None,
+    })
+    .await;
+    confirm(id).await.unwrap();
+    delete.await.unwrap().unwrap();
+    snapshot_where(discord, |snapshot| {
+        !snapshot.servers.iter().any(|known| known.id == guild)
+    })
+    .await;
+    post_control(server, "/_control/rejoin", "");
+    snapshot_where(discord, |snapshot| {
+        snapshot.servers.iter().any(|known| known.id == guild)
+    })
+    .await;
+    post_control(server, "/_control/guild-reset", "");
+    snapshot_where(discord, owner(bob)).await;
 }
 
 /// Editing her main profile as Discord's client does, then putting it

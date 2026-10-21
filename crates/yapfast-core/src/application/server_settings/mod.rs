@@ -21,6 +21,7 @@ mod engagement;
 mod expressions;
 mod invites;
 mod members;
+mod ownership;
 mod people_input;
 mod permissions;
 mod profile;
@@ -43,6 +44,7 @@ pub use expressions::{
 };
 pub use invites::{InviteInput, InvitesPage, PAUSE_HOURS, SecurityDraft};
 pub use members::{MEMBER_PAGE_SIZES, MEMBER_SORTS, MEMBERS_CHUNK, MemberInput, MembersPage};
+pub use ownership::{DeleteAsk, Ownership, OwnershipInput, TransferAsk};
 pub use permissions::{PermissionGroup, PermissionInfo, ROLE_PERMISSIONS};
 pub use profile::{DESCRIPTION_LIMIT, ProfilePage, SettingsText};
 pub use role_input::RoleInput;
@@ -69,6 +71,8 @@ pub struct ServerSettings {
     /// How many times leaving was refused for unsaved changes: the bar
     /// shakes each time, as Discord's does.
     pub nudge: u32,
+    /// Delete Server's or Transfer Ownership's dialog, while open.
+    pub ownership: Option<Ownership>,
 }
 
 /// A page of the settings, holding what Discord has and the draft.
@@ -254,6 +258,7 @@ impl Application {
             saving: false,
             error: None,
             nudge: 0,
+            ownership: None,
         });
         load(server, section)
     }
@@ -283,6 +288,7 @@ impl Application {
             return vec![];
         }
         settings.section = section;
+        settings.ownership = None;
         settings.page = None;
         settings.reading = None;
         settings.error = None;
@@ -296,6 +302,12 @@ impl Application {
         };
         if settings.changed() || settings.saving {
             settings.nudge = settings.nudge.wrapping_add(1);
+            return;
+        }
+        // Not while Discord deletes the server or gives it away.
+        if let Some(Ownership::Delete(DeleteAsk { sending: true, .. }))
+        | Some(Ownership::Transfer(TransferAsk { sending: true, .. })) = &settings.ownership
+        {
             return;
         }
         self.state.server_settings = None;

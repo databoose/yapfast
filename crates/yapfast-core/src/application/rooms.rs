@@ -57,6 +57,8 @@ pub enum MenuChoice {
     RemoveTimeout,
     Kick,
     Ban,
+    /// Give the server to them, from Members in its settings.
+    TransferOwnership,
     // A member's in a voice channel, as its menu there offers them.
     /// Mute someone for this account alone, as a box to tick.
     LocalMute,

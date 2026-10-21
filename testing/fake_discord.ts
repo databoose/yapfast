@@ -1926,6 +1926,8 @@ const SERVER_SETTINGS = {
   alice_mfa: false,
   invites_disabled_until: null as string | null,
   dms_disabled_until: null as string | null,
+  // The code PUT /guilds/{id}/pincode "emailed" last.
+  pincode: null as string | null,
 };
 const serverSettings = { ...SERVER_SETTINGS };
 
@@ -4309,6 +4311,55 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       return json(wireSticker(sticker, true), 201);
     }
     return json({ message: "405: Method Not Allowed", code: 0 }, 405);
+  }
+
+  // Delete Server and Transfer Ownership, as only the owner may. POST
+  // /guilds/{id}/delete deletes "Server": Alice is out of it, as she is
+  // after leaving it, with GUILD_DELETE, until /_control/rejoin. PATCH
+  // /guilds/{id} with `owner_id` gives it to a member, with GUILD_UPDATE:
+  // with Alice's 2FA on, Discord has her confirm it (60003); off, `code`
+  // must be the one PUT /guilds/{id}/pincode emailed, always "424242",
+  // else 50035.
+  if (method === "POST" && (m = path.match(/^\/guilds\/(\d+)\/delete$/))) {
+    if (m[1] !== GUILD || leftServer) return notFound("Unknown Guild", 10004);
+    if (serverSettings.owner !== ALICE) return json({ message: "Missing Permissions", code: 50013 }, 403);
+    if (serverSettings.alice_mfa) {
+      const held = heldForMfa(req);
+      if (held) return held;
+    }
+    leftServer = true;
+    dispatch("GUILD_DELETE", { id: GUILD });
+    return new Response(null, { status: 204 });
+  }
+  if (method === "PUT" && (m = path.match(/^\/guilds\/(\d+)\/pincode$/))) {
+    if (m[1] !== GUILD) return notFound("Unknown Guild", 10004);
+    if (serverSettings.owner !== ALICE) return json({ message: "Missing Permissions", code: 50013 }, 403);
+    serverSettings.pincode = "424242";
+    return new Response(null, { status: 204 });
+  }
+  if (method === "PATCH" && (m = path.match(/^\/guilds\/(\d+)$/)) && m[1] === GUILD) {
+    const body: any = await req.clone().json().catch(() => ({}));
+    if ("owner_id" in body) {
+      if (serverSettings.owner !== ALICE) return json({ message: "Missing Permissions", code: 50013 }, 403);
+      const owner = String(body.owner_id);
+      const member = Object.values(users).find((user) => user.id === owner);
+      if (!member || owner === ALICE || removed.has(owner)) return notFound("Unknown Member", 10007);
+      if (serverSettings.alice_mfa) {
+        const held = heldForMfa(req);
+        if (held) return held;
+      } else if (body.code === null || body.code === undefined || body.code !== serverSettings.pincode) {
+        return json({
+          message: "Invalid Form Body", code: 50035,
+          errors: { code: { _errors: [{ code: "INVALID_PINCODE", message: "Invalid verification code." }] } },
+        }, 400);
+      }
+      serverSettings.owner = owner;
+      serverSettings.pincode = null;
+      logAudit(1, GUILD, { changes: [{ key: "owner_id", old_value: ALICE, new_value: owner }] });
+      const { properties } = guild();
+      dispatch("GUILD_UPDATE", { ...properties, roles: serverRoles, emojis: guild().emojis });
+      return json({ ...properties, roles: serverRoles, emojis: guild().emojis });
+    }
   }
 
   // "Server" itself: Engagement and Boost Perks in Server Settings. A

@@ -2874,6 +2874,7 @@ fn discord_mentions_search_the_server_and_name_roles() {
             avatar: String::new(),
             premium_type: 2,
             mfa_enabled: false,
+            has_email: true,
         }),
         servers: vec![Arc::new(Server {
             id: "10".into(),
@@ -6290,6 +6291,7 @@ fn a_server_profile_is_edited_as_discords_per_server_profile_editor_does() {
         avatar: "alice.png".into(),
         premium_type: 2,
         mfa_enabled: false,
+        has_email: true,
     });
     app.apply(discord_event(snapshot));
     app.dispatch(Action::EditServerProfile("discord:10".into()));
@@ -6514,6 +6516,7 @@ fn the_main_profile_is_edited_as_discords_profile_editor_does() {
         avatar: "alice.png".into(),
         premium_type: 2,
         mfa_enabled: false,
+        has_email: true,
     });
     app.apply(discord_event(snapshot));
     app.dispatch(Action::EditProfile);
@@ -8063,6 +8066,8 @@ mod channel_settings;
 mod expressions;
 #[cfg(feature = "discord")]
 mod moderation;
+#[cfg(feature = "discord")]
+mod ownership;
 #[cfg(feature = "discord")]
 mod people;
 #[cfg(feature = "discord")]
