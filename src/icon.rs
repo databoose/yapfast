@@ -1,6 +1,7 @@
 //! Yapfast's icon on its window. Linux desktops find it from the window's app ID,
-//! which names the desktop entry in packaging/linux; Windows shows the
-//! executable's icon (build.rs) in Explorer, and the window loads the same one.
+//! which names the desktop entry in packaging/linux, which an AppImage installs
+//! for itself (`crate::desktop_entry`); Windows shows the executable's icon
+//! (build.rs) in Explorer, and the window loads the same one.
 
 use slint::winit_030::winit::window::WindowAttributes;
 

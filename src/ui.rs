@@ -127,6 +127,11 @@ pub fn run(
     // Started at sign-in, Yapfast goes to the tray with the saved session.
     // Without one there's nothing to do there but sign in, which needs the window.
     let hidden = background && !preview && yapfast_core::chat::can_restore(&root);
+    // Before the window maps, as the desktop looks up its icon then.
+    #[cfg(target_os = "linux")]
+    if !preview {
+        crate::desktop_entry::install();
+    }
     let window = match YapfastWindow::new() {
         Ok(window) => window,
         Err(error) => return failed(error, "could not create the Yapfast window"),

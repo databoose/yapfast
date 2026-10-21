@@ -37,16 +37,9 @@ pub fn refresh() {
 
 /// What starts Yapfast in the tray, with the data folder this one uses.
 fn command() -> std::io::Result<Vec<String>> {
-    // An AppImage runs from a temporary mount, APPDIR, and names its file in
-    // APPIMAGE. Programs it starts inherit both, so they're Yapfast's only
-    // when Yapfast runs from inside that mount.
-    let exe = std::env::current_exe()?;
-    let program = match (std::env::var_os("APPIMAGE"), std::env::var_os("APPDIR")) {
-        (Some(image), Some(mount)) if cfg!(target_os = "linux") && exe.starts_with(&mount) => {
-            PathBuf::from(image)
-        }
-        _ => exe,
-    };
+    let program = std::env::current_exe()?;
+    #[cfg(target_os = "linux")]
+    let program = crate::desktop_entry::appimage(&program).unwrap_or(program);
     let mut command = vec![path_text(program)?, "--background".to_owned()];
     let arguments: Vec<String> = std::env::args().collect();
     if let Some(index) = arguments
@@ -107,6 +100,8 @@ use windows as platform;
 mod linux {
     use std::path::{Path, PathBuf};
 
+    use crate::desktop_entry;
+
     pub fn enabled() -> bool {
         config().is_some_and(|config| entry_enabled(&config))
     }
@@ -128,10 +123,7 @@ mod linux {
 
     /// `$XDG_CONFIG_HOME`, or `~/.config`.
     fn config() -> Option<PathBuf> {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .or_else(|| std::env::home_dir().map(|home| home.join(".config")))
+        desktop_entry::xdg_home("XDG_CONFIG_HOME", ".config")
     }
 
     fn entry(config: &Path) -> PathBuf {
@@ -154,10 +146,10 @@ mod linux {
     }
 
     pub(super) fn write_entry(config: &Path, command: &[String]) -> std::io::Result<()> {
-        let path = entry(config);
-        let folder = path.parent().expect("the entry is in a folder");
-        std::fs::create_dir_all(folder)?;
-        let exec: Vec<String> = command.iter().map(|argument| quoted(argument)).collect();
+        let exec: Vec<String> = command
+            .iter()
+            .map(|argument| desktop_entry::quoted(argument))
+            .collect();
         let text = format!(
             "[Desktop Entry]\nType=Application\nName=Yapfast\n\
              Comment=Starts Yapfast in the system tray when you sign in\n\
@@ -165,32 +157,7 @@ mod linux {
             exec.join(" "),
             crate::icon::APP_ID,
         );
-        // Whole or not at all: a desktop reading it never sees half.
-        let file = tempfile::NamedTempFile::new_in(folder)?;
-        std::fs::write(file.path(), text)?;
-        file.persist(&path).map(drop).map_err(|error| error.error)
-    }
-
-    /// One argument of an entry's Exec line, quoted as the Desktop Entry
-    /// specification asks when it holds anything but plain characters.
-    fn quoted(argument: &str) -> String {
-        let argument = argument.replace('%', "%%");
-        let plain = !argument.is_empty()
-            && argument
-                .chars()
-                .all(|character| character.is_alphanumeric() || "-_./=:+,@%".contains(character));
-        if plain {
-            return argument;
-        }
-        let mut quoted = String::from('"');
-        for character in argument.chars() {
-            if matches!(character, '"' | '`' | '$' | '\\') {
-                quoted.push('\\');
-            }
-            quoted.push(character);
-        }
-        quoted.push('"');
-        quoted
+        desktop_entry::write(&entry(config), text.as_bytes())
     }
 
     #[cfg(test)]

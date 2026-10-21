@@ -10,6 +10,8 @@ mod autostart;
 mod copy;
 #[cfg(feature = "desktop")]
 mod custom_emoji;
+#[cfg(all(feature = "desktop", target_os = "linux"))]
+mod desktop_entry;
 #[cfg(feature = "desktop")]
 mod drop;
 #[cfg(feature = "desktop")]

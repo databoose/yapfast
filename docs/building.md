@@ -485,9 +485,15 @@ On Linux the window's app ID is `io.github.yapfast.Yapfast` (`src/icon.rs`).
 Wayland desktops show a window's icon only through the desktop entry of that
 name, `packaging/linux/io.github.yapfast.Yapfast.desktop`;
 `scripts/install-desktop-entry [EXECUTABLE]` installs it and the icon for
-this user, running `target/release/yapfast` unless told otherwise. On X11 the
-window also carries the icon itself. Notifications name the entry, so the
-notification server shows the same name and icon.
+this user, running `target/release/yapfast` unless told otherwise. The
+AppImage installs nothing, so Yapfast run from one writes the entry and the
+icon to `~/.local/share` itself before it opens its window
+(`src/desktop_entry.rs`), with Exec and TryExec naming the AppImage. It
+rewrites them when the AppImage has moved, and leaves them alone when a package
+has its own entry in `XDG_DATA_DIRS`, or an AppImage manager such as Gear Lever
+made one that runs the same file. On X11 the window also carries the icon
+itself. Notifications name the entry, so the notification server shows the
+same name and icon.
 
 On Windows, `build.rs` compiles `packaging/windows/yapfast.rc` with `llvm-rc`
 and links the icon into `yapfast.exe`, for Explorer and shortcuts; the window
