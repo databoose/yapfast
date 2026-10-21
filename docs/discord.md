@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [push-to-talk](#push-to-talk) on a recorded key, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio, cameras and push-to-talk on real Windows, and of push-to-talk on real Wayland desktops; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, [joining by invite](#joining-by-invite), making and changing channels, [server settings](#server-settings)' Server Profile, Engagement, Boost Perks and [Roles](#roles), [two-factor authentication](#two-factor-authentication), threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, most of a server's settings and its privacy, membership forms when joining |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, [joining by invite](#joining-by-invite), making and changing channels, [server settings](#server-settings)' Server Profile, Engagement, Boost Perks and [Roles](#roles), [channel settings](#channel-settings) and their permissions, [two-factor authentication](#two-factor-authentication), threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, most of a server's settings and its privacy, membership forms when joining |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, [editing one's profile](#editing-ones-main-profile) and [server profiles](#editing-ones-server-profile), notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored; changing the username |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -1611,11 +1611,8 @@ for one made there, on the category for one made in it, on the channel
 for the rest), Create channel and Create category make one with
 `POST /guilds/{id}/channels` and a body of its `name`, `type` (0 text, 2
 voice, 4 category), `parent_id` for a category, and for text its `topic`,
-`rate_limit_per_user` and `nsfw`. Edit channel reads a text channel with
-`GET /channels/{id}` and saves with `PATCH /channels/{id}`: its name, and
-for text its topic, slowmode, one of Discord's from 0 to 21600 seconds,
-and age restriction; a voice channel or a category changes only its name.
-Duplicate channel reads the channel and makes another with its type,
+`rate_limit_per_user` and `nsfw`. Edit channel opens the channel's or
+category's [settings](#channel-settings). Duplicate channel reads the channel and makes another with its type,
 category, permission overwrites, topic, age restriction, slowmode and
 voice settings under the name given, as Discord's client does. Delete
 channel uses `DELETE /channels/{id}`; deleting a category leaves its
@@ -2486,6 +2483,86 @@ or above Staff, or a permission Alice doesn't hold, with 50013, a role
 icon below level 2 with its 50035, and sends the GUILD_ROLE events. `POST
 /_control/roles-reset` puts the roles back. `scripts/ui-session do 'pick
 role-icon PATH'` chooses the open role's icon, as the file chooser would.
+
+### Channel settings
+
+Edit channel, in a channel's or category's menu, opens its settings over
+the window, as Discord's client does (`application/channel_settings/`,
+`ui/channel_settings.slint`), with the server settings' frame and
+unsaved changes bar. The menu offers it with Manage Channels or Manage
+Permissions (Discord's Manage Roles) there, and each page shows only with
+its own: Overview with Manage Channels, Permissions with Manage
+Permissions. Delete Channel (or Delete Category), the sidebar's last row,
+for whoever the menu offers it to, closes the settings and asks as the
+menu's Delete channel does. Leaving a page or the settings with unsaved
+changes shakes the bar, and the settings close once this account may
+change neither, or the channel is gone.
+
+Overview is the name, and for a text channel its topic, slowmode, one of
+Discord's from 0 to 6 hours, and age restriction; a voice channel or a
+category has only its name. A text channel's are read with `GET
+/channels/{id}` as Overview opens, and saved with `PATCH /channels/{id}`.
+Names are 1 to 100 characters, a text channel's lower case with dashes
+for spaces, and topics up to 1024, checked before asking.
+
+Permissions is Discord's Channel Permissions page:
+
+- **Sync notice.** A channel in a category whose permissions this account
+  may also change says whether its overwrites match the category's,
+  "Permissions synced with category: Talk", and if not offers Sync Now,
+  which asks "Sync permissions?" first. An overwrite that allows and
+  denies nothing doesn't count.
+- **Private Channel.** The switch denies @everyone View Channel, and for a
+  voice channel Connect as well, or no longer either way. Without every
+  permission, turning it on gives this account an overwrite of its own
+  that keeps them, as Discord's client does.
+- **Advanced permissions.** On the left are the overwrites: @everyone
+  first, then roles highest first, then members by name, with "+" to add
+  a role or member. On the right are the shown overwrite's permissions,
+  with Remove for any but @everyone. Each permission is Discord's three
+  buttons: deny, neither (left to the roles), and allow. They come in
+  Discord's groups for the channel's kind (`generateChannelPermissionSpec`),
+  with its words for a channel or a category, as the list view's rows.
+- **Locks.** As Discord's client decides, this account may change only a
+  permission it holds across the server, and never Manage Permissions,
+  unless it has every permission or the channel's own overwrites give it
+  Manage Permissions. A locked permission shows a lock whose tooltip says
+  "You cannot modify this permission because none of your roles have
+  it."
+- **Denying yourself.** A change after which this account couldn't do
+  that in the channel is refused with Discord's "Pretty sure you don't
+  want to do this".
+
+Saving sends each changed overwrite with `PUT
+/channels/{id}/permissions/{overwrite}`, `{id, type, allow, deny}`, type
+0 for a role and 1 for a member, and the bits as decimal strings, one
+after another as Discord's client does; the first refusal stops the
+rest. Discord checks each against what the ones before it left, and a
+denied View Channel takes Manage Permissions with it, so those that only
+give go first, then this account's own, and @everyone's last: Private
+Channel's deny before the account's own allow would lock it out of the
+channel halfway. A role or member added from the picker is put at once with nothing
+set and shown. Remove, after "Delete Permission Settings", sends `DELETE
+/channels/{id}/permissions/{overwrite}`. Sync Now sends `PATCH
+/channels/{id}` with the category's `permission_overwrites`, and an empty
+one for @everyone if the category has none. Discord sends CHANNEL_UPDATE
+after each. The page takes what Discord took at once, and a snapshot from
+before that CHANNEL_UPDATE doesn't undo it. Overwrites changed elsewhere
+show unless the draft changed the same one. The page holds the
+overwrites and the names of the members they're for, which Yapfast asks
+the gateway for, only while it's open.
+
+Heap in use (window-control `stats`, `measure` builds, the fake's
+#general, three runs each, against the edit dialog it replaced): 7.71 to
+7.73 MiB on #general, as before; 8.90 to 8.92 with #general's Overview
+open, where the dialog took 8.89 to 8.91; 8.80 to 8.83 on its
+Permissions; and 8.78 to 8.81 once closed, 8.80 to 8.81 before.
+
+The fake answers these requests. It refuses an overwrite without Manage
+Permissions in the channel, or one with a permission Alice doesn't hold
+unless the channel gives her Manage Permissions, with 50013, and holds
+them back while `/_control/mfa` is on. `POST /_control/hide-from-bots`
+with an empty body takes every channel's overwrites off.
 
 ### Two-factor authentication
 

@@ -202,22 +202,22 @@ component EngagementSection inherits VerticalLayout {
     }
     SettingsSwitch {
         text: "Send a random welcome message when someone joins this server.";
-        checked: root.page.welcome; enabled: root.ready && root.system;
+        checked: root.page.welcome; controlled: true; enabled: root.ready && root.system;
         toggled => { root.toggle(0); }
     }
     SettingsSwitch {
         text: "Prompt members to reply to welcome messages with a sticker.";
-        checked: root.page.welcome-sticker; enabled: root.ready && root.system;
+        checked: root.page.welcome-sticker; controlled: true; enabled: root.ready && root.system;
         toggled => { root.toggle(1); }
     }
     SettingsSwitch {
         text: "Send a message when someone boosts this server.";
-        checked: root.page.boosted; enabled: root.ready && root.system;
+        checked: root.page.boosted; controlled: true; enabled: root.ready && root.system;
         toggled => { root.toggle(2); }
     }
     SettingsSwitch {
         text: "Send helpful tips for server setup.";
-        checked: root.page.setup-tips; enabled: root.ready && root.system;
+        checked: root.page.setup-tips; controlled: true; enabled: root.ready && root.system;
         toggled => { root.toggle(3); }
     }
     VerticalLayout {
@@ -311,7 +311,7 @@ component BoostSection inherits VerticalLayout {
     SettingsSwitch {
         text: "Show Boost progress bar";
         description: "This progress bar will display in your channel list, attached to your server name (or server banner if you have one set).";
-        checked: root.page.progress-bar; enabled: !root.prompt.saving;
+        checked: root.page.progress-bar; controlled: true; enabled: !root.prompt.saving;
         toggled => { root.toggle-progress-bar(); }
     }
     BoostBackground {

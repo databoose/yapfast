@@ -14,9 +14,10 @@ use slint::{
 };
 use yapfast_core::{
     application::{
-        Action, AddFriend, AppState, Application, BAN_HISTORY, ChannelAsk, ClearAfter, Compose,
-        DmScreen, Effect, INVITE_AGES, INVITE_USES, ListedCategory, MenuChoice, Navigation, NewDm,
-        PersonAsk, ProfileText, ProfileView, Relation, RoleInput, SLOWMODES, Search, TIMEOUT_TIMES,
+        Action, AddFriend, AppState, Application, BAN_HISTORY, ChannelAsk, ChannelInput,
+        ClearAfter, Compose, DmScreen, Effect, INVITE_AGES, INVITE_USES, ListedCategory,
+        MenuChoice, Navigation, NewDm, PersonAsk, ProfileText, ProfileView, Relation, RoleInput,
+        Search, TIMEOUT_TIMES,
     },
     backend::Backend,
     chat::{
@@ -41,6 +42,7 @@ mod browser;
 mod call_link;
 mod call_timer;
 mod callbacks;
+mod channel_settings;
 mod gifs;
 mod menus;
 mod messages;
@@ -1944,9 +1946,18 @@ impl Adapter {
                         | RoleInput::FindCandidates(_)
                 )
         );
+        // As is typing in a channel's settings.
+        let channel_setting = matches!(
+            action,
+            Action::ChannelSettings(
+                ChannelInput::Name(_) | ChannelInput::Topic(_) | ChannelInput::FindMembers(_)
+            )
+        );
         let effects = self.app.dispatch(action);
         self.execute(effects);
-        if composing {
+        if channel_setting {
+            self.show_channel_settings(window);
+        } else if composing {
             self.show_composer(window);
         } else if profiling {
             self.show_profile_editor(window);

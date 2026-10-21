@@ -1421,6 +1421,21 @@ impl Api {
             .map(drop)
     }
 
+    /// Sets a role's or member's overwrite in a channel or category, as
+    /// Channel Permissions saves each one; Discord sends CHANNEL_UPDATE.
+    pub async fn put_overwrite(&self, channel: &str, id: &str, body: &Value) -> Result<()> {
+        let path = format!("/channels/{channel}/permissions/{id}");
+        self.empty(with_json(self.request(Method::PUT, &path), body))
+            .await
+    }
+
+    /// Takes a role's or member's overwrite off a channel or category;
+    /// Discord sends CHANNEL_UPDATE.
+    pub async fn delete_overwrite(&self, channel: &str, id: &str) -> Result<()> {
+        let path = format!("/channels/{channel}/permissions/{id}");
+        self.empty(self.request(Method::DELETE, &path)).await
+    }
+
     /// Leaves a server, as a member rather than one lurking in it.
     pub async fn leave_guild(&self, guild: &str) -> Result<()> {
         let path = format!("/users/@me/guilds/{guild}");

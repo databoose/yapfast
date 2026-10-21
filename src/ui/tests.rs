@@ -3775,7 +3775,7 @@ fn channel_menus_and_their_dialog_make_change_and_delete_channels() {
     let prompt = window.get_channel_prompt();
     assert_eq!(prompt.title, "Create channel");
     assert_eq!(prompt.detail, "In Test");
-    assert!(prompt.kinds && prompt.named && !prompt.settings && !prompt.danger);
+    assert!(prompt.kinds && prompt.named && !prompt.danger);
     window.set_channel_name("Plans".into());
     window.set_channel_kind(1);
     window.invoke_save_channel();
@@ -3793,45 +3793,15 @@ fn channel_menus_and_their_dialog_make_change_and_delete_channels() {
         adapter.app.state.channel_dialog = Some(dialog);
         adapter.refresh(&window);
     };
-    let edit = ChannelDialog {
-        ask: ChannelAsk::Edit("discord:10:11".into()),
-        server: "discord:10".into(),
-        server_name: "Test".into(),
-        name: "general".into(),
-        kind: ChannelKind::Text,
-        settings: None,
-        saving: false,
-        error: None,
-    };
-    show(edit.clone());
-    let prompt = window.get_channel_prompt();
-    assert!(prompt.loading && prompt.settings);
-    assert_eq!(prompt.confirm, "Save changes");
-    // Its fields fill once Discord sent its settings.
-    show(ChannelDialog {
-        settings: Some(ChannelSettings {
-            name: "general".into(),
-            topic: "Say hi".into(),
-            slowmode: 300,
-            nsfw: true,
-        }),
-        ..edit.clone()
-    });
-    assert!(!window.get_channel_prompt().loading);
-    assert_eq!(window.get_channel_topic(), "Say hi");
-    assert_eq!(window.get_channel_slowmode(), 7);
-    assert!(window.get_channel_nsfw());
-    // What's written there stays while the dialog is open.
-    window.set_channel_topic("Say hello".into());
-    adapter.borrow_mut().refresh(&window);
-    assert_eq!(window.get_channel_topic(), "Say hello");
-
     show(ChannelDialog {
         ask: ChannelAsk::Delete("discord:10:4".into()),
+        server: "discord:10".into(),
+        server_name: "Test".into(),
         name: "Talk".into(),
         kind: ChannelKind::Category,
         settings: Some(ChannelSettings::default()),
-        ..edit
+        saving: false,
+        error: None,
     });
     let prompt = window.get_channel_prompt();
     assert_eq!(prompt.title, "Delete category");
@@ -3840,6 +3810,104 @@ fn channel_menus_and_their_dialog_make_change_and_delete_channels() {
         "Are you sure you want to delete Talk? This cannot be undone."
     );
     assert!(prompt.danger && !prompt.named);
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn channel_settings_cover_the_window_with_overview_and_permissions() {
+    use slint::Model;
+    use yapfast_core::yapfast_discord::ready::permission;
+    let (window, adapter, _directory) =
+        discord_server_window_granting(permission::MANAGE_CHANNELS | permission::MANAGE_ROLES);
+    window.invoke_prepare_menu("discord:10:11".into(), false);
+    window.invoke_choose_menu("discord:10:11".into(), false, "edit-channel".into());
+    assert!(window.get_channel_settings_open() && !window.get_channel_open());
+    let prompt = window.get_channel_settings_prompt();
+    assert!(prompt.loading && prompt.section == 0);
+    let rows: Vec<String> = prompt.rows.iter().map(|row| row.text.to_string()).collect();
+    assert_eq!(
+        rows,
+        ["#GENERAL", "Overview", "Permissions", "", "Delete Channel"]
+    );
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ChannelLoaded {
+            room: "discord:10:11".into(),
+            result: Ok(ChannelSettings {
+                name: "general".into(),
+                topic: "Say hi".into(),
+                slowmode: 300,
+                nsfw: true,
+            }),
+        });
+        adapter.refresh(&window);
+    }
+    let prompt = window.get_channel_settings_prompt();
+    assert!(prompt.loaded && prompt.nsfw && !prompt.changed);
+    assert_eq!(prompt.slowmode, 7);
+    assert_eq!(window.get_channel_settings_topic(), "Say hi");
+
+    // Typing shows the bar, and another page waits for it.
+    window.set_channel_settings_topic("Say hello".into());
+    window.invoke_channel_settings_input(1, "Say hello".into(), 0);
+    assert!(window.get_channel_settings_prompt().changed);
+    window.invoke_channel_settings_input(10, "".into(), 1);
+    assert_eq!(window.get_channel_settings_prompt().nudge, 1);
+    window.invoke_channel_settings_input(30, "".into(), 0);
+    assert_eq!(window.get_channel_settings_topic(), "Say hi");
+
+    // Permissions: @everyone's, three ways each, locked where she can't.
+    window.invoke_channel_settings_input(10, "".into(), 1);
+    let prompt = window.get_channel_settings_prompt();
+    assert_eq!(prompt.section, 1);
+    assert_eq!(prompt.title, "Channel Permissions");
+    let names: Vec<String> = prompt
+        .overwrites
+        .iter()
+        .map(|row| row.name.to_string())
+        .collect();
+    assert_eq!(names, ["@everyone"]);
+    let row = |bit: u64| {
+        window
+            .get_channel_settings_prompt()
+            .permissions
+            .iter()
+            .find(|row| !row.heading && 1u64 << row.bit == bit)
+            .unwrap()
+    };
+    assert_eq!(
+        window
+            .get_channel_settings_prompt()
+            .permissions
+            .row_data(0)
+            .unwrap()
+            .title,
+        "GENERAL CHANNEL PERMISSIONS"
+    );
+    assert_eq!(
+        (
+            row(permission::VIEW_CHANNEL).state,
+            row(permission::VIEW_CHANNEL).lock_text.as_str()
+        ),
+        (1, "")
+    );
+    assert_eq!(
+        row(permission::MANAGE_WEBHOOKS).lock_text,
+        "You cannot modify this permission because none of your roles have it."
+    );
+    window.invoke_channel_settings_input(14, "".into(), 11 * 3 + 2);
+    assert_eq!(row(permission::SEND_MESSAGES).state, 2);
+    assert!(window.get_channel_settings_prompt().changed);
+    window.invoke_channel_settings_input(30, "".into(), 0);
+    window.invoke_channel_settings_input(32, "".into(), 0);
+    assert!(!window.get_channel_settings_open());
+
+    // Delete Channel, last in the sidebar, closes them and asks.
+    window.invoke_prepare_menu("discord:10:11".into(), false);
+    window.invoke_choose_menu("discord:10:11".into(), false, "edit-channel".into());
+    window.invoke_channel_settings_input(10, "".into(), 99);
+    assert!(!window.get_channel_settings_open() && window.get_channel_open());
+    assert_eq!(window.get_channel_prompt().title, "Delete channel");
 }
 
 #[test]

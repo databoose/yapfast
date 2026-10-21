@@ -1696,6 +1696,54 @@ function aliceMay(permission: number, user?: string): boolean {
   return holds && (user === undefined || (user !== ALICE && rank(ALICE) > rank(user)));
 }
 
+/** A channel's or category's change to the permissions of a role (type 0) or member (1). */
+type Overwrite = { id: string; type: number; allow: string; deny: string };
+
+/** Alice's permissions in a channel or category of "Server": the server's, then its
+ * overwrites for @everyone, her roles and her, as Discord works them out. */
+function alicePermissionsIn(channel: { permission_overwrites: unknown[] }): bigint {
+  let held = serverPermissions(ALICE);
+  if (held === (1n << 53n) - 1n) return held;
+  const overwrites = channel.permission_overwrites as Overwrite[];
+  const apply = (allow: bigint, deny: bigint) => {
+    held = (held & ~deny) | allow;
+  };
+  const everyone = overwrites.find((overwrite) => overwrite.type === 0 && overwrite.id === GUILD);
+  if (everyone) apply(BigInt(everyone.allow), BigInt(everyone.deny));
+  const mine = memberRoles.get(ALICE) ?? [];
+  let [allow, deny] = [0n, 0n];
+  for (const overwrite of overwrites) {
+    if (overwrite.type === 0 && mine.includes(overwrite.id)) {
+      allow |= BigInt(overwrite.allow);
+      deny |= BigInt(overwrite.deny);
+    }
+  }
+  apply(allow, deny);
+  const hers = overwrites.find((overwrite) => overwrite.type === 1 && overwrite.id === ALICE);
+  if (hers) apply(BigInt(hers.allow), BigInt(hers.deny));
+  return held;
+}
+
+/** Whether Alice may set `overwrites` on a channel: Manage Roles there, and only bits she
+ * holds in the server, unless an overwrite there gives her Manage Roles, as Discord checks. */
+function mayOverwrite(channel: { permission_overwrites: unknown[] }, overwrites: Overwrite[]): boolean {
+  const manageRoles = 1n << 28n;
+  if ((alicePermissionsIn(channel) & manageRoles) === 0n) return false;
+  const held = serverPermissions(ALICE);
+  const mine = memberRoles.get(ALICE) ?? [];
+  const granted = (channel.permission_overwrites as Overwrite[]).some((overwrite) =>
+    (BigInt(overwrite.allow) & manageRoles) !== 0n &&
+    (overwrite.type === 1 ? overwrite.id === ALICE : overwrite.id === GUILD || mine.includes(overwrite.id)));
+  const bits = overwrites.reduce((sum, overwrite) => sum | BigInt(overwrite.allow) | BigInt(overwrite.deny), 0n);
+  return granted || (held & bits) === bits;
+}
+
+/** An overwrite from a request's body, as Discord keeps it. */
+function overwriteOf(body: any, id = String(body?.id)): Overwrite {
+  const bits = (value: unknown) => String(BigInt(typeof value === "string" || typeof value === "number" ? value : 0));
+  return { id, type: Number(body?.type) === 1 ? 1 : 0, allow: bits(body?.allow), deny: bits(body?.deny) };
+}
+
 /** A channel of "Server" as Discord sends it. */
 function guildChannel(id: string, name: string, type: number, position: number, parent: string | null, guild = GUILD) {
   return {
@@ -1830,6 +1878,7 @@ function needsMfa(method: string, path: string): boolean {
   if (method !== "GET" && /^\/guilds\/\d+\/roles/.test(path)) return true;
   if (method === "POST" && /^\/guilds\/\d+\/channels$/.test(path)) return true;
   if ((method === "PATCH" || method === "DELETE") && /^\/channels\/\d+$/.test(path)) return true;
+  if ((method === "PUT" || method === "DELETE") && /^\/channels\/\d+\/permissions\/\d+$/.test(path)) return true;
   return method !== "GET" && /^\/guilds\/\d+\/(members|bans)\/\d+/.test(path);
 }
 
@@ -4763,6 +4812,27 @@ async function api(req: Request, path: string, origin: string): Promise<Response
   }
   const envServer = (m = path.match(/^\/channels\/(\d+)$/)) ? world?.channelGuild.get(m[1]!) : undefined;
   if (method === "GET" && envServer) return json(envGuild(envServer).channels.find((channel) => channel.id === m![1]));
+  // A channel's overwrites, one at a time, as Channel Permissions saves them.
+  if ((m = path.match(/^\/channels\/(\d+)\/permissions\/(\d+)$/)) && guildChannels().some((channel) => channel.id === m![1])) {
+    const [id, target] = [m[1]!, m[2]!];
+    const refused = () => json({ message: "Missing Permissions", code: 50013 }, 403);
+    const channel = () => guildChannels().find((known) => known.id === id)!;
+    const others = (channel().permission_overwrites as Overwrite[]).filter((known) => known.id !== target);
+    let overwrites: Overwrite[];
+    if (method === "PUT") {
+      const overwrite = overwriteOf(await req.json().catch(() => ({})), target);
+      if (!mayOverwrite(channel(), [overwrite])) return refused();
+      overwrites = [...others, overwrite];
+    } else if (method === "DELETE") {
+      if (!mayOverwrite(channel(), [])) return refused();
+      overwrites = others;
+    } else {
+      return notFound("404: Not Found", 0);
+    }
+    channelEdits.set(id, { ...channelEdits.get(id), permission_overwrites: overwrites });
+    dispatch("CHANNEL_UPDATE", channel());
+    return empty();
+  }
   if ((m = path.match(/^\/channels\/(\d+)$/)) && guildChannels().some((channel) => channel.id === m![1])) {
     const id = m[1]!;
     const channel = () => guildChannels().find((known) => known.id === id)!;
@@ -4776,6 +4846,12 @@ async function api(req: Request, path: string, origin: string): Promise<Response
         return json({ message: "Invalid Form Body", code: 50035 }, 400);
       }
       const edit: Partial<GuildChannel> = { ...channelEdits.get(id) };
+      // Sync Now sends the category's overwrites whole.
+      if (Array.isArray(body.permission_overwrites)) {
+        const overwrites = body.permission_overwrites.map((overwrite: any) => overwriteOf(overwrite));
+        if (!mayOverwrite(before, overwrites)) return json({ message: "Missing Permissions", code: 50013 }, 403);
+        edit.permission_overwrites = overwrites;
+      }
       if ("name" in body) edit.name = before.type === 0 ? body.name.trim().toLowerCase().replace(/\s+/g, "-") : body.name.trim();
       for (const key of ["position", "parent_id"] as const) if (key in body) (edit as any)[key] = body[key];
       if (before.type === 0) {

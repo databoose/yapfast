@@ -2881,6 +2881,7 @@ async fn talks_to_the_fake_server() {
     posts_in_a_forum_as_discords_client_does(&discord, server, &guild).await;
     changes_server_settings_as_discords_client_does(&discord, server, &guild).await;
     changes_roles_as_discords_client_does(&discord, server, &guild).await;
+    changes_channel_permissions_as_discords_client_does(&discord, server, &guild).await;
 
     // Leaving "Server", which Bob owns, takes it out of her list; the fake
     // lets her back in, so the tests after these find it again.
@@ -3221,6 +3222,65 @@ async fn changes_roles_as_discords_client_does(discord: &Discord, server: &str, 
     .await;
     post_control(server, "/_control/roles-reset", "");
     post_control(server, "/_control/members-reset", "");
+}
+
+/// Changing #general's overwrites as Channel Permissions does: one at a
+/// time, taking one off, and syncing with the category; part of
+/// [`talks_to_the_fake_server`], whose session it shares. It puts the
+/// channels' overwrites back after.
+async fn changes_channel_permissions_as_discords_client_does(
+    discord: &Discord,
+    server: &str,
+    guild: &str,
+) {
+    use yapfast_discord::ready::{Overwrite, permission};
+    let (general, crew) = ("1400000000000000102", "1400000000000000112");
+    let overwrites = |known: &yapfast_discord::service::Snapshot| -> Option<Vec<Overwrite>> {
+        let server = known.servers.iter().find(|server| server.id == guild)?;
+        Some(server.channel(general)?.overwrites.to_vec())
+    };
+    let allowed = Overwrite {
+        id: crew.into(),
+        member: false,
+        allow: permission::VIEW_CHANNEL,
+        deny: permission::SEND_MESSAGES,
+    };
+    discord
+        .put_overwrites(general, std::slice::from_ref(&allowed))
+        .await
+        .unwrap();
+    snapshot_where(discord, |known| {
+        overwrites(known) == Some(vec![allowed.clone()])
+    })
+    .await;
+
+    // Only what she holds herself, as Discord checks.
+    let webhooks = Overwrite {
+        allow: permission::MANAGE_WEBHOOKS,
+        ..allowed.clone()
+    };
+    assert!(discord.put_overwrites(general, &[webhooks]).await.is_err());
+
+    discord.delete_overwrite(general, crew).await.unwrap();
+    snapshot_where(discord, |known| overwrites(known) == Some(vec![])).await;
+    let everyone = Overwrite {
+        id: guild.into(),
+        member: false,
+        allow: 0,
+        deny: 0,
+    };
+    discord
+        .sync_overwrites(general, std::slice::from_ref(&everyone))
+        .await
+        .unwrap();
+    snapshot_where(discord, |known| {
+        overwrites(known) == Some(vec![everyone.clone()])
+    })
+    .await;
+
+    // An empty body takes every channel's overwrites off.
+    post_control(server, "/_control/hide-from-bots", "");
+    snapshot_where(discord, |known| overwrites(known) == Some(vec![])).await;
 }
 
 /// Editing her main profile as Discord's client does, then putting it

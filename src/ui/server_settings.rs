@@ -127,6 +127,7 @@ impl Adapter {
                 text: text.into(),
                 icon: icon.clone(),
                 id: section_id(section),
+                danger: false,
             });
         }
         // A heading with nothing under it goes, as the server's name does
@@ -313,7 +314,7 @@ impl Adapter {
 }
 
 /// Roles' colour as its list shows it: Discord's grey for none.
-fn role_color(color: u32) -> slint::Color {
+pub(super) fn role_color(color: u32) -> slint::Color {
     let color = if color == 0 {
         DEFAULT_ROLE_COLOR
     } else {
@@ -336,7 +337,7 @@ fn lock_text(lock: Option<RoleLock>) -> &'static str {
 }
 
 /// A member as Manage Members and Add Members show them.
-fn member_row(member: &RoleMember, chosen: bool) -> RoleMemberRow {
+pub(super) fn member_row(member: &RoleMember, chosen: bool) -> RoleMemberRow {
     RoleMemberRow {
         id: member.id.as_str().into(),
         name: member.name.as_str().into(),

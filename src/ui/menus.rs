@@ -862,7 +862,7 @@ pub(super) fn choose(
             place: target,
             kind: ChannelKind::Category,
         }),
-        MenuChoice::EditChannel => Some(Action::AskChannel(ChannelAsk::Edit(target))),
+        MenuChoice::EditChannel => Some(Action::OpenChannelSettings(target)),
         MenuChoice::DuplicateChannel => Some(Action::AskChannel(ChannelAsk::Duplicate(target))),
         MenuChoice::DeleteChannel => Some(Action::AskChannel(ChannelAsk::Delete(target))),
         MenuChoice::LeaveServer => Some(Action::AskLeaveServer(target)),

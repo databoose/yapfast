@@ -1953,6 +1953,18 @@ pub enum DiscordCommand {
     DeleteChannel {
         room: String,
     },
+    /// Change a Discord channel's or category's overwrites, by its room id;
+    /// [`Event::OverwritesChanged`] follows.
+    ChangeOverwrites {
+        room: String,
+        change: OverwriteChange,
+    },
+    /// The names of members a channel's overwrites are for, by their user
+    /// ids; [`Event::OverwriteNames`] follows.
+    OverwriteNames {
+        room: String,
+        members: Vec<String>,
+    },
     /// Leave a Discord server, by its server id; [`Event::LeftServer`]
     /// follows.
     LeaveServer {
@@ -2182,6 +2194,28 @@ pub struct RoleChange {
     /// A new icon, or `None` to remove it, which removes the emoji too.
     pub icon: Option<Option<PickedPicture>>,
     pub unicode_emoji: Option<String>,
+}
+
+/// A Discord channel's or category's change to what a role or member may
+/// do there: the bits it allows and those it denies, over the server's.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChannelOverwrite {
+    /// The role's id, the server's for @everyone, or the member's user id.
+    pub id: String,
+    pub member: bool,
+    pub allow: u64,
+    pub deny: u64,
+}
+
+/// What Channel Permissions has Discord do with a channel's overwrites.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OverwriteChange {
+    /// Set these, one at a time: a save, or a role or member added.
+    Put(Vec<ChannelOverwrite>),
+    /// Take a role's or member's off.
+    Delete(String),
+    /// Replace them all with these, the category's, as Sync Now does.
+    Sync(Vec<ChannelOverwrite>),
 }
 
 /// A member holding a role, as Manage Members lists them.
@@ -2587,6 +2621,17 @@ pub enum Event {
     /// Whether Discord made, changed or deleted the channel a dialog asked
     /// it to: the room id of one it made, or why it didn't.
     ChannelSaved(Result<Option<String>, String>),
+    /// Whether Discord took a [`DiscordCommand::ChangeOverwrites`], or why
+    /// not.
+    OverwritesChanged {
+        room: String,
+        result: Result<(), String>,
+    },
+    /// The members [`DiscordCommand::OverwriteNames`] asked about, named.
+    OverwriteNames {
+        room: String,
+        members: Vec<RoleMember>,
+    },
     /// This account's profile in a Discord server, by its server id, or
     /// its main profile, as [`DiscordCommand::OwnProfile`] asked, or why
     /// Discord didn't give it.

@@ -913,7 +913,8 @@ impl Server {
 
     /// [`Self::server_permissions`] with a channel's or category's
     /// overwrites applied: @everyone's, the roles', then the member's.
-    fn overwritten(&self, overwrites: &[Overwrite], user: &str, roles: &[String]) -> u64 {
+    /// Channel Permissions asks it of a draft's overwrites too.
+    pub fn overwritten(&self, overwrites: &[Overwrite], user: &str, roles: &[String]) -> u64 {
         let mut permissions = self.role_permissions(user, roles);
         if permissions == permission::ALL {
             return permissions;

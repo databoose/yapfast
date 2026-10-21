@@ -359,6 +359,8 @@ export component ChannelRow inherits Rectangle {
     /// Marks a Discord DM, as the rail marks Discord servers.
     in property <bool> discord;
     in property <bool> selected;
+    /// Red, as a settings sidebar's Delete Channel or Delete Server.
+    in property <bool> danger;
     in property <bool> unread;
     in property <string> badge;
     /// A channel this account may not join: drawn faint.
@@ -399,7 +401,7 @@ export component ChannelRow inherits Rectangle {
     accessible-label: root.label;
     accessible-action-default => { root.clicked(); }
     forward-focus: focus;
-    property <color> ink: root.locked ? (root.selected ? Theme.muted : Theme.faint) : root.selected || root.unread ? Theme.text : pointer.has-hover ? Theme.secondary : Theme.muted;
+    property <color> ink: root.danger ? Theme.danger : root.locked ? (root.selected ? Theme.muted : Theme.faint) : root.selected || root.unread ? Theme.text : pointer.has-hover ? Theme.secondary : Theme.muted;
     // Unread activity is marked at the sidebar's edge, as on the server rail.
     if root.unread && !root.selected: Rectangle {
         // A thread sits further in, past the line from its channel.
@@ -443,7 +445,7 @@ export component ChannelRow inherits Rectangle {
                         }
                     }
                 }
-                if !root.person && !root.thread: Image { source: root.icon; width: 20px; image-fit: contain; colorize: root.selected || root.unread ? Theme.secondary : Theme.faint; }
+                if !root.person && !root.thread: Image { source: root.icon; width: 20px; image-fit: contain; colorize: root.danger ? Theme.danger : root.selected || root.unread ? Theme.secondary : Theme.faint; }
                 VerticalLayout {
                     alignment: center; spacing: 0px; horizontal-stretch: 1;
                     Text {

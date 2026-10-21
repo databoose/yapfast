@@ -41,6 +41,7 @@ mod channels;
 mod commands;
 mod gifs;
 mod open_channel;
+mod overwrites;
 mod own_profile;
 mod render;
 mod roles;

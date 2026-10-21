@@ -24,10 +24,17 @@ export component SettingsSwitch inherits Rectangle {
     in property <bool> enabled: true;
     /// Why it can't change, shown while the pointer is on the switch.
     in property <string> locked-tip;
+    /// Its owner sets `checked`, from what a flip asks for: the switch only
+    /// says it was flipped, so a binding to it stays.
+    in property <bool> controlled;
     callback toggled(bool);
     height: column.preferred-height;
     function toggle() {
         if root.enabled {
+            if root.controlled {
+                root.toggled(!root.checked);
+                return;
+            }
             root.checked = !root.checked;
             root.toggled(root.checked);
         }
@@ -204,8 +211,9 @@ export component UnsavedBar inherits Rectangle {
     }
 }
 
-/// A row of a settings sidebar: a group's heading, or a section, by its id.
-export struct SettingsRow { heading: bool, text: string, icon: image, id: int }
+/// A row of a settings sidebar: a group's heading, a line between groups
+/// for a heading without text, or a page, red for a dangerous one.
+export struct SettingsRow { heading: bool, text: string, icon: image, id: int, danger: bool }
 
 // Settings cover the window: sections on the left, under their groups'
 // headings, and the chosen one, given as children, on the right. Escape or the
@@ -245,12 +253,16 @@ export component SettingsFrame inherits Rectangle {
                     VerticalLayout {
                         width: 232px; padding: 16px; padding-top: 56px; spacing: 2px; alignment: start;
                         for row[index] in root.rows: VerticalLayout {
-                            if row.heading: HorizontalLayout {
+                            if row.heading && row.text != "": HorizontalLayout {
                                 padding-left: 8px; padding-bottom: 6px; padding-top: index == 0 ? 0px : 16px;
                                 SettingsHeading { text: row.text; overflow: elide; }
                             }
+                            if row.heading && row.text == "": VerticalLayout {
+                                padding-left: 8px; padding-right: 8px; padding-top: 12px; padding-bottom: 12px;
+                                Rectangle { height: 1px; background: Theme.line; }
+                            }
                             if !row.heading: ChannelRow {
-                                text: row.text; icon: row.icon;
+                                text: row.text; icon: row.icon; danger: row.danger;
                                 selected: root.selected == row.id; clicked => { root.chose(row.id); }
                             }
                         }

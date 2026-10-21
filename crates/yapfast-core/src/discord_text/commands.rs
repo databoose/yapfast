@@ -82,6 +82,9 @@ pub fn command(
     let Some(command) = super::roles::command(command, discord, &channels.searches, events) else {
         return;
     };
+    let Some(command) = super::overwrites::command(command, discord, events) else {
+        return;
+    };
     let room = match &command {
         Command::Open(room)
         | Command::Send { room, .. }

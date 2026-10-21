@@ -557,13 +557,13 @@ export component RolesSection inherits VerticalLayout {
             }
             SettingsSwitch {
                 text: "Display role members separately from online members";
-                checked: root.page.hoist; enabled: root.editable;
+                checked: root.page.hoist; controlled: true; enabled: root.editable;
                 toggled => { root.toggle(0); }
             }
             SettingsSwitch {
                 text: "Allow anyone to @mention this role";
                 description: "Note: Members with the \"Mention @everyone, @here, and All Roles\" permission will always be able to ping this role.";
-                checked: root.page.mentionable; enabled: root.editable;
+                checked: root.page.mentionable; controlled: true; enabled: root.editable;
                 toggled => { root.toggle(1); }
             }
         }
@@ -603,7 +603,7 @@ export component RolesSection inherits VerticalLayout {
                         spacing: 4px; padding-bottom: 12px;
                         SettingsSwitch {
                             text: row.title; description: row.description;
-                            checked: row.on; enabled: root.editable && row.lock-text == "";
+                            checked: row.on; controlled: true; enabled: root.editable && row.lock-text == "";
                             locked-tip: root.page.locked ? root.page.notice : row.lock-text;
                             toggled => { root.permission(row.bit); }
                         }

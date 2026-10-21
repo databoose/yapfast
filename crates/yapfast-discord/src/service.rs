@@ -1871,6 +1871,40 @@ impl Discord {
         self.api.delete_channel(channel).await
     }
 
+    /// Sets these overwrites on a channel or category, one request each,
+    /// one after another, as Channel Permissions saves them; the first
+    /// Discord refuses stops the rest.
+    pub async fn put_overwrites(
+        &self,
+        channel: &str,
+        overwrites: &[ready::Overwrite],
+    ) -> Result<()> {
+        for overwrite in overwrites {
+            self.api
+                .put_overwrite(channel, &overwrite.id, &overwrite_body(overwrite))
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Takes a role's or member's overwrite off a channel or category.
+    pub async fn delete_overwrite(&self, channel: &str, id: &str) -> Result<()> {
+        self.api.delete_overwrite(channel, id).await
+    }
+
+    /// Gives a channel exactly these overwrites, its category's, as Sync
+    /// Now does.
+    pub async fn sync_overwrites(
+        &self,
+        channel: &str,
+        overwrites: &[ready::Overwrite],
+    ) -> Result<()> {
+        let overwrites: Vec<Value> = overwrites.iter().map(overwrite_body).collect();
+        self.api
+            .edit_channel(channel, &json!({"permission_overwrites": overwrites}))
+            .await
+    }
+
     /// Learns of a thread of a server, by id, to open in place of the
     /// channel on screen, or `beside` it: snapshots list it while it's on
     /// screen, as Discord tells a user account only of the threads it
@@ -2034,6 +2068,13 @@ impl Discord {
                 (post.to_owned(), starter)
             })
             .collect()
+    }
+
+    /// Learns the names of these members of a server, asking the gateway
+    /// for those Yapfast doesn't know yet.
+    pub async fn learn_members(&self, guild: &str, users: &[String]) {
+        self.ask_members(guild, users.iter().map(String::as_str))
+            .await;
     }
 
     /// Asks Discord for the server profiles of those of `people` Yapfast
@@ -2508,4 +2549,15 @@ fn now_ms() -> u64 {
 /// Keeps the favourite GIFs on disk, off the async threads.
 pub async fn keep_favorite_gifs(favorites: Vec<crate::gifs::Favorite>) {
     let _ = tokio::task::spawn_blocking(move || cache::keep_favorite_gifs(&favorites)).await;
+}
+
+/// An overwrite as Discord's client sends it: type 0 for a role and 1 for
+/// a member, and the bits as decimal strings.
+fn overwrite_body(overwrite: &ready::Overwrite) -> Value {
+    json!({
+        "id": overwrite.id,
+        "type": u8::from(overwrite.member),
+        "allow": overwrite.allow.to_string(),
+        "deny": overwrite.deny.to_string(),
+    })
 }

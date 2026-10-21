@@ -18,6 +18,7 @@ use crate::{
 
 mod aside;
 mod calls;
+mod channel_settings;
 mod compose;
 mod discord_account;
 mod forum;
@@ -41,6 +42,10 @@ mod server_settings;
 mod session;
 mod threads;
 
+pub use channel_settings::{
+    ChannelInput, ChannelSection, ChannelSettingsScreen, OverwriteConfirm, OverwriteRules,
+    OverwriteState, Overwrites, channel_groups, channel_permission,
+};
 pub use forum::{ForumInfo, ForumPost, ForumPosts, ForumView};
 pub use gifs::{GifPicker, GifPicture, GifView};
 pub use join::JoinDialog;
@@ -402,6 +407,8 @@ pub struct AppState {
     /// A Discord server's settings, while they're open: the open page's,
     /// and only while it is.
     pub server_settings: Option<ServerSettings>,
+    /// A Discord channel's or category's settings, while they're open.
+    pub channel_settings: Option<ChannelSettingsScreen>,
     /// Requests Discord holds back for two-factor authentication, the
     /// first one's prompt showing.
     pub mfa: Vec<MfaPrompt>,
@@ -1444,9 +1451,13 @@ pub enum Action {
         kind: chat::ChannelKind,
     },
     /// Open a Discord channel's or category's dialog from its menu, which
-    /// changes, copies or deletes it; carry it out with what was written,
-    /// making one of `kind` where the dialog chooses; or close it.
+    /// copies or deletes it; carry it out with what was written, making one
+    /// of `kind` where the dialog chooses; or close it.
     AskChannel(ChannelAsk),
+    /// Open a Discord channel's or category's settings, by its room id;
+    /// what they were given.
+    OpenChannelSettings(String),
+    ChannelSettings(ChannelInput),
     SaveChannel {
         kind: chat::ChannelKind,
         settings: chat::ChannelSettings,
@@ -2415,6 +2426,8 @@ impl Application {
             }
             Action::NewChannel { place, kind } => self.new_channel(place, kind),
             Action::AskChannel(ask) => self.ask_channel(ask),
+            Action::OpenChannelSettings(room) => self.open_channel_settings(room),
+            Action::ChannelSettings(input) => self.channel_input(input),
             Action::SaveChannel { kind, settings } => self.save_channel(kind, settings),
             Action::CloseChannelDialog => {
                 self.state.channel_dialog = None;
@@ -2904,8 +2917,14 @@ impl Application {
             Event::InviteResolved { code, result } => return self.invite_resolved(code, result),
             Event::JoinCaptcha { code, page } => return self.join_captcha(code, page),
             Event::ServerJoined { code, result } => return self.server_joined(code, result),
-            Event::ChannelLoaded { room, result } => self.channel_loaded(room, result),
-            Event::ChannelSaved(result) => self.channel_saved(result),
+            Event::ChannelLoaded { room, result } => self.channel_settings_loaded(&room, result),
+            Event::ChannelSaved(result) => {
+                if !self.channel_settings_saved(&result) {
+                    self.channel_saved(result);
+                }
+            }
+            Event::OverwritesChanged { room, result } => self.overwrites_changed(room, result),
+            Event::OverwriteNames { room, members } => self.overwrite_names(room, members),
             Event::LeftServer { server, result } => self.left_server(server, result),
             Event::OwnProfile { server, result } => self.own_profile_loaded(server, result),
             Event::ProfilePicture { kind, path, result } => {
@@ -2945,7 +2964,11 @@ impl Application {
                 server,
                 query,
                 members,
-            } => self.role_candidates(server, query, members),
+            } => {
+                if !self.overwrite_candidates(&server, &query, &members) {
+                    self.role_candidates(server, query, members);
+                }
+            }
             Event::FriendAdded(outcome) => {
                 if let Some(dialog) = &mut self.state.add_friend {
                     dialog.sending = false;

@@ -36,6 +36,7 @@ import { InvitePrompt, InviteDialog, JoinPrompt, JoinDialog, ChannelPrompt, Chan
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
 import { BoostPicture, BoostPrompt, EngagementPrompt, ServerProfilePrompt, ServerSettingsPrompt, ServerSettingsScreen } from "server_settings.slint";
 import { PermissionRow, RoleMemberRow, RoleRow, RoleSwatch, RolesPrompt } from "roles.slint";
+import { ChannelSettingsPrompt, ChannelSettingsScreen, OverwriteRow, ThreeStateRow } from "channel_settings.slint";
 import { MfaChoice, MfaPrompt, MfaDialog } from "mfa.slint";
 import { FoundRow, PickRow, ThreadRow, HeaderSearch, PinsPopover, ThreadsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
 import { ThreadPanel, NewThreadPanel } from "thread.slint";
@@ -155,15 +156,12 @@ export component YapfastWindow inherits Window {
     callback open-join-captcha;
     callback open-join-form;
     callback close-join;
-    // A dialog that makes, changes, copies or deletes a Discord channel or
-    // category, with what's written in it; see ChannelDialog.
+    // A dialog that makes, copies or deletes a Discord channel or category,
+    // with what's written in it; see ChannelDialog.
     in property <bool> channel-open;
     in property <ChannelPrompt> channel-prompt;
     in-out property <string> channel-name;
-    in-out property <string> channel-topic;
     in-out property <int> channel-kind;
-    in-out property <int> channel-slowmode;
-    in-out property <bool> channel-nsfw;
     callback save-channel;
     callback close-channel;
     // The editor of this account's Discord profile, its main one or a
@@ -200,6 +198,14 @@ export component YapfastWindow inherits Window {
     callback undo-server-settings;
     callback save-server-settings;
     callback close-server-settings;
+    // A Discord channel's or category's settings, with its name, and what's
+    // written in Overview; see ChannelSettingsScreen.
+    in property <bool> channel-settings-open;
+    in property <ChannelSettingsPrompt> channel-settings-prompt;
+    in property <string> channel-settings-channel;
+    in-out property <string> channel-settings-name;
+    in-out property <string> channel-settings-topic;
+    callback channel-settings-input(int, string, int);
     // Confirming a request Discord holds back; see MfaDialog.
     in property <bool> mfa-open;
     in property <MfaPrompt> mfa-prompt;
@@ -3069,6 +3075,11 @@ export component YapfastWindow inherits Window {
         save => { root.save-server-settings(); }
         close => { root.close-server-settings(); }
     }
+    if root.channel-settings-open: ChannelSettingsScreen {
+        prompt: root.channel-settings-prompt; channel: root.channel-settings-channel;
+        name <=> root.channel-settings-name; topic <=> root.channel-settings-topic;
+        input(what, text, number) => { root.channel-settings-input(what, text, number); }
+    }
     // A server channel's topic in full, under the header's line of it.
     // Escape or a click outside closes it.
     if root.topic-open && root.has-topic: Rectangle {
@@ -3290,8 +3301,7 @@ export component YapfastWindow inherits Window {
         close => { root.close-join(); }
     }
     if root.channel-open: ChannelDialog {
-        prompt: root.channel-prompt; name <=> root.channel-name; topic <=> root.channel-topic;
-        kind <=> root.channel-kind; slowmode <=> root.channel-slowmode; nsfw <=> root.channel-nsfw;
+        prompt: root.channel-prompt; name <=> root.channel-name; kind <=> root.channel-kind;
         save => { root.save-channel(); }
         close => { root.close-channel(); }
     }
