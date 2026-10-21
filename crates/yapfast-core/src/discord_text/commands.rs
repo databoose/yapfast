@@ -91,6 +91,9 @@ pub fn command(
     let Some(command) = super::people::command(command, discord, events) else {
         return;
     };
+    let Some(command) = super::expressions::command(command, discord, events) else {
+        return;
+    };
     let room = match &command {
         Command::Open(room)
         | Command::Send { room, .. }
@@ -626,6 +629,17 @@ pub fn live(
             server: discord::server_id(guild),
             ban: Box::new(super::server_settings::ban((**ban).clone())),
             banned: *banned,
+        });
+        return;
+    }
+    if let Ok(Live::ServerStickers { guild, stickers }) = &event {
+        let _ = events.send(Event::ServerStickers {
+            server: discord::server_id(guild),
+            stickers: stickers
+                .iter()
+                .cloned()
+                .map(super::expressions::server_sticker)
+                .collect(),
         });
         return;
     }

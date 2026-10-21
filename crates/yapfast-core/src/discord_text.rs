@@ -40,6 +40,7 @@ mod account;
 mod audit_log;
 mod channels;
 mod commands;
+mod expressions;
 mod gifs;
 mod open_channel;
 mod overwrites;

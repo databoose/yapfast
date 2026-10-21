@@ -74,6 +74,19 @@ pub(super) fn live_events(
             })
             .into_iter()
             .collect(),
+        Event::GuildStickersUpdate => data["guild_id"]
+            .as_str()
+            .map(|guild| Live::ServerStickers {
+                guild: guild.to_owned(),
+                stickers: data["stickers"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(crate::server_settings::parse_sticker)
+                    .collect(),
+            })
+            .into_iter()
+            .collect(),
         Event::GuildBanAdd | Event::GuildBanRemove => data["guild_id"]
             .as_str()
             .zip(crate::server_settings::parse_banned_user(&data["user"]))

@@ -197,6 +197,9 @@ export component YapfastWindow inherits Window {
     callback audit-log-input(int, int);
     callback members-input(int, string, int);
     callback invites-input(int, string, int);
+    /// Something done on Emoji or Stickers; see ServerSettingsScreen.
+    callback emoji-input(int, string, string);
+    callback stickers-input(int, string);
     callback write-server-setting(int, string);
     callback toggle-server-setting(int);
     callback choose-server-setting(int, int);
@@ -3077,6 +3080,8 @@ export component YapfastWindow inherits Window {
         audit-log(what, number) => { root.audit-log-input(what, number); }
         member(what, text, number) => { root.members-input(what, text, number); }
         invite(what, text, number) => { root.invites-input(what, text, number); }
+        emoji(what, id, name) => { root.emoji-input(what, id, name); }
+        sticker(what, text) => { root.stickers-input(what, text); }
         member-menu(id, x, y) => { root.open-context-menu(id, true, x, y); }
         write(field, text) => { root.write-server-setting(field, text); }
         toggle(which) => { root.toggle-server-setting(which); }

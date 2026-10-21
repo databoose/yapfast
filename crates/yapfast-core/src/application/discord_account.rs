@@ -478,7 +478,7 @@ impl Application {
         }
         self.discord = Some(snapshot);
         let mut effects = self.list_discord();
-        self.follow_server_settings();
+        effects.extend(self.follow_server_settings());
         effects.extend(self.follow_channel_settings());
         effects.extend(self.mark_discord_read());
         effects.extend(self.mark_aside_read());

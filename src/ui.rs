@@ -642,8 +642,9 @@ fn control(path: PathBuf, shell: Rc<shell::Shell>) -> slint::Timer {
                     }
                     "quit" => slint::quit_event_loop().map_err(|error| error.to_string().into()),
                     // `pick avatar PATH` or `pick banner PATH` chooses a
-                    // picture in the server profile editor, and `pick icon
-                    // PATH` a server's icon in its settings.
+                    // picture in the server profile editor, `pick icon PATH`
+                    // a server's icon in its settings, and `pick emoji` and
+                    // `pick sticker` a new emoji's or sticker's.
                     command if command.starts_with("pick ") => {
                         let (kind, path) =
                             command["pick ".len()..].split_once(' ').unwrap_or_default();
@@ -663,6 +664,14 @@ fn control(path: PathBuf, shell: Rc<shell::Shell>) -> slint::Timer {
                             },
                             "role-icon" => Action::PickServerPicture {
                                 kind: yapfast_core::chat::ServerPicture::RoleIcon,
+                                path,
+                            },
+                            "emoji" => Action::PickServerPicture {
+                                kind: yapfast_core::chat::ServerPicture::Emoji,
+                                path,
+                            },
+                            "sticker" => Action::PickServerPicture {
+                                kind: yapfast_core::chat::ServerPicture::Sticker,
                                 path,
                             },
                             "banner" => Action::PickProfilePicture {
@@ -1223,6 +1232,9 @@ struct Icons {
     history: slint::Image,
     members: slint::Image,
     invites: slint::Image,
+    /// A Discord server's Emoji and Stickers.
+    emoji: slint::Image,
+    stickers: slint::Image,
     // A Discord server's and channel's menus.
     create: slint::Image,
     create_category: slint::Image,
@@ -1431,6 +1443,10 @@ impl Adapter {
             history: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/history.svg"))?,
             members: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/users.svg"))?,
             invites: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/link.svg"))?,
+            emoji: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/smile.svg"))?,
+            stickers: slint::Image::load_from_svg_data(include_bytes!(
+                "../ui/icons/sticky-note.svg"
+            ))?,
             create: slint::Image::load_from_svg_data(include_bytes!(
                 "../ui/icons/circle-plus.svg"
             ))?,

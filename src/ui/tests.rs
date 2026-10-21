@@ -4559,6 +4559,149 @@ fn members_and_invites_list_as_discords_pages_do() {
     assert!(!window.get_server_settings_prompt().invites.security);
 }
 
+#[cfg(feature = "discord")]
+#[test]
+fn emoji_and_stickers_show_as_discords_pages_do() {
+    use slint::Model;
+    use yapfast_core::{
+        chat::{
+            GuildSettings, RoleMember, ServerEmoji, ServerSettingsPage, ServerSticker,
+            SettingsSection, StickerForm,
+        },
+        yapfast_discord::ready::permission,
+    };
+    let (window, adapter, _directory) =
+        discord_server_window_changed(permission::CREATE_GUILD_EXPRESSIONS, |_| {});
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    window.invoke_choose_menu("header:discord:10".into(), false, "server-settings".into());
+    let rows: Vec<String> = window
+        .get_server_settings_prompt()
+        .rows
+        .iter()
+        .map(|row| row.text.to_string())
+        .collect();
+    let at = rows.iter().position(|row| row == "EXPRESSION").unwrap();
+    assert_eq!(rows[at..at + 3], ["EXPRESSION", "Emoji", "Stickers"]);
+
+    let person = |id: &str| RoleMember {
+        id: id.into(),
+        name: format!("user{id}"),
+        username: None,
+        avatar: String::new(),
+    };
+    let load = |section, page| {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section,
+            result: Ok(page),
+        });
+        adapter.refresh(&window);
+    };
+
+    // Emoji: newest first; only her own may change.
+    window.invoke_server_settings_section(9);
+    let emoji = |id: &str, by: &str| ServerEmoji {
+        id: id.into(),
+        name: format!("emoji{id}"),
+        animated: false,
+        available: true,
+        user: Some(person(by)),
+        picture: format!("https://cdn/emojis/{id}.png"),
+    };
+    load(
+        SettingsSection::Emoji,
+        ServerSettingsPage::Emoji {
+            emojis: vec![emoji("5", "2"), emoji("6", "1")],
+            settings: GuildSettings::default(),
+        },
+    );
+    let page = window.get_server_settings_prompt().emoji;
+    assert!(page.may_upload && !page.uploading);
+    let shown: Vec<_> = page
+        .rows
+        .iter()
+        .map(|row| {
+            (
+                row.heading.to_string(),
+                row.name.to_string(),
+                row.may_change,
+            )
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("Emoji".into(), String::new(), false),
+            (String::new(), "emoji6".into(), true),
+            (String::new(), "emoji5".into(), false),
+        ]
+    );
+    assert_eq!(page.rows.row_data(0).unwrap().slots, "48 slots available");
+    window.invoke_emoji_input(1, "6".into(), "".into());
+    assert_eq!(
+        window.get_server_settings_prompt().emoji.rows.row_count(),
+        2
+    );
+
+    // Stickers: Discord's cards, and the form.
+    window.invoke_server_settings_section(10);
+    let sticker = |id: &str| ServerSticker {
+        id: id.into(),
+        form: StickerForm {
+            name: format!("sticker{id}"),
+            tags: "👋".into(),
+            description: String::new(),
+        },
+        format: 1,
+        available: true,
+        user_id: Some("1".into()),
+        user: Some(person("1")),
+        picture: Some(format!("https://cdn/stickers/{id}.png")),
+    };
+    load(
+        SettingsSection::Stickers,
+        ServerSettingsPage::Stickers {
+            stickers: vec![sticker("7"), sticker("8"), sticker("9")],
+            settings: GuildSettings::default(),
+        },
+    );
+    let page = window.get_server_settings_prompt().stickers;
+    let cards: Vec<_> = page
+        .cards
+        .iter()
+        .map(|card| {
+            (
+                card.title.to_string(),
+                card.status.to_string(),
+                card.unlocked,
+                card.next,
+            )
+        })
+        .collect();
+    assert_eq!(
+        cards[..2],
+        [
+            (
+                "Free Slots".into(),
+                "2 of 5 slots available".into(),
+                true,
+                true
+            ),
+            ("Level 1".into(), "2 Boosts".into(), false, false),
+        ]
+    );
+    assert_eq!(page.cards.row_data(0).unwrap().tiles.row_count(), 3);
+    window.invoke_stickers_input(0, "".into());
+    window.invoke_stickers_input(2, "wave".into());
+    window.invoke_stickers_input(3, "👋".into());
+    let page = window.get_server_settings_prompt().stickers;
+    assert!(page.form && !page.editing && !page.may_save, "no file yet");
+    assert_eq!(page.name, "wave");
+    window.invoke_stickers_input(6, "".into());
+    assert!(!window.get_server_settings_prompt().stickers.form);
+}
+
 #[test]
 #[cfg(feature = "discord")]
 fn roles_lock_what_ranks_above_her_and_the_permissions_she_lacks() {

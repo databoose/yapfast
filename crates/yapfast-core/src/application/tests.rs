@@ -8060,6 +8060,8 @@ mod audit_log;
 #[cfg(feature = "discord")]
 mod channel_settings;
 #[cfg(feature = "discord")]
+mod expressions;
+#[cfg(feature = "discord")]
 mod moderation;
 #[cfg(feature = "discord")]
 mod people;

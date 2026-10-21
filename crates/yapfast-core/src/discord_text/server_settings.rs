@@ -133,6 +133,30 @@ pub(super) fn command(
                             .map(|(members, total)| ServerSettingsPage::Members { members, total })
                             .map_err(anyhow::Error::msg)
                     }
+                    SettingsSection::Emoji => {
+                        let (emojis, settings) = tokio::join!(
+                            super::expressions::emojis(&discord, &guild),
+                            discord.guild_settings(&guild)
+                        );
+                        emojis.and_then(|emojis| {
+                            Ok(ServerSettingsPage::Emoji {
+                                emojis,
+                                settings: guild_settings(settings?),
+                            })
+                        })
+                    }
+                    SettingsSection::Stickers => {
+                        let (stickers, settings) = tokio::join!(
+                            super::expressions::stickers(&discord, &guild),
+                            discord.guild_settings(&guild)
+                        );
+                        stickers.and_then(|stickers| {
+                            Ok(ServerSettingsPage::Stickers {
+                                stickers,
+                                settings: guild_settings(settings?),
+                            })
+                        })
+                    }
                     SettingsSection::Invites => {
                         let (invites, settings) = tokio::join!(
                             super::people::list(&discord, &guild),
@@ -182,6 +206,8 @@ pub(super) fn command(
                     ServerPicture::RoleIcon => {
                         read_shaped(&path, ROLE_ICON, ROLE_ICON_PREVIEW, "a role icon")
                     }
+                    ServerPicture::Emoji => super::expressions::read_emoji(&path),
+                    ServerPicture::Sticker => super::expressions::read_sticker(&path),
                 };
                 let _ = events.send(Event::ServerPicture { kind, path, result });
             });
@@ -364,6 +390,7 @@ pub(super) fn guild_settings(settings: DiscordSettings) -> GuildSettings {
         mfa_level: settings.mfa_level,
         invites_paused_until: settings.invites_paused_until,
         dms_paused_until: settings.dms_paused_until,
+        extra_emoji_slots: settings.extra_emoji_slots,
     }
 }
 

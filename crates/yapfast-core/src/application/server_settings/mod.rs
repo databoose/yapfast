@@ -18,6 +18,7 @@ mod audit_log;
 mod bans;
 mod boost;
 mod engagement;
+mod expressions;
 mod invites;
 mod members;
 mod people_input;
@@ -35,6 +36,11 @@ pub use audit_log::{
 pub use bans::{BANS_BATCH, BANS_PER_PAGE, BanInput, BansPage};
 pub use boost::BoostPage;
 pub use engagement::{AFK_TIMEOUTS, BOOSTED, EngagementPage, SETUP_TIPS, WELCOME, WELCOME_STICKER};
+pub use expressions::{
+    EMOJI_NAME_LIMIT, EmojiInput, EmojiPage, EmojiUpload, ExpressionRules, LEVEL_BOOSTS,
+    STICKER_DESCRIPTION_LIMIT, STICKER_NAME_LIMIT, StickerCard, StickerDraft, StickerInput,
+    StickersPage, emoji_name,
+};
 pub use invites::{InviteInput, InvitesPage, PAUSE_HOURS, SecurityDraft};
 pub use members::{MEMBER_PAGE_SIZES, MEMBER_SORTS, MEMBERS_CHUNK, MemberInput, MembersPage};
 pub use permissions::{PermissionGroup, PermissionInfo, ROLE_PERMISSIONS};
@@ -71,6 +77,8 @@ pub enum Page {
     Profile(ProfilePage),
     Engagement(EngagementPage),
     BoostPerks(BoostPage),
+    Emoji(Box<EmojiPage>),
+    Stickers(Box<StickersPage>),
     Members(Box<MembersPage>),
     Roles(Box<RolesPage>),
     Invites(Box<InvitesPage>),
@@ -121,7 +129,9 @@ impl ServerSettings {
             Page::BoostPerks(page) => page.change(),
             Page::Roles(page) => page.change(),
             // Saved as they're made, as in Discord's client.
-            Page::Members(_)
+            Page::Emoji(_)
+            | Page::Stickers(_)
+            | Page::Members(_)
             | Page::Invites(_)
             | Page::Safety(_)
             | Page::AuditLog(_)
@@ -133,7 +143,9 @@ impl ServerSettings {
     pub fn immediate(&self) -> bool {
         matches!(
             self.section,
-            SettingsSection::Members
+            SettingsSection::Emoji
+                | SettingsSection::Stickers
+                | SettingsSection::Members
                 | SettingsSection::Invites
                 | SettingsSection::Safety
                 | SettingsSection::AuditLog
@@ -148,6 +160,8 @@ impl ServerSettings {
             Page::Roles(page) => page.problem(),
             Page::Engagement(_)
             | Page::BoostPerks(_)
+            | Page::Emoji(_)
+            | Page::Stickers(_)
             | Page::Members(_)
             | Page::Invites(_)
             | Page::Safety(_)
@@ -177,6 +191,12 @@ impl Application {
                 SettingsSection::Engagement,
                 SettingsSection::BoostPerks,
             ]);
+        }
+        // Discord's Expression.
+        if self.may(server, Permission::ManageExpressions)
+            || self.may(server, Permission::CreateExpressions)
+        {
+            sections.extend([SettingsSection::Emoji, SettingsSection::Stickers]);
         }
         // Discord's People.
         let moderates = [
@@ -314,6 +334,8 @@ impl Application {
             Ok(page) => settings.page = page,
             Err(error) => settings.error = Some(error),
         }
+        #[cfg(feature = "discord")]
+        self.follow_emojis();
     }
 
     /// Something done on Audit Log.
@@ -613,6 +635,10 @@ impl Application {
         path: PathBuf,
     ) -> Vec<Effect> {
         let rules = self.settings_rules();
+        let creates = self.state.server_settings.as_ref().is_some_and(|settings| {
+            self.may(&settings.server, Permission::CreateExpressions)
+                || self.may(&settings.server, Permission::ManageExpressions)
+        });
         let Some(settings) = self
             .state
             .server_settings
@@ -627,6 +653,13 @@ impl Application {
                 page.unlocked(kind)
             }
             (Some(Page::Roles(page)), ServerPicture::RoleIcon) => page.icon_editable(&rules),
+            (Some(Page::Emoji(page)), ServerPicture::Emoji) => {
+                creates && page.upload.is_none() && (page.free(false) > 0 || page.free(true) > 0)
+            }
+            (Some(Page::Stickers(page)), ServerPicture::Sticker) => page
+                .draft
+                .as_ref()
+                .is_some_and(|draft| draft.editing.is_none() && !draft.saving),
             _ => false,
         };
         if !fits {
@@ -667,7 +700,14 @@ impl Application {
         let picked = match result {
             Ok(picked) => picked,
             Err(error) => {
-                settings.error = Some(error);
+                match &mut settings.page {
+                    Some(Page::Stickers(page)) if page.draft.is_some() => {
+                        if let Some(draft) = &mut page.draft {
+                            draft.error = Some(error);
+                        }
+                    }
+                    _ => settings.error = Some(error),
+                }
                 return;
             }
         };
@@ -709,6 +749,28 @@ impl Application {
                 if let Some(draft) = &mut page.open {
                     draft.icon = PictureEdit::New(picked);
                     draft.emoji = None;
+                }
+                None
+            }
+            // The dialog opens with the picture, named after its file.
+            (Some(Page::Emoji(page)), ServerPicture::Emoji) => {
+                let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+                page.upload = Some(EmojiUpload {
+                    name: emoji_name(&stem),
+                    picture: Some(picked),
+                    ..EmojiUpload::default()
+                });
+                None
+            }
+            (Some(Page::Stickers(page)), ServerPicture::Sticker) => {
+                if let Some(draft) = &mut page.draft {
+                    draft.file = Some(picked);
+                    draft.file_name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned();
+                    draft.error = None;
                 }
                 None
             }
@@ -785,7 +847,9 @@ impl Application {
             Some(Page::BoostPerks(page)) => *page = BoostPage::new(page.original.clone()),
             Some(Page::Roles(page)) => page.undo(),
             Some(
-                Page::Members(_)
+                Page::Emoji(_)
+                | Page::Stickers(_)
+                | Page::Members(_)
                 | Page::Invites(_)
                 | Page::Safety(_)
                 | Page::AuditLog(_)
@@ -871,6 +935,8 @@ impl Application {
             Some(Page::Invites(page)) => page.settings = changed,
             Some(
                 Page::Profile(_)
+                | Page::Emoji(_)
+                | Page::Stickers(_)
                 | Page::Members(_)
                 | Page::Roles(_)
                 | Page::AuditLog(_)
@@ -885,14 +951,14 @@ impl Application {
     /// server is gone, and the page follows a name or icon changed
     /// elsewhere that the draft didn't.
     #[cfg(feature = "discord")]
-    pub(super) fn follow_server_settings(&mut self) {
+    pub(super) fn follow_server_settings(&mut self) -> Vec<Effect> {
         let Some(server) = self
             .state
             .server_settings
             .as_ref()
             .map(|settings| settings.server.clone())
         else {
-            return;
+            return vec![];
         };
         let sections = self.settings_sections(&server);
         let known = self.state.servers.iter().find(|known| known.id == server);
@@ -901,15 +967,16 @@ impl Application {
             None => (String::new(), None),
         };
         let Some(settings) = self.state.server_settings.as_mut() else {
-            return;
+            return vec![];
         };
         if known.is_none() || !sections.contains(&settings.section) {
             self.state.server_settings = None;
-            return;
+            return vec![];
         }
         if let Some(Page::Profile(page)) = &mut settings.page {
             page.follow(name, icon);
         }
+        self.follow_emojis()
     }
 
     /// The text channels a server's system messages may go to, or its
@@ -949,6 +1016,12 @@ impl Page {
             }
             (SettingsSection::BoostPerks, ServerSettingsPage::Guild(settings)) => {
                 Self::BoostPerks(BoostPage::new(settings))
+            }
+            (SettingsSection::Emoji, ServerSettingsPage::Emoji { emojis, settings }) => {
+                Self::Emoji(Box::new(EmojiPage::new(emojis, settings)))
+            }
+            (SettingsSection::Stickers, ServerSettingsPage::Stickers { stickers, settings }) => {
+                Self::Stickers(Box::new(StickersPage::new(stickers, settings)))
             }
             (SettingsSection::Roles, ServerSettingsPage::Roles(roles)) => {
                 Self::Roles(Box::new(RolesPage::new(roles)))

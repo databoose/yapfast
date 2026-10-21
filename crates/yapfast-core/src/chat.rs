@@ -433,6 +433,10 @@ pub enum Permission {
     DeafenMembers,
     MoveMembers,
     ViewAuditLog,
+    /// Change and delete any of a server's emoji and stickers, and add
+    /// them and change one's own.
+    ManageExpressions,
+    CreateExpressions,
 }
 
 /// Which messages notify, in a Discord server or channel.
@@ -2083,6 +2087,59 @@ pub enum DiscordCommand {
         server: String,
         action: InvitesAction,
     },
+    /// What Emoji asks of Discord; [`Event::EmojisChanged`] follows.
+    Emoji {
+        server: String,
+        action: EmojiAction,
+    },
+    /// What Stickers asks of Discord; [`Event::StickersChanged`] follows.
+    Stickers {
+        server: String,
+        /// Boxed: a new sticker's form and file would make every command
+        /// bigger.
+        action: Box<StickerAction>,
+    },
+}
+
+/// What Emoji asks of Discord. Each is followed by the server's emoji
+/// again, as Discord's client fetches them after GUILD_EMOJIS_UPDATE.
+#[derive(Clone, Debug)]
+pub enum EmojiAction {
+    Reload,
+    /// A new emoji: its name and its picture, read for it.
+    Upload {
+        name: String,
+        picture: PickedPicture,
+    },
+    Rename {
+        id: String,
+        name: String,
+    },
+    Delete(String),
+}
+
+/// What Stickers asks of Discord; each is followed by the stickers again.
+#[derive(Clone, Debug)]
+pub enum StickerAction {
+    /// A new sticker: what the form says, and its file, read for it.
+    Upload {
+        form: StickerForm,
+        file: PickedPicture,
+    },
+    Edit {
+        id: String,
+        form: StickerForm,
+    },
+    Delete(String),
+}
+
+/// A sticker's name, related emoji, as a Unicode emoji or a custom emoji's
+/// id, and description, which may be empty.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StickerForm {
+    pub name: String,
+    pub tags: String,
+    pub description: String,
 }
 
 /// Which members Members asks Discord for: those named like `text`, in an
@@ -2183,6 +2240,8 @@ pub enum SettingsSection {
     Profile,
     Engagement,
     BoostPerks,
+    Emoji,
+    Stickers,
     Members,
     Roles,
     Invites,
@@ -2200,6 +2259,9 @@ pub enum ServerPicture {
     Splash,
     /// The icon of the role open on Roles.
     RoleIcon,
+    /// A new emoji's or sticker's.
+    Emoji,
+    Sticker,
 }
 
 /// What a page of a Discord server's settings shows, as Discord sent it.
@@ -2223,6 +2285,16 @@ pub enum ServerSettingsPage {
     /// are paused.
     Invites {
         invites: Vec<ServerInvite>,
+        settings: GuildSettings,
+    },
+    /// The server's emoji or stickers, and its settings, which give its
+    /// slots.
+    Emoji {
+        emojis: Vec<ServerEmoji>,
+        settings: GuildSettings,
+    },
+    Stickers {
+        stickers: Vec<ServerSticker>,
         settings: GuildSettings,
     },
 }
@@ -2412,6 +2484,36 @@ pub enum JoinMethod {
     LinkedChannel,
 }
 
+/// A server's custom emoji, as Emoji lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerEmoji {
+    pub id: String,
+    pub name: String,
+    pub animated: bool,
+    /// Usable: a server that lost boosts keeps emoji past its slots,
+    /// unavailable.
+    pub available: bool,
+    /// Who uploaded it, when Discord says.
+    pub user: Option<RoleMember>,
+    /// Its picture's address, the one the emoji picker shows.
+    pub picture: String,
+}
+
+/// A server's sticker, as Stickers lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerSticker {
+    pub id: String,
+    pub form: StickerForm,
+    /// Discord's `format_type`: 1 PNG, 2 APNG, 3 Lottie, 4 GIF.
+    pub format: u8,
+    pub available: bool,
+    /// Who uploaded it, by id, and as a user when Discord says.
+    pub user_id: Option<String>,
+    pub user: Option<RoleMember>,
+    /// Its picture's address; none for Lottie, which isn't drawn.
+    pub picture: Option<String>,
+}
+
 /// An invite to a Discord server, as Invites lists it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ServerInvite {
@@ -2473,6 +2575,8 @@ pub struct GuildSettings {
     /// When paused invites and DMs resume, in Unix seconds.
     pub invites_paused_until: Option<u64>,
     pub dms_paused_until: Option<u64>,
+    /// The emoji slots its boosts add to each kind's 50, when Discord says.
+    pub extra_emoji_slots: Option<u16>,
 }
 
 impl GuildSettings {
@@ -2978,6 +3082,27 @@ pub enum Event {
     ServerPaused {
         server: String,
         result: Result<(Option<u64>, Option<u64>), String>,
+    },
+    /// Whether what Emoji asked of Discord went, uploading or not, and the
+    /// server's emoji after it, when Discord sent them.
+    EmojisChanged {
+        server: String,
+        upload: bool,
+        result: Result<(), String>,
+        emojis: Option<Vec<ServerEmoji>>,
+    },
+    /// The same for Stickers: `form` for an upload or an edit.
+    StickersChanged {
+        server: String,
+        form: bool,
+        result: Result<(), String>,
+        stickers: Option<Vec<ServerSticker>>,
+    },
+    /// A server's stickers changed, as GUILD_STICKERS_UPDATE gives them,
+    /// for an open Stickers.
+    ServerStickers {
+        server: String,
+        stickers: Vec<ServerSticker>,
     },
     /// Whether Discord lifted a user's ban, or why not.
     Unbanned {

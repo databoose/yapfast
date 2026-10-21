@@ -1723,8 +1723,9 @@ const SERVER_ROLES = () => [
   serverRole(GUILD, "@everyone", EVERYONE, 0),
   serverRole(MODS, "Mods", bit(13), 1, 3447003, true, true),
   serverRole(BOTS, "Bots", 0, 2),
-  // Crew may manage channels, the server and pin messages.
-  serverRole(CREW, "Crew", bit(4) + bit(5) + bit(51), 3),
+  // Crew may manage channels, the server and pin messages, and add emoji
+  // and stickers.
+  serverRole(CREW, "Crew", bit(4) + bit(5) + bit(51) + bit(43), 3),
   serverRole(STAFF, "Staff", MODERATION, 4),
   serverRole(LEADS, "Leads", 0, 5),
 ];
@@ -1927,6 +1928,52 @@ const SERVER_SETTINGS = {
   dms_disabled_until: null as string | null,
 };
 const serverSettings = { ...SERVER_SETTINGS };
+
+// "Server"'s emoji and stickers, with who uploaded each: Bob's :talk: and
+// :party: to begin with, and the pictures of those uploaded since.
+type ServerEmoji = { id: string; name: string; animated: boolean; user: string };
+type ServerSticker = { id: string; name: string; tags: string; description: string; format_type: number; user: string };
+const SERVER_EMOJIS = (): ServerEmoji[] => [
+  { id: EMOJI_TALK, name: "talk", animated: false, user: users.bob.id },
+  { id: EMOJI_PARTY, name: "party", animated: true, user: users.bob.id },
+];
+const expressions = {
+  emojis: SERVER_EMOJIS(),
+  stickers: [] as ServerSticker[],
+  made: 0,
+  pictures: new Map<string, { type: string; data: Uint8Array }>(),
+};
+
+function wireEmoji(emoji: ServerEmoji, uploader = false) {
+  const user = Object.values(users).find((known) => known.id === emoji.user);
+  return {
+    id: emoji.id, name: emoji.name, animated: emoji.animated, available: true, managed: false, require_colons: true, roles: [],
+    ...(uploader && user ? { user: wireUser(user) } : {}),
+  };
+}
+
+function wireSticker(sticker: ServerSticker, uploader = false) {
+  const user = Object.values(users).find((known) => known.id === sticker.user);
+  return {
+    id: sticker.id, name: sticker.name, tags: sticker.tags, description: sticker.description || null,
+    type: 2, format_type: sticker.format_type, available: true, guild_id: GUILD,
+    ...(uploader && user ? { user: wireUser(user) } : {}),
+  };
+}
+
+/** Each kind of emoji's slots, as Discord's client counts them. */
+function emojiSlots(): number {
+  return Math.max(serverSettings.features.includes("MORE_EMOJI") ? 200 : 50, 50 + extraEmojiSlots());
+}
+
+function extraEmojiSlots(): number {
+  return [0, 50, 100, 200][Math.min(serverSettings.premium_tier, 3)]!;
+}
+
+function stickerSlots(): number {
+  if (serverSettings.features.includes("MORE_STICKERS")) return 120;
+  return [5, 15, 30, 60][Math.min(serverSettings.premium_tier, 3)]!;
+}
 const mfa = {
   on: false,
   methods: ["totp"] as string[],
@@ -1937,6 +1984,9 @@ const mfa = {
 };
 function resetGuild() {
   Object.assign(serverSettings, SERVER_SETTINGS);
+  expressions.emojis = SERVER_EMOJIS();
+  expressions.stickers = [];
+  expressions.pictures.clear();
   revokedInvites.clear();
   Object.assign(mfa, { on: false, methods: ["totp"], code: "123456" });
   mfa.tickets.clear();
@@ -2005,6 +2055,9 @@ function guild() {
     mfa_level: mfa.on ? 1 : 0,
     nsfw_level: 0,
     premium_tier: serverSettings.premium_tier,
+    premium_features: {
+      features: [], additional_emoji_slots: extraEmojiSlots(), additional_sticker_slots: 0, additional_sound_slots: 0,
+    },
     premium_progress_bar_enabled: serverSettings.premium_progress_bar_enabled,
     system_channel_id: serverSettings.system_channel_id,
     system_channel_flags: serverSettings.system_channel_flags,
@@ -2017,11 +2070,8 @@ function guild() {
     properties,
     channels: guildChannels(),
     roles: serverRoles,
-    emojis: [
-      { id: EMOJI_TALK, name: "talk", animated: false, available: true, managed: false, require_colons: true, roles: [] },
-      { id: EMOJI_PARTY, name: "party", animated: true, available: true, managed: false, require_colons: true, roles: [] },
-    ],
-    stickers: [],
+    emojis: expressions.emojis.map((emoji) => wireEmoji(emoji)),
+    stickers: expressions.stickers.map((sticker) => wireSticker(sticker)),
     // A user account hears of the active threads it's in.
     threads: [...threads.values()].filter((thread) => thread.members.has(ALICE) && !thread.archived).map(wireThread),
     stage_instances: [],
@@ -4138,6 +4188,127 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     const { properties } = guild();
     dispatch("GUILD_UPDATE", { ...properties, roles: serverRoles, emojis: guild().emojis });
     return json(incidents() ?? {});
+  }
+
+  // Emoji and Stickers in Server Settings. GET /guilds/{id}/emojis lists
+  // "Server"'s emoji with who uploaded each; POST adds one from `{name,
+  // image}`, a data URI under 256 KB; PATCH renames one and DELETE removes
+  // it, each sending GUILD_EMOJIS_UPDATE. Stickers likewise at
+  // /guilds/{id}/stickers, a new one as multipart form data with `name`,
+  // `tags`, `description` and `file`, a PNG, APNG or GIF under 512 KB,
+  // sending GUILD_STICKERS_UPDATE. Create Expressions, which Alice's Crew
+  // has, adds them and changes one's own; Manage Expressions any. Each
+  // kind of emoji has 50 slots, more by boost level, as premium_features
+  // says; stickers 5, 15, 30 or 60.
+  if ((m = path.match(/^\/guilds\/(\d+)\/(emojis|stickers)(?:\/(\d+))?$/))) {
+    if (m[1] !== GUILD) return notFound("Unknown Guild", 10004);
+    const manage = aliceMay(30);
+    const create = manage || aliceMay(43);
+    if (!create) return json({ message: "Missing Permissions", code: 50013 }, 403);
+    const emojis = m[2] === "emojis";
+    const id = m[3];
+    const invalid = (field: string, code: string, message: string) =>
+      json({ message: "Invalid Form Body", code: 50035, errors: { [field]: { _errors: [{ code, message }] } } }, 400);
+    const known: { id: string; user: string }[] = emojis ? expressions.emojis : expressions.stickers;
+    const found = id ? known.find((item) => item.id === id) : undefined;
+    if (id && !found) return notFound(emojis ? "Unknown Emoji" : "Unknown Sticker", emojis ? 10014 : 10060);
+    if (found && !manage && found.user !== ALICE) return json({ message: "Missing Permissions", code: 50013 }, 403);
+    const changed = () => {
+      if (emojis) dispatch("GUILD_EMOJIS_UPDATE", { guild_id: GUILD, emojis: expressions.emojis.map((emoji) => wireEmoji(emoji)) });
+      else dispatch("GUILD_STICKERS_UPDATE", { guild_id: GUILD, stickers: expressions.stickers.map((sticker) => wireSticker(sticker)) });
+    };
+    const nameOk = (name: unknown, low: number, high: number) =>
+      typeof name === "string" && name.length >= low && name.length <= high;
+    if (method === "GET" && !id) {
+      return json(emojis
+        ? expressions.emojis.map((emoji) => wireEmoji(emoji, true))
+        : expressions.stickers.map((sticker) => wireSticker(sticker, true)));
+    }
+    if (method === "DELETE" && found) {
+      if (emojis) expressions.emojis = expressions.emojis.filter((emoji) => emoji.id !== id);
+      else expressions.stickers = expressions.stickers.filter((sticker) => sticker.id !== id);
+      expressions.pictures.delete(id!);
+      logAudit(emojis ? 62 : 92, id!);
+      changed();
+      return new Response(null, { status: 204 });
+    }
+    if (method === "PATCH" && found) {
+      const body: any = await req.json().catch(() => ({}));
+      if (emojis) {
+        const emoji = found as ServerEmoji;
+        if ("name" in body) {
+          if (!nameOk(body.name, 2, 32) || !/^\w+$/.test(body.name)) return invalid("name", "BASE_TYPE_BAD_LENGTH", "Must be between 2 and 32 in length.");
+          emoji.name = body.name;
+        }
+        logAudit(61, emoji.id);
+        changed();
+        return json(wireEmoji(emoji, true));
+      }
+      const sticker = found as ServerSticker;
+      if ("name" in body) {
+        if (!nameOk(body.name, 2, 30)) return invalid("name", "BASE_TYPE_BAD_LENGTH", "Must be between 2 and 30 in length.");
+        sticker.name = body.name;
+      }
+      if ("tags" in body) sticker.tags = String(body.tags);
+      if ("description" in body) {
+        const description = body.description ?? "";
+        if (description !== "" && !nameOk(description, 2, 100)) return invalid("description", "BASE_TYPE_BAD_LENGTH", "Must be between 2 and 100 in length.");
+        sticker.description = description;
+      }
+      logAudit(91, sticker.id);
+      changed();
+      return json(wireSticker(sticker, true));
+    }
+    if (method === "POST" && !id && emojis) {
+      const body: any = await req.json().catch(() => ({}));
+      if (!nameOk(body.name, 2, 32) || !/^\w+$/.test(body.name)) return invalid("name", "BASE_TYPE_BAD_LENGTH", "Must be between 2 and 32 in length.");
+      const image = typeof body.image === "string" && body.image.match(/^data:(image\/(?:png|jpeg|gif|webp));base64,(.+)$/);
+      if (!image) return invalid("image", "IMAGE_INVALID", "Invalid image data");
+      const data = Uint8Array.from(Buffer.from(image[2]!, "base64"));
+      if (data.length > 256 * 1024) return json({ message: "File cannot be larger than 256.0 kb.", code: 50045 }, 400);
+      const animated = image[1] === "image/gif";
+      if (expressions.emojis.filter((emoji) => emoji.animated === animated).length >= emojiSlots()) {
+        return animated
+          ? json({ message: `Maximum number of animated emojis reached (${emojiSlots()})`, code: 30018 }, 400)
+          : json({ message: `Maximum number of emojis reached (${emojiSlots()})`, code: 30008 }, 400);
+      }
+      const emoji = { id: snowflake(Date.now(), 3000 + (expressions.made++ % 1000)), name: body.name, animated, user: ALICE };
+      expressions.emojis.push(emoji);
+      expressions.pictures.set(emoji.id, { type: image[1]!, data });
+      logAudit(60, emoji.id, { changes: [{ key: "name", new_value: emoji.name }] });
+      changed();
+      return json(wireEmoji(emoji, true), 201);
+    }
+    if (method === "POST" && !id) {
+      const form = await req.formData().catch(() => null);
+      const file = form?.get("file");
+      if (!form || !(file instanceof Blob)) return invalid("file", "BASE_TYPE_REQUIRED", "This field is required");
+      const field = (key: string) => String(form.get(key) ?? "");
+      const name = field("name");
+      const description = field("description");
+      if (!nameOk(name, 2, 30)) return invalid("name", "BASE_TYPE_BAD_LENGTH", "Must be between 2 and 30 in length.");
+      if (description !== "" && !nameOk(description, 2, 100)) return invalid("description", "BASE_TYPE_BAD_LENGTH", "Must be between 2 and 100 in length.");
+      if (field("tags") === "") return invalid("tags", "BASE_TYPE_REQUIRED", "This field is required");
+      const data = new Uint8Array(await file.arrayBuffer());
+      if (data.length > 512 * 1024) return json({ message: "File cannot be larger than 512.0 kb.", code: 50045 }, 400);
+      const head = Buffer.from(data.subarray(0, Math.min(data.length, 4096)));
+      const png = head.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      const format = head.toString("ascii", 0, 4) === "GIF8" ? 4 : png ? (head.includes("acTL") ? 2 : 1) : 0;
+      if (format === 0) return json({ message: "Invalid Asset", code: 50046 }, 400);
+      if (expressions.stickers.length >= stickerSlots()) {
+        return json({ message: `Maximum number of stickers reached (${stickerSlots()})`, code: 30039 }, 400);
+      }
+      const sticker = {
+        id: snowflake(Date.now(), 3500 + (expressions.made++ % 500)), name, tags: field("tags"), description,
+        format_type: format, user: ALICE,
+      };
+      expressions.stickers.push(sticker);
+      expressions.pictures.set(sticker.id, { type: format === 4 ? "image/gif" : "image/png", data });
+      logAudit(90, sticker.id, { changes: [{ key: "name", new_value: name }] });
+      changed();
+      return json(wireSticker(sticker, true), 201);
+    }
+    return json({ message: "405: Method Not Allowed", code: 0 }, 405);
   }
 
   // "Server" itself: Engagement and Boost Perks in Server Settings. A
@@ -6661,6 +6832,8 @@ const server = Bun.serve<SocketData>({
     if (emoji) {
       if (cdnDelay > 0) await Bun.sleep(cdnDelay);
       const size = Math.min(Number(url.searchParams.get("size")) || 128, 512);
+      const uploaded = expressions.pictures.get(emoji[2]!);
+      if (uploaded) return new Response(uploaded.data, { headers: { "content-type": uploaded.type } });
       if (emoji[3] === "gif") {
         return new Response(bouncing(size, 10, [124, 196, 255]), { headers: { "content-type": "image/gif" } });
       }
@@ -6972,7 +7145,11 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "POST" && path === "/_control/guild-reset") {
       const hadMfa = serverSettings.alice_mfa;
+      const hadStickers = expressions.stickers.length > 0;
+      const hadEmojis = JSON.stringify(expressions.emojis) !== JSON.stringify(SERVER_EMOJIS());
       resetGuild();
+      if (hadStickers) dispatch("GUILD_STICKERS_UPDATE", { guild_id: GUILD, stickers: [] });
+      if (hadEmojis) dispatch("GUILD_EMOJIS_UPDATE", { guild_id: GUILD, emojis: guild().emojis });
       if (hadMfa) dispatch("USER_UPDATE", { ...wireUser(users.alice), mfa_enabled: false });
       const { properties } = guild();
       dispatch("GUILD_UPDATE", { ...properties, roles: serverRoles, emojis: guild().emojis });

@@ -2884,6 +2884,7 @@ async fn talks_to_the_fake_server() {
     changes_channel_permissions_as_discords_client_does(&discord, server, &guild).await;
     moderates_as_discords_client_does(&discord, server, &guild).await;
     lists_members_and_invites_as_discords_client_does(&discord, server, &guild).await;
+    keeps_emoji_and_stickers_as_discords_client_does(&discord, server, &guild).await;
 
     // Leaving "Server", which Bob owns, takes it out of her list; the fake
     // lets her back in, so the tests after these find it again.
@@ -3588,6 +3589,138 @@ async fn lists_members_and_invites_as_discords_client_does(
         discord.pause_server(guild, false, false, 2).await.unwrap(),
         (None, None)
     );
+    post_control(server, "/_control/guild-reset", "");
+}
+
+/// Emoji and Stickers in Server Settings: listing them with who uploaded
+/// each, adding, renaming and deleting her own, as her Crew role's Create
+/// Expressions allows, and not Bob's; part of [`talks_to_the_fake_server`].
+async fn keeps_emoji_and_stickers_as_discords_client_does(
+    discord: &Discord,
+    server: &str,
+    guild: &str,
+) {
+    use base64::Engine;
+    let dot = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(dot)
+        .unwrap();
+    let code = |error: anyhow::Error| yapfast_discord::api::code(&error);
+    let names = |emojis: &[yapfast_discord::server_settings::GuildEmoji]| {
+        emojis
+            .iter()
+            .map(|emoji| emoji.name.clone())
+            .collect::<Vec<_>>()
+    };
+    // Each kind has 50 slots at level 0, as premium_features says.
+    let settings = discord.guild_settings(guild).await.unwrap();
+    assert_eq!(settings.extra_emoji_slots, Some(0));
+    let emojis = discord.guild_emojis(guild).await.unwrap();
+    assert_eq!(names(&emojis), ["talk", "party"]);
+    assert!(emojis[1].animated);
+    let bobs = emojis[0].clone();
+    assert_eq!(bobs.user.as_ref().unwrap().username, "bob");
+
+    // Hers, which GUILD_EMOJIS_UPDATE gives everyone.
+    let wave = discord
+        .create_emoji(guild, "wave", &format!("data:image/png;base64,{dot}"))
+        .await
+        .unwrap();
+    assert_eq!(wave.user.as_ref().unwrap().username, "alice");
+    let has_emoji = |name: &'static str| {
+        move |snapshot: &Snapshot| {
+            snapshot.servers.iter().any(|known| {
+                known.id == guild && known.emojis.iter().any(|emoji| emoji.name == name)
+            })
+        }
+    };
+    snapshot_where(discord, has_emoji("wave")).await;
+    discord
+        .rename_emoji(guild, &wave.id, "hello")
+        .await
+        .unwrap();
+    snapshot_where(discord, has_emoji("hello")).await;
+    assert_eq!(
+        code(
+            discord
+                .rename_emoji(guild, &bobs.id, "mine")
+                .await
+                .unwrap_err()
+        ),
+        Some(50013),
+        "Bob's isn't hers to change"
+    );
+    let big = format!("data:image/png;base64,{}", "A".repeat(400 * 1024));
+    assert_eq!(
+        code(discord.create_emoji(guild, "big", &big).await.unwrap_err()),
+        Some(50045)
+    );
+    discord.delete_emoji(guild, &wave.id).await.unwrap();
+    assert_eq!(
+        names(&discord.guild_emojis(guild).await.unwrap()),
+        ["talk", "party"]
+    );
+
+    // Stickers: five slots at level 0, each new one sent as a form.
+    let mut live = discord.live();
+    fn fields(name: &str) -> [(&str, &str); 3] {
+        [("name", name), ("tags", "👋"), ("description", "")]
+    }
+    discord
+        .create_sticker(guild, fields("Wave"), ("wave.png", "image/png", &png))
+        .await
+        .unwrap();
+    let stickers = live_where(&mut live, |live| match live {
+        Live::ServerStickers {
+            guild: changed,
+            stickers,
+        } if changed == guild && !stickers.is_empty() => Some(stickers),
+        _ => None,
+    })
+    .await;
+    // Only the list says who uploaded it.
+    assert_eq!(
+        (stickers[0].name.as_str(), stickers[0].user_id.as_deref()),
+        ("Wave", None)
+    );
+    let listed = discord.guild_stickers(guild).await.unwrap();
+    assert_eq!(listed[0].user.as_ref().unwrap().username, "alice");
+    assert_eq!((listed[0].format, listed[0].tags.as_str()), (1, "👋"));
+    let id = listed[0].id.clone();
+    discord
+        .edit_sticker(guild, &id, "Hello", "👋", "A hand waving")
+        .await
+        .unwrap();
+    assert!(
+        discord
+            .edit_sticker(guild, &id, "Hello", "👋", "x")
+            .await
+            .is_err(),
+        "a description of one character"
+    );
+    let listed = discord.guild_stickers(guild).await.unwrap();
+    assert_eq!(
+        (listed[0].name.as_str(), listed[0].description.as_str()),
+        ("Hello", "A hand waving")
+    );
+    for n in 1..5 {
+        let name = format!("Sticker {n}");
+        discord
+            .create_sticker(guild, fields(&name), ("s.png", "image/png", &png))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        code(
+            discord
+                .create_sticker(guild, fields("Sixth"), ("s.png", "image/png", &png))
+                .await
+                .unwrap_err()
+        ),
+        Some(30039)
+    );
+    discord.delete_sticker(guild, &id).await.unwrap();
+    assert_eq!(discord.guild_stickers(guild).await.unwrap().len(), 4);
     post_control(server, "/_control/guild-reset", "");
 }
 

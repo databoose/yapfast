@@ -2331,6 +2331,9 @@ permission:
 - Boost Perks, with Manage Server: the server's banner and invite
   background, each locked until its boost level, and the boost progress
   bar.
+- [Emoji](#emoji) and [Stickers](#stickers), under Expression, with
+  Manage Expressions or Create Expressions: the server's custom emoji and
+  stickers.
 - [Members](#members), under People, with any of Manage Server, Kick, Ban
   or Time Out Members, Manage Roles and Manage Nicknames: the server's
   members, found by name or id.
@@ -2496,6 +2499,73 @@ or above Staff, or a permission Alice doesn't hold, with 50013, a role
 icon below level 2 with its 50035, and sends the GUILD_ROLE events. `POST
 /_control/roles-reset` puts the roles back. `scripts/ui-session do 'pick
 role-icon PATH'` chooses the open role's icon, as the file chooser would.
+
+#### Emoji
+
+Emoji lists the server's custom emoji from `GET /guilds/{id}/emojis`, in
+two tables, Emoji and Animated Emoji, newest first, each headed with the
+slots it has left, "49 slots available", as Discord's page has them: the
+picture, the name and who uploaded it. Each kind has 50 slots, or 200
+with `MORE_EMOJI`, or 50 more than `premium_features.
+additional_emoji_slots` gives, whichever is most; without
+`premium_features`, boost levels 1 to 3 give 100, 150 and 250. Manage
+Expressions changes any emoji, Create Expressions only those its account
+uploaded, as Discord's does. A name changes in place, sent with `PATCH
+{name}` on Enter or once the field loses the keys, and the X deletes the
+emoji at once with `DELETE`, without asking; both show before Discord
+answers, and the list Discord then gives is taken once no other answer is
+still to come. A name keeps only letters, digits and `_`, at most 32, and
+at least 2, padded with `_`, as Discord's client makes it.
+
+Upload Emoji chooses a file, as Discord's does without its Emoji Studio,
+which Yapfast leaves out with its crop, zoom, rotation and flip: a still
+picture is cut to its middle square and made at most 128 pixels, a GIF
+goes as it is, and over 256 KB is refused with "That emoji was too big!
+Emoji must be under 256 KB." A dialog shows it at 128, 48 and 22 pixels,
+as chat would, with its name, the file's name made valid, where spaces
+turn to `_` as they're typed; Upload sends `POST {name, image}`. With no
+slot of its kind left it says "This server does not have any open emoji
+slots!", as it does for Discord's 30008 and 30018. GUILD_EMOJIS_UPDATE
+changes the snapshot's emoji, and the open page then asks Discord again,
+as Discord's does, unless its own request will bring the list anyway.
+
+#### Stickers
+
+Stickers lists the server's stickers from `GET /guilds/{id}/stickers` on
+Discord's four cards: Free Slots, with 5, and Levels 1 to 3, with 10, 15
+and 30 more, or 90 at level 3 with `MORE_STICKERS`, which makes 120. The
+stickers fill the cards in the list's order. An open card says "3 of 5
+slots available", one the server's level hasn't reached the boosts it
+takes, "2 Boosts", with a lock. Upload Sticker shows on the card where
+the next goes, with Create Expressions, while a slot is left. A tile has
+the sticker's picture, name and uploader; its pencil and X show on hover
+for those this account may change, by the same rule as Emoji's. The X
+deletes the sticker at once with `DELETE`; a Lottie sticker has no
+picture.
+
+Upload Sticker and the pencil open Discord's form: the file, chosen with
+Browse, PNG, APNG, JPEG or GIF, which an edit can't change; Related Emoji,
+an emoji typed or pasted, without Discord's emoji picker; the Sticker
+Name, 2 to 30 characters; and the Description, empty or 2 to 100. A GIF,
+an APNG, or a PNG of 512 KB or less goes as it is; another picture is made
+a PNG within 320 pixels; over 512 KB is "That sticker was too big!
+Stickers must be under 512 KB", and an unreadable file "Invalid sticker
+file". Upload sends `POST` as multipart form data with `name`, `tags`,
+`description` and `file`, and Update `PATCH {name, tags, description}`;
+Discord's refusal shows in the form, in its words. GUILD_STICKERS_UPDATE
+keeps the open page current, keeping who uploaded each sticker, which it
+doesn't say.
+
+The fake's "Server" has Bob's two emoji and no stickers. Crew's Create
+Expressions lets Alice add both and change her own; it refuses Bob's with
+50013, a full kind with 30008 or 30018 and stickers past the level's
+slots with 30039, over 256 KB or 512 KB with 50045, and names Discord
+would with 50035. It sends GUILD_EMOJIS_UPDATE and GUILD_STICKERS_UPDATE,
+serves what was uploaded at `/emojis/` and `/stickers/`, gives
+`premium_features` by boost level, and `/_control/guild-reset` puts back
+its emoji and stickers. `scripts/ui-session do 'pick emoji PATH'` chooses
+a new emoji's picture, as the file chooser would, and `pick sticker PATH`
+the open form's file.
 
 #### Members
 

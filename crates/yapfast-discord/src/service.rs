@@ -438,6 +438,12 @@ pub enum Live {
         ban: Box<server_settings::Ban>,
         banned: bool,
     },
+    /// A server's stickers, as GUILD_STICKERS_UPDATE gives them all, for
+    /// Stickers while it's open.
+    ServerStickers {
+        guild: String,
+        stickers: Vec<server_settings::GuildSticker>,
+    },
 }
 
 /// What a call needs to open the voice connection Discord assigned.
@@ -1360,6 +1366,72 @@ impl Discord {
 
     pub async fn revoke_invite(&self, code: &str) -> Result<()> {
         self.api.revoke_invite(code).await
+    }
+
+    pub async fn guild_emojis(&self, guild: &str) -> Result<Vec<server_settings::GuildEmoji>> {
+        let emojis = self.api.guild_emojis(guild).await?;
+        Ok(emojis
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(server_settings::parse_emoji)
+            .collect())
+    }
+
+    /// Adds a custom emoji, `image` a data URI; gives back the emoji.
+    pub async fn create_emoji(
+        &self,
+        guild: &str,
+        name: &str,
+        image: &str,
+    ) -> Result<server_settings::GuildEmoji> {
+        let emoji = self.api.create_emoji(guild, name, image).await?;
+        server_settings::parse_emoji(&emoji).context("could not understand Discord's answer")
+    }
+
+    pub async fn rename_emoji(&self, guild: &str, emoji: &str, name: &str) -> Result<()> {
+        self.api.rename_emoji(guild, emoji, name).await.map(drop)
+    }
+
+    pub async fn delete_emoji(&self, guild: &str, emoji: &str) -> Result<()> {
+        self.api.delete_emoji(guild, emoji).await
+    }
+
+    pub async fn guild_stickers(&self, guild: &str) -> Result<Vec<server_settings::GuildSticker>> {
+        let stickers = self.api.guild_stickers(guild).await?;
+        Ok(stickers
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(server_settings::parse_sticker)
+            .collect())
+    }
+
+    /// Uploads a sticker: its name, related emoji and description, and the
+    /// file by its name, type and bytes.
+    pub async fn create_sticker(
+        &self,
+        guild: &str,
+        fields: [(&str, &str); 3],
+        file: (&str, &str, &[u8]),
+    ) -> Result<()> {
+        self.api.create_sticker(guild, fields, file).await.map(drop)
+    }
+
+    pub async fn edit_sticker(
+        &self,
+        guild: &str,
+        sticker: &str,
+        name: &str,
+        tags: &str,
+        description: &str,
+    ) -> Result<()> {
+        let body = serde_json::json!({"name": name, "tags": tags, "description": description});
+        self.api.edit_sticker(guild, sticker, &body).await.map(drop)
+    }
+
+    pub async fn delete_sticker(&self, guild: &str, sticker: &str) -> Result<()> {
+        self.api.delete_sticker(guild, sticker).await
     }
 
     /// Pauses invites and DMs for `hours`, or resumes them; gives back when

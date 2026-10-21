@@ -64,6 +64,9 @@ pub struct GuildSettings {
     /// `incidents_data`.
     pub invites_paused_until: Option<u64>,
     pub dms_paused_until: Option<u64>,
+    /// The emoji slots its boosts add to each kind's 50, from its
+    /// `premium_features`, when Discord sends them.
+    pub extra_emoji_slots: Option<u16>,
 }
 
 impl GuildSettings {
@@ -108,6 +111,9 @@ pub fn parse_guild(guild: &Value) -> GuildSettings {
         mfa_level: field("mfa_level").as_u64().unwrap_or_default() as u8,
         invites_paused_until: parse_incidents(field("incidents_data")).0,
         dms_paused_until: parse_incidents(field("incidents_data")).1,
+        extra_emoji_slots: field("premium_features")["additional_emoji_slots"]
+            .as_u64()
+            .map(|slots| u16::try_from(slots).unwrap_or(u16::MAX)),
     }
 }
 
@@ -287,6 +293,69 @@ pub fn parse_banned_user(user: &Value) -> Option<BannedUser> {
             .filter(|name| !name.is_empty())
             .map(str::to_owned),
         avatar: ready::avatar(id, user["avatar"].as_str()),
+    })
+}
+
+/// A server's custom emoji, as Emoji in its settings lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GuildEmoji {
+    pub id: String,
+    pub name: String,
+    pub animated: bool,
+    /// A server that lost boosts keeps emoji it no longer has room for,
+    /// unavailable.
+    pub available: bool,
+    /// Who uploaded it, which `GET /guilds/{id}/emojis` says and the
+    /// gateway doesn't.
+    pub user: Option<BannedUser>,
+}
+
+/// An emoji from `GET /guilds/{id}/emojis` or its `POST`.
+pub fn parse_emoji(emoji: &Value) -> Option<GuildEmoji> {
+    Some(GuildEmoji {
+        id: emoji["id"].as_str()?.to_owned(),
+        name: emoji["name"].as_str()?.to_owned(),
+        animated: emoji["animated"].as_bool().unwrap_or_default(),
+        available: emoji["available"].as_bool().unwrap_or(true),
+        user: parse_banned_user(&emoji["user"]),
+    })
+}
+
+/// A server's sticker, as Stickers in its settings lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GuildSticker {
+    pub id: String,
+    pub name: String,
+    /// Its related emoji: a Unicode emoji, or a custom emoji's id.
+    pub tags: String,
+    pub description: String,
+    /// Discord's `format_type`: 1 PNG, 2 APNG, 3 Lottie, 4 GIF.
+    pub format: u8,
+    pub available: bool,
+    /// Who uploaded it: a user, or, as the gateway has it, only an id.
+    pub user: Option<BannedUser>,
+    pub user_id: Option<String>,
+}
+
+/// A sticker from `GET /guilds/{id}/stickers`, its `POST` or `PATCH`, or
+/// GUILD_STICKERS_UPDATE.
+pub fn parse_sticker(sticker: &Value) -> Option<GuildSticker> {
+    let user = parse_banned_user(&sticker["user"]);
+    Some(GuildSticker {
+        id: sticker["id"].as_str()?.to_owned(),
+        name: sticker["name"].as_str()?.to_owned(),
+        tags: sticker["tags"].as_str().unwrap_or_default().to_owned(),
+        description: sticker["description"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        format: sticker["format_type"].as_u64().unwrap_or(1) as u8,
+        available: sticker["available"].as_bool().unwrap_or(true),
+        user_id: user
+            .as_ref()
+            .map(|user| user.id.clone())
+            .or_else(|| sticker["user_id"].as_str().map(str::to_owned)),
+        user,
     })
 }
 

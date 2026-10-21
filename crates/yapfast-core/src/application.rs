@@ -69,13 +69,15 @@ pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
 pub use server_settings::{
     ADD_MEMBERS_LIMIT, AFK_TIMEOUTS, AUDIT_ACTIONS, AUDIT_PAGE, AddMembers, AuditInput, AuditKind,
     AuditLine, AuditLogPage, AuditRow, AuditSpan, AuditWords, BANS_BATCH, BANS_PER_PAGE, BOOSTED,
-    BanInput, BansPage, BoostPage, DEFAULT_ROLE_COLOR, DESCRIPTION_LIMIT, EngagementPage,
-    FILTER_ALL, HIGHEST_VERIFICATION, InviteInput, InvitesPage, MEMBER_PAGE_SIZES, MEMBER_SORTS,
+    BanInput, BansPage, BoostPage, DEFAULT_ROLE_COLOR, DESCRIPTION_LIMIT, EMOJI_NAME_LIMIT,
+    EmojiInput, EmojiPage, EmojiUpload, EngagementPage, ExpressionRules, FILTER_ALL,
+    HIGHEST_VERIFICATION, InviteInput, InvitesPage, LEVEL_BOOSTS, MEMBER_PAGE_SIZES, MEMBER_SORTS,
     MEMBERS_CHUNK, MemberInput, MembersPage, MfaRule, PAUSE_HOURS, Page as SettingsPage,
     PermissionGroup, PermissionInfo, PermissionLock, ProfilePage, ROLE_COLORS, ROLE_NAME_LIMIT,
     ROLE_PERMISSIONS, RoleConfirm, RoleDraft, RoleInput, RoleLock, RoleRules, RoleTab, RolesPage,
-    SETUP_TIPS, SafetyChoice, SafetyPage, SecurityDraft, ServerSettings, SettingsChoice,
-    SettingsText, SettingsToggle, WELCOME, WELCOME_STICKER,
+    SETUP_TIPS, STICKER_DESCRIPTION_LIMIT, STICKER_NAME_LIMIT, SafetyChoice, SafetyPage,
+    SecurityDraft, ServerSettings, SettingsChoice, SettingsText, SettingsToggle, StickerCard,
+    StickerDraft, StickerInput, StickersPage, WELCOME, WELCOME_STICKER, emoji_name,
 };
 pub use threads::{
     NewThread, THREAD_NAME_LIMIT, ThreadFrom, ThreadList, ThreadSearch, ThreadSections,
@@ -1516,6 +1518,10 @@ pub enum Action {
     CloseServerSettings,
     /// Something done on Roles in a server's settings.
     Roles(RoleInput),
+    /// Something done on Emoji in a server's settings.
+    Emoji(EmojiInput),
+    /// Something done on Stickers in a server's settings.
+    Stickers(StickerInput),
     /// Something done on Members in a server's settings.
     Members(MemberInput),
     /// Something done on Invites in a server's settings.
@@ -1836,6 +1842,8 @@ fn pictures_on_screen<'a>(
                 ),
                 Some(
                     server_settings::Page::Engagement(_)
+                    | server_settings::Page::Emoji(_)
+                    | server_settings::Page::Stickers(_)
                     | server_settings::Page::Members(_)
                     | server_settings::Page::Roles(_)
                     | server_settings::Page::Invites(_)
@@ -1876,6 +1884,29 @@ fn pictures_on_screen<'a>(
                 .into_iter()
                 .flat_map(|page| page.actors.iter().map(|(_, user)| user.avatar.as_str()))
                 .filter(|avatar| !avatar.is_empty());
+            // Emoji and their uploaders; stickers and theirs.
+            let emojis = match &settings.page {
+                Some(server_settings::Page::Emoji(page)) => page.emojis.as_slice(),
+                _ => &[],
+            }
+            .iter()
+            .flat_map(|emoji| {
+                let uploader = emoji.user.as_ref().map(|user| user.avatar.as_str());
+                [Some(emoji.picture.as_str()), uploader]
+            })
+            .flatten()
+            .filter(|url| !url.is_empty());
+            let stickers = match &settings.page {
+                Some(server_settings::Page::Stickers(page)) => page.stickers.as_slice(),
+                _ => &[],
+            }
+            .iter()
+            .flat_map(|sticker| {
+                let uploader = sticker.user.as_ref().map(|user| user.avatar.as_str());
+                [sticker.picture.as_deref(), uploader]
+            })
+            .flatten()
+            .filter(|url| !url.is_empty());
             // Roles' icons, the open role's members and Add Members' finds.
             let roles = match &settings.page {
                 Some(server_settings::Page::Roles(page)) => Some(page),
@@ -1898,6 +1929,8 @@ fn pictures_on_screen<'a>(
                 .into_iter()
                 .chain(second)
                 .chain(icons)
+                .chain(emojis)
+                .chain(stickers)
                 .chain(members)
                 .chain(found)
                 .chain(banned)
@@ -2537,6 +2570,8 @@ impl Application {
             }
             Action::SaveServerSettings => self.save_server_settings(),
             Action::Roles(input) => self.role_input(input),
+            Action::Emoji(input) => self.emoji_input(input),
+            Action::Stickers(input) => self.sticker_input(input),
             Action::Members(input) => self.member_input(input),
             Action::Invites(input) => self.invite_input(input),
             Action::Bans(input) => self.ban_input(input),
@@ -3044,6 +3079,19 @@ impl Application {
                 result,
             } => self.invite_revoked(server, code, result),
             Event::ServerPaused { server, result } => self.server_paused(server, result),
+            Event::EmojisChanged {
+                server,
+                upload,
+                result,
+                emojis,
+            } => self.emojis_changed(server, upload, result, emojis),
+            Event::StickersChanged {
+                server,
+                form,
+                result,
+                stickers,
+            } => self.stickers_changed(server, form, result, stickers),
+            Event::ServerStickers { server, stickers } => self.server_stickers(server, stickers),
             Event::ServerBan {
                 server,
                 ban,

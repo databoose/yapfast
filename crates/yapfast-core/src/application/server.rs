@@ -59,6 +59,8 @@ fn bits(permission: Permission) -> u64 {
         Permission::DeafenMembers => permission::DEAFEN_MEMBERS,
         Permission::MoveMembers => permission::MOVE_MEMBERS,
         Permission::ViewAuditLog => permission::VIEW_AUDIT_LOG,
+        Permission::ManageExpressions => permission::MANAGE_GUILD_EXPRESSIONS,
+        Permission::CreateExpressions => permission::CREATE_GUILD_EXPRESSIONS,
     }
 }
 

@@ -1279,6 +1279,73 @@ impl Api {
         self.empty(self.request(Method::DELETE, &path)).await
     }
 
+    /// A server's custom emoji, each with who uploaded it, as Emoji in its
+    /// settings lists them.
+    pub async fn guild_emojis(&self, guild: &str) -> Result<Value> {
+        let path = format!("/guilds/{guild}/emojis");
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Adds a custom emoji: `image` is a data URI. Discord answers with
+    /// the emoji.
+    pub async fn create_emoji(&self, guild: &str, name: &str, image: &str) -> Result<Value> {
+        let path = format!("/guilds/{guild}/emojis");
+        let body = json!({"name": name, "image": image});
+        self.json(with_json(self.request(Method::POST, &path), &body))
+            .await
+    }
+
+    /// Renames a custom emoji, as Emoji's name field does.
+    pub async fn rename_emoji(&self, guild: &str, emoji: &str, name: &str) -> Result<Value> {
+        let path = format!("/guilds/{guild}/emojis/{emoji}");
+        let body = json!({ "name": name });
+        self.json(with_json(self.request(Method::PATCH, &path), &body))
+            .await
+    }
+
+    pub async fn delete_emoji(&self, guild: &str, emoji: &str) -> Result<()> {
+        let path = format!("/guilds/{guild}/emojis/{emoji}");
+        self.empty(self.request(Method::DELETE, &path)).await
+    }
+
+    /// A server's stickers, each with who uploaded it.
+    pub async fn guild_stickers(&self, guild: &str) -> Result<Value> {
+        let path = format!("/guilds/{guild}/stickers");
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Uploads a sticker as Discord's client does: a form with `name`,
+    /// `tags`, `description` and the file, in that order. Discord answers
+    /// with the sticker.
+    pub async fn create_sticker(
+        &self,
+        guild: &str,
+        fields: [(&str, &str); 3],
+        file: (&str, &str, &[u8]),
+    ) -> Result<Value> {
+        let path = format!("/guilds/{guild}/stickers");
+        let (content_type, body) = form(&fields, file);
+        self.json(
+            self.request(Method::POST, &path)
+                .header(header::CONTENT_TYPE, content_type)
+                .body(body),
+        )
+        .await
+    }
+
+    /// Changes a sticker's name, related emoji and description; its file
+    /// stays.
+    pub async fn edit_sticker(&self, guild: &str, sticker: &str, body: &Value) -> Result<Value> {
+        let path = format!("/guilds/{guild}/stickers/{sticker}");
+        self.json(with_json(self.request(Method::PATCH, &path), body))
+            .await
+    }
+
+    pub async fn delete_sticker(&self, guild: &str, sticker: &str) -> Result<()> {
+        let path = format!("/guilds/{guild}/stickers/{sticker}");
+        self.empty(self.request(Method::DELETE, &path)).await
+    }
+
     /// Pauses a server's invites or DMs until a time, or resumes them, as
     /// Security Actions does: `body` has `invites_disabled_until`,
     /// `dms_disabled_until` and `lockdown_duration_hours`. Discord answers
@@ -1964,6 +2031,32 @@ fn post_body(
         "applied_tags": tags,
         "message": message,
     })
+}
+
+/// A `multipart/form-data` body of text `fields` and a file, given by its
+/// name, type and bytes, with its content type.
+fn form(fields: &[(&str, &str)], file: (&str, &str, &[u8])) -> (String, Vec<u8>) {
+    let boundary = format!("yapfast{:016x}", rand::random::<u64>());
+    let mut body = Vec::with_capacity(file.2.len() + 512);
+    for (name, value) in fields {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    let (filename, mime, data) = file;
+    let filename = filename.replace(['"', '\r', '\n'], "_");
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: {mime}\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(data);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
 }
 
 fn with_json(request: RequestBuilder, body: &Value) -> RequestBuilder {

@@ -344,6 +344,8 @@ export component TextField inherits Rectangle {
     in property <length> pad: 12px;
     in property <color> fill: Theme.sunken;
     in property <bool> ring: true;
+    /// The field has the keys.
+    out property <bool> focused: input.has-focus;
     callback edited(string);
     callback accepted;
     public function focus-input() { input.focus(); }

@@ -35,6 +35,7 @@ impl BoostPage {
         let settings = &self.original;
         match kind {
             ServerPicture::Icon | ServerPicture::RoleIcon => true,
+            ServerPicture::Emoji | ServerPicture::Sticker => false,
             ServerPicture::Splash => settings.premium_tier >= 1 || settings.has("INVITE_SPLASH"),
             ServerPicture::Banner => settings.premium_tier >= 2 || settings.has("BANNER"),
         }
@@ -46,7 +47,11 @@ impl BoostPage {
         let settings = &self.original;
         match kind {
             ServerPicture::Banner => settings.premium_tier >= 3 || settings.has("ANIMATED_BANNER"),
-            ServerPicture::Icon | ServerPicture::Splash | ServerPicture::RoleIcon => false,
+            ServerPicture::Icon
+            | ServerPicture::Splash
+            | ServerPicture::RoleIcon
+            | ServerPicture::Emoji
+            | ServerPicture::Sticker => false,
         }
     }
 
@@ -54,7 +59,10 @@ impl BoostPage {
         match kind {
             ServerPicture::Banner => Some(&mut self.banner),
             ServerPicture::Splash => Some(&mut self.splash),
-            ServerPicture::Icon | ServerPicture::RoleIcon => None,
+            ServerPicture::Icon
+            | ServerPicture::RoleIcon
+            | ServerPicture::Emoji
+            | ServerPicture::Sticker => None,
         }
     }
 
@@ -64,7 +72,10 @@ impl BoostPage {
         let (edit, kept) = match kind {
             ServerPicture::Banner => (&self.banner, self.original.banner.as_deref()),
             ServerPicture::Splash => (&self.splash, self.original.splash.as_deref()),
-            ServerPicture::Icon | ServerPicture::RoleIcon => return (None, None),
+            ServerPicture::Icon
+            | ServerPicture::RoleIcon
+            | ServerPicture::Emoji
+            | ServerPicture::Sticker => return (None, None),
         };
         match edit {
             PictureEdit::Keep => (kept, None),

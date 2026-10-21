@@ -5,11 +5,12 @@
 use yapfast_core::{
     application::{
         AFK_TIMEOUTS, AUDIT_ACTIONS, AuditInput, AuditKind, AuditLogPage, AuditSpan, AuditWords,
-        BOOSTED, BanInput, BansPage, DEFAULT_ROLE_COLOR, InviteInput, InvitesPage,
-        MEMBER_PAGE_SIZES, MemberInput, MembersPage, MfaRule, PAUSE_HOURS, PermissionLock,
-        PictureEdit, ROLE_COLORS, ROLE_PERMISSIONS, RoleConfirm, RoleInput, RoleLock, RoleRules,
-        RoleTab, RolesPage, SETUP_TIPS, SafetyChoice, SafetyPage, SettingsChoice, SettingsPage,
-        SettingsText, SettingsToggle, WELCOME, WELCOME_STICKER,
+        BOOSTED, BanInput, BansPage, DEFAULT_ROLE_COLOR, EmojiInput, EmojiPage, ExpressionRules,
+        InviteInput, InvitesPage, LEVEL_BOOSTS, MEMBER_PAGE_SIZES, MemberInput, MembersPage,
+        MfaRule, PAUSE_HOURS, PermissionLock, PictureEdit, ROLE_COLORS, ROLE_PERMISSIONS,
+        RoleConfirm, RoleInput, RoleLock, RoleRules, RoleTab, RolesPage, SETUP_TIPS, SafetyChoice,
+        SafetyPage, SettingsChoice, SettingsPage, SettingsText, SettingsToggle, StickerInput,
+        StickersPage, WELCOME, WELCOME_STICKER,
     },
     chat::{
         JoinMethod, MfaMethod, Permission, RoleManager, RoleMember, ServerPicture, ServerRole,
@@ -32,6 +33,8 @@ fn section_id(section: SettingsSection) -> i32 {
         SettingsSection::AuditLog => 6,
         SettingsSection::Members => 7,
         SettingsSection::Invites => 8,
+        SettingsSection::Emoji => 9,
+        SettingsSection::Stickers => 10,
     }
 }
 
@@ -46,6 +49,8 @@ fn section(id: i32) -> Option<SettingsSection> {
         6 => Some(SettingsSection::AuditLog),
         7 => Some(SettingsSection::Members),
         8 => Some(SettingsSection::Invites),
+        9 => Some(SettingsSection::Emoji),
+        10 => Some(SettingsSection::Stickers),
         _ => None,
     }
 }
@@ -56,6 +61,8 @@ fn picture(id: i32) -> ServerPicture {
         1 => ServerPicture::Banner,
         2 => ServerPicture::Splash,
         3 => ServerPicture::RoleIcon,
+        4 => ServerPicture::Emoji,
+        5 => ServerPicture::Sticker,
         _ => ServerPicture::Icon,
     }
 }
@@ -125,8 +132,9 @@ impl Adapter {
         }];
         let mut group = "";
         for section in self.app.settings_sections(&settings.server) {
-            // Under Discord's People and Moderation.
+            // Under Discord's Expression, People and Moderation.
             let heading = match section {
+                SettingsSection::Emoji | SettingsSection::Stickers => "EXPRESSION",
                 SettingsSection::Members | SettingsSection::Roles | SettingsSection::Invites => {
                     "PEOPLE"
                 }
@@ -153,6 +161,8 @@ impl Adapter {
                 SettingsSection::Safety => ("Safety Setup", &self.icons.lock),
                 SettingsSection::AuditLog => ("Audit Log", &self.icons.history),
                 SettingsSection::Bans => ("Bans", &self.icons.ban),
+                SettingsSection::Emoji => ("Emoji", &self.icons.emoji),
+                SettingsSection::Stickers => ("Stickers", &self.icons.stickers),
             };
             rows.push(SettingsRow {
                 heading: false,
@@ -292,6 +302,13 @@ impl Adapter {
                 let roles = self.app.server_roles(&settings.server);
                 let may_create = self.app.may(&settings.server, Permission::CreateInvite);
                 prompt.invites = invites_prompt(page, &roles, may_create);
+            }
+            Some(SettingsPage::Emoji(page)) => {
+                prompt.emoji = emoji_prompt(page, &self.app.expression_rules(&settings.server));
+            }
+            Some(SettingsPage::Stickers(page)) => {
+                prompt.stickers =
+                    stickers_prompt(page, &self.app.expression_rules(&settings.server));
             }
             None => {}
         }
@@ -678,6 +695,16 @@ fn keep_lists(old: &ServerSettingsPrompt, new: &mut ServerSettingsPrompt) {
     new.invites.rows = same_rows(&old.invites.rows, new.invites.rows.clone(), |row| {
         row.code.clone()
     });
+    keep!(emoji.rows);
+    // A card's tiles first, so that its card may stay too.
+    for (index, card) in new.stickers.cards.iter().enumerate() {
+        if let Some(old) = old.stickers.cards.row_data(index) {
+            let mut card = card;
+            card.tiles = same_list(&old.tiles, card.tiles.clone());
+            new.stickers.cards.set_row_data(index, card);
+        }
+    }
+    keep!(stickers.cards);
 }
 
 /// Keeps a list showing the same rows, by `key`, in the same order, and
@@ -1106,6 +1133,183 @@ fn invite_input(what: i32, text: SharedString, number: i32) -> Option<InviteInpu
     })
 }
 
+/// Emoji: both tables, newest first, each under its heading, and the
+/// upload dialog while it's open.
+fn emoji_prompt(page: &EmojiPage, rules: &ExpressionRules) -> EmojiPrompt {
+    let mut rows = vec![];
+    for (animated, heading) in [(false, "Emoji"), (true, "Animated Emoji")] {
+        let free = page.free(animated);
+        rows.push(ServerEmojiRow {
+            heading: heading.into(),
+            slots: match free {
+                0 => "no slots available".to_owned(),
+                1 => "1 slot available".to_owned(),
+                free => format!("{free} slots available"),
+            }
+            .into(),
+            ..Default::default()
+        });
+        let start = rows.len();
+        rows.extend(
+            page.emojis
+                .iter()
+                .rev()
+                .filter(|emoji| emoji.animated == animated)
+                .map(|emoji| {
+                    let uploader = emoji.user.as_ref();
+                    ServerEmojiRow {
+                        id: emoji.id.as_str().into(),
+                        name: emoji.name.as_str().into(),
+                        picture_url: emoji.picture.as_str().into(),
+                        uploader: uploader
+                            .map(|user| user.name.as_str())
+                            .unwrap_or_default()
+                            .into(),
+                        uploader_avatar: uploader
+                            .map(|user| user.avatar.as_str())
+                            .unwrap_or_default()
+                            .into(),
+                        uploader_initial: uploader
+                            .map(|user| initials(&user.name))
+                            .unwrap_or_default(),
+                        may_change: rules.may_change(uploader.map(|user| user.id.as_str())),
+                        ..Default::default()
+                    }
+                }),
+        );
+        // A table with no emoji isn't shown.
+        if rows.len() == start {
+            rows.pop();
+        }
+    }
+    let mut prompt = EmojiPrompt {
+        slots: i32::try_from(page.slots()).unwrap_or(i32::MAX),
+        rows: ModelRc::new(VecModel::from(rows)),
+        may_upload: (rules.manage || rules.create) && (page.free(false) > 0 || page.free(true) > 0),
+        ..Default::default()
+    };
+    if let Some(upload) = &page.upload {
+        prompt.uploading = true;
+        prompt.preview = upload
+            .picture
+            .as_ref()
+            .map(|picture| slint_image(&picture.preview))
+            .unwrap_or_default();
+        prompt.name = upload.name.as_str().into();
+        prompt.animated = upload.animated();
+        prompt.saving = upload.saving;
+        prompt.may_finish =
+            upload.picture.is_some() && upload.name.chars().count() >= 2 && !upload.saving;
+        prompt.error = upload.error.as_deref().unwrap_or_default().into();
+    }
+    prompt
+}
+
+/// Stickers: Discord's four cards, and the form while it's open.
+fn stickers_prompt(page: &StickersPage, rules: &ExpressionRules) -> StickersPrompt {
+    let cards: Vec<StickerCard> = page
+        .cards()
+        .iter()
+        .map(|card| {
+            let free = card.slots.saturating_sub(card.stickers.len());
+            let tiles: Vec<StickerTile> = card
+                .stickers
+                .iter()
+                .map(|sticker| StickerTile {
+                    id: sticker.id.as_str().into(),
+                    name: sticker.form.name.as_str().into(),
+                    picture_url: sticker.picture.as_deref().unwrap_or_default().into(),
+                    uploader: sticker
+                        .user
+                        .as_ref()
+                        .map(|user| user.name.as_str())
+                        .unwrap_or_default()
+                        .into(),
+                    may_change: rules.may_change(sticker.user_id.as_deref()),
+                })
+                .collect();
+            StickerCard {
+                title: match card.level {
+                    0 => "Free Slots".to_owned(),
+                    level => format!("Level {level}"),
+                }
+                .into(),
+                status: if card.unlocked {
+                    let slots = if card.slots == 1 { "slot" } else { "slots" };
+                    format!("{free} of {} {slots} available", card.slots)
+                } else {
+                    format!("{} Boosts", LEVEL_BOOSTS[card.level])
+                }
+                .into(),
+                unlocked: card.unlocked,
+                next: card.next,
+                tiles: ModelRc::new(VecModel::from(tiles)),
+            }
+        })
+        .collect();
+    let mut prompt = StickersPrompt {
+        cards: ModelRc::new(VecModel::from(cards)),
+        may_upload: (rules.manage || rules.create) && !page.full(),
+        ..Default::default()
+    };
+    if let Some(draft) = &page.draft {
+        prompt.form = true;
+        prompt.editing = draft.editing.is_some();
+        prompt.has_file = draft.file.is_some();
+        prompt.file_name = draft.file_name.as_str().into();
+        prompt.preview = draft
+            .file
+            .as_ref()
+            .map(|file| slint_image(&file.preview))
+            .unwrap_or_default();
+        prompt.preview_url = draft
+            .editing
+            .as_ref()
+            .and_then(|id| page.stickers.iter().find(|sticker| &sticker.id == id))
+            .and_then(|sticker| sticker.picture.as_deref())
+            .unwrap_or_default()
+            .into();
+        prompt.name = draft.form.name.as_str().into();
+        prompt.tags = draft.form.tags.as_str().into();
+        prompt.description = draft.form.description.as_str().into();
+        prompt.saving = draft.saving;
+        prompt.may_save = draft.ready();
+        prompt.error = draft.error.as_deref().unwrap_or_default().into();
+    }
+    prompt
+}
+
+/// What Emoji and its upload dialog sent: what was done, with an emoji's id
+/// and a name.
+fn emoji_input(what: i32, id: SharedString, name: SharedString) -> Option<EmojiInput> {
+    Some(match what {
+        0 => EmojiInput::Rename {
+            id: id.into(),
+            name: name.into(),
+        },
+        1 => EmojiInput::Delete(id.into()),
+        2 => EmojiInput::Name(name.into()),
+        3 => EmojiInput::Finish,
+        4 => EmojiInput::Cancel,
+        _ => return None,
+    })
+}
+
+/// What Stickers and its form sent: what was done, with a text.
+fn sticker_input(what: i32, text: SharedString) -> Option<StickerInput> {
+    Some(match what {
+        0 => StickerInput::Upload,
+        1 => StickerInput::Edit(text.into()),
+        2 => StickerInput::Name(text.into()),
+        3 => StickerInput::Tags(text.into()),
+        4 => StickerInput::Description(text.into()),
+        5 => StickerInput::Save,
+        6 => StickerInput::Cancel,
+        7 => StickerInput::Delete(text.into()),
+        _ => return None,
+    })
+}
+
 /// What Bans sent: what was done, with a text or a number.
 fn ban_input(what: i32, text: SharedString, number: i32) -> Option<BanInput> {
     Some(match what {
@@ -1319,6 +1523,8 @@ pub(super) fn bind(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
     act!(on_ban_input(what, text, number) => ban_input(what, text, number).map(Action::Bans));
     act!(on_members_input(what, text, number) => member_input(what, text, number));
     act!(on_invites_input(what, text, number) => invite_input(what, text, number).map(Action::Invites));
+    act!(on_emoji_input(what, id, name) => emoji_input(what, id, name).map(Action::Emoji));
+    act!(on_stickers_input(what, text) => sticker_input(what, text).map(Action::Stickers));
     {
         let state = adapter.clone();
         let weak = window.as_weak();
@@ -1407,8 +1613,18 @@ pub(super) fn bind(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
                     ServerPicture::Banner => "Upload Server Banner",
                     ServerPicture::Splash => "Upload Invite Background",
                     ServerPicture::RoleIcon => "Choose Role Icon",
+                    ServerPicture::Emoji => "Upload Emoji",
+                    ServerPicture::Sticker => "Upload Sticker",
                 })
-                .add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "webp"])
+                .add_filter(
+                    "Pictures",
+                    // Discord's stickers are PNG, APNG, JPEG or GIF.
+                    if kind == ServerPicture::Sticker {
+                        &["png", "apng", "jpg", "jpeg", "gif"][..]
+                    } else {
+                        &["png", "jpg", "jpeg", "gif", "webp"][..]
+                    },
+                )
                 .pick_file()
                 .await;
             if let (Some(file), Some(adapter)) = (file, weak.upgrade()) {

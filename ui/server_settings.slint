@@ -4,6 +4,7 @@ import { Choices, Picker, SettingsFrame, SettingsRow, SettingsTitle, SettingsHea
 import { AddMembersDialog, RoleConfirmDialog, RolesPrompt, RolesSection } from "roles.slint";
 import { AuditLogPrompt, AuditLogSection, BanDialog, BansPrompt, BansSection, SafetyPrompt, SafetySection } from "moderation.slint";
 import { InvitesPrompt, InvitesSection, MembersPrompt, MembersSection, SecurityActionsDialog } from "server_people.slint";
+import { EmojiPrompt, EmojiSection, EmojiUploadDialog, StickerDialog, StickersPrompt, StickersSection } from "server_expressions.slint";
 
 /// What Server Profile shows besides what's written in it.
 export struct ServerProfilePrompt {
@@ -59,7 +60,8 @@ export struct ServerSettingsPrompt {
     /// change, under Discord's groups.
     rows: [SettingsRow],
     /// The page showing: 0 Server Profile, 1 Engagement, 2 Boost Perks,
-    /// 3 Roles, 4 Safety Setup, 5 Bans, 6 Audit Log, 7 Members, 8 Invites.
+    /// 3 Roles, 4 Safety Setup, 5 Bans, 6 Audit Log, 7 Members, 8 Invites,
+    /// 9 Emoji, 10 Stickers.
     section: int,
     /// The page saves each change as it's made, without the bar.
     immediate: bool,
@@ -86,6 +88,8 @@ export struct ServerSettingsPrompt {
     audit-log: AuditLogPrompt,
     members: MembersPrompt,
     invites: InvitesPrompt,
+    emoji: EmojiPrompt,
+    stickers: StickersPrompt,
 }
 
 // A text of a settings page, several lines high, with how many characters
@@ -356,7 +360,7 @@ export component ServerSettingsScreen inherits Rectangle {
     /// A list's choice, by list and index; see EngagementSection.
     callback pick-choice(int, int);
     /// Choose or remove a picture: 0 the icon, 1 the banner, 2 the invite
-    /// background.
+    /// background, 3 a role's icon, 4 a new emoji, 5 a new sticker.
     callback pick-picture(int);
     callback remove-picture(int);
     callback undo;
@@ -376,6 +380,11 @@ export component ServerSettingsScreen inherits Rectangle {
     /// InvitesSection and SecurityActionsDialog.
     callback member(int, string, int);
     callback invite(int, string, int);
+    /// Something done on Emoji or Stickers: what, and texts such as an
+    /// emoji's id and name; see EmojiSection, EmojiUploadDialog,
+    /// StickersSection and StickerDialog.
+    callback emoji(int, string, string);
+    callback sticker(int, string);
     /// A member's menu, by id, at a point of the window.
     callback member-menu(string, length, length);
     property <bool> bar: (root.prompt.changed || root.prompt.saving) && !root.prompt.immediate;
@@ -383,11 +392,14 @@ export component ServerSettingsScreen inherits Rectangle {
     // back to the frame, for Escape.
     property <bool> ban-open: root.prompt.bans.open;
     changed ban-open => { if !self.ban-open { frame.focus-keys(); } }
+    // So do the emoji and sticker dialogs once Discord takes what they send.
+    property <bool> expression-open: root.prompt.emoji.uploading || root.prompt.stickers.form;
+    changed expression-open => { if !self.expression-open { frame.focus-keys(); } }
     frame := SettingsFrame {
         rows: root.prompt.rows; selected: root.prompt.section; label: "Server settings";
         bottom: root.bar ? 140px : 56px;
         // A role's permissions are a list view.
-        fill: root.prompt.loaded && ((root.prompt.section == 3 && root.prompt.roles.open && root.prompt.roles.tab == 1) || root.prompt.section == 5 || root.prompt.section == 6 || root.prompt.section == 7 || root.prompt.section == 8);
+        fill: root.prompt.loaded && ((root.prompt.section == 3 && root.prompt.roles.open && root.prompt.roles.tab == 1) || root.prompt.section == 5 || root.prompt.section == 6 || root.prompt.section == 7 || root.prompt.section == 8 || root.prompt.section == 9);
         chose(id) => { root.choose(id); }
         close => { root.close(); }
         if root.prompt.loading: Label { text: "Loading..."; }
@@ -444,6 +456,15 @@ export component ServerSettingsScreen inherits Rectangle {
             page: root.prompt.invites;
             act(what, text, number) => { root.invite(what, text, number); }
         }
+        if root.prompt.loaded && root.prompt.section == 9: EmojiSection {
+            page: root.prompt.emoji;
+            act(what, id, name) => { root.emoji(what, id, name); }
+            upload => { root.pick-picture(4); }
+        }
+        if root.prompt.loaded && root.prompt.section == 10: StickersSection {
+            page: root.prompt.stickers;
+            act(what, id) => { root.sticker(what, id); }
+        }
         if root.prompt.problem != "": Text { text: root.prompt.problem; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
         if root.prompt.error != "": Text { text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
     }
@@ -473,6 +494,15 @@ export component ServerSettingsScreen inherits Rectangle {
             root.invite(what, "", number);
             if what == 7 { frame.focus-keys(); }
         }
+    }
+    if root.prompt.section == 9 && root.prompt.emoji.uploading: EmojiUploadDialog {
+        page: root.prompt.emoji;
+        act(what, text) => { root.emoji(what, "", text); }
+    }
+    if root.prompt.section == 10 && root.prompt.stickers.form: StickerDialog {
+        page: root.prompt.stickers;
+        act(what, text) => { root.sticker(what, text); }
+        browse => { root.pick-picture(5); }
     }
     if root.prompt.section == 3 && root.prompt.roles.adding: AddMembersDialog {
         page: root.prompt.roles; role-name: root.role-name;
