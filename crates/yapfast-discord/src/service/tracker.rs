@@ -965,14 +965,8 @@ impl Tracker {
         let heading = format!("Members — {}", group.recipients.len() + 1);
         let mut members: Vec<_> = people
             .map(|user| {
-                let known = if *user == self.me {
-                    Known {
-                        presence: Presence::Online,
-                        ..Known::default()
-                    }
-                } else {
-                    self.presences.get(user).cloned().unwrap_or_default()
-                };
+                // MemberLists gives this account its own presence.
+                let known = self.presences.get(user).cloned().unwrap_or_default();
                 ListedMember {
                     user_id: user.clone(),
                     name: names.user_name(user).unwrap_or("Discord user").to_owned(),
@@ -2174,7 +2168,8 @@ mod tests {
             members,
             [
                 ("cat".into(), "Members — 2".into(), Presence::Idle),
-                ("me".into(), "Members — 2".into(), Presence::Online),
+                // MemberLists gives this account its own presence.
+                ("me".into(), "Members — 2".into(), Presence::Offline),
             ]
         );
         assert!(

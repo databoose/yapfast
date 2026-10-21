@@ -23,6 +23,7 @@ use crate::{
     cache,
     event::Event,
     gateway::{Closed, Dispatch, Gateway, Reconnects, TooManyIdentifies},
+    member_list::Presence,
     message::{self, Names},
     ready,
     settings::Away,
@@ -624,6 +625,9 @@ impl Session<'_> {
         let presence = self.tracker.own_presence(away);
         if presence != self.shared.presence {
             self.gateway.update_presence(presence.clone()).await?;
+            self.shared
+                .lists
+                .own_presence(&self.tracker, Presence::parse(&presence));
             self.shared.presence = presence;
         }
         Ok(())

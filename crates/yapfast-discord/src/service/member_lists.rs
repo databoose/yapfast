@@ -19,7 +19,7 @@ use crate::{
     cache,
     event::Event,
     gateway::{Dispatch, Gateway},
-    member_list::MemberList,
+    member_list::{ListedMember, MemberList, Presence},
     message::Names,
     ready::PRIVATE,
 };
@@ -48,6 +48,9 @@ pub(super) struct MemberLists {
     subscribed: HashMap<String, String>,
     /// When the list on screen goes stale, unless Discord still sends it.
     stale: Pin<Box<Sleep>>,
+    /// This account's presence as it last told Discord, which its row
+    /// shows: Discord lists it online even while it's invisible.
+    own: Presence,
 }
 
 impl MemberLists {
@@ -55,6 +58,7 @@ impl MemberLists {
         kept: Vec<MemberList>,
         live: broadcast::Sender<Live>,
         names: Arc<RwLock<Names>>,
+        own: Presence,
     ) -> Self {
         Self {
             live,
@@ -66,6 +70,16 @@ impl MemberLists {
             shown: None,
             subscribed: HashMap::new(),
             stale: Box::pin(tokio::time::sleep(LIST_FRESH)),
+            own,
+        }
+    }
+
+    /// Shows this account's row with the presence it just told Discord.
+    pub(super) fn own_presence(&mut self, tracker: &Tracker, presence: Presence) {
+        if self.own != presence {
+            self.own = presence;
+            self.publish(tracker);
+            self.publish_group(tracker);
         }
     }
 
@@ -316,7 +330,8 @@ impl MemberLists {
         let Some(channel) = &self.group else {
             return;
         };
-        if let Some(members) = tracker.group_members(channel) {
+        if let Some(mut members) = tracker.group_members(channel) {
+            self.show_own(&mut members, &tracker.me);
             let _ = self.live.send(Live::Members {
                 channel: channel.clone(),
                 members,
@@ -337,10 +352,19 @@ impl MemberLists {
             .names
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut members = list.members(server, &names);
+        self.show_own(&mut members, &tracker.me);
         let _ = self.live.send(Live::Members {
             channel: list.channel().to_owned(),
-            members: list.members(server, &names),
+            members,
         });
+    }
+
+    /// Gives this account's row its own presence, as Discord's apps do.
+    fn show_own(&self, members: &mut [ListedMember], me: &str) {
+        if let Some(member) = members.iter_mut().find(|member| member.user_id == me) {
+            member.presence = self.own;
+        }
     }
 
     /// Shows the member list kept for a channel while Discord can't send it,
@@ -358,13 +382,16 @@ impl MemberLists {
         else {
             return;
         };
-        let members = {
+        let mut members = {
             let names = self
                 .names
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             list.members(Some(server), &names)
         };
+        if let Some(me) = &snapshot.user_id {
+            self.show_own(&mut members, me);
+        }
         let _ = self.live.send(Live::Members {
             channel: channel.to_owned(),
             members,
@@ -430,7 +457,7 @@ mod tests {
     #[tokio::test]
     async fn the_list_on_screen_is_kept_through_a_disconnect() {
         let (live, _) = broadcast::channel(8);
-        let mut lists = MemberLists::new(Vec::new(), live, Arc::default());
+        let mut lists = MemberLists::new(Vec::new(), live, Arc::default(), Presence::Online);
         let mut list = MemberList::new("10".into(), "11".into(), "everyone".into());
         list.apply(&sync("everyone"), &mut Names::default());
         assert!(list.synced());
@@ -449,7 +476,7 @@ mod tests {
         let (live, _) = broadcast::channel(8);
         let names = Arc::<RwLock<Names>>::default();
         let tracker = Tracker::from_ready("1".into(), &json!({}), names.clone());
-        let mut lists = MemberLists::new(Vec::new(), live, names);
+        let mut lists = MemberLists::new(Vec::new(), live, names, Presence::Online);
         lists.shown = Some(MemberList::new("10".into(), "11".into(), "everyone".into()));
         lists.update(&tracker, &sync("everyone"));
         // Another channel, with other readers, is shown: Discord stops sending
@@ -471,5 +498,25 @@ mod tests {
         let taken = lists.take("10", "11", "everyone");
         let members = taken.members(None, &names.read().unwrap());
         assert_eq!(members.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn this_account_shows_the_presence_it_set() {
+        let (live, mut shown) = broadcast::channel(8);
+        let names = Arc::<RwLock<Names>>::default();
+        let tracker = Tracker::from_ready("2".into(), &json!({}), names.clone());
+        let mut lists = MemberLists::new(Vec::new(), live, names, Presence::Offline);
+        lists.shown = Some(MemberList::new("10".into(), "11".into(), "everyone".into()));
+        // Invisible, the account is listed online, as Discord sends it.
+        let mut sync = sync("everyone");
+        sync["ops"][0]["items"][1]["member"]["presence"] = json!({"status": "online"});
+        lists.update(&tracker, &sync);
+        let mut presence = || match shown.try_recv() {
+            Ok(Live::Members { members, .. }) => members[0].presence,
+            _ => panic!("no member list"),
+        };
+        assert_eq!(presence(), Presence::Offline);
+        lists.own_presence(&tracker, Presence::Idle);
+        assert_eq!(presence(), Presence::Idle);
     }
 }

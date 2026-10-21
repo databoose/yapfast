@@ -8,7 +8,7 @@ use tokio::time::timeout;
 use yapfast_discord::{
     api::Span,
     client,
-    member_list::Presence,
+    member_list::{ListedMember, Presence},
     message::Shown,
     notifications::{Change, Level},
     ready::{Access, Deletes, PRIVATE},
@@ -653,6 +653,27 @@ async fn talks_to_the_fake_server() {
         self::control(server, "GET", "/_control/list-requests", ""),
         "2"
     );
+
+    // Invisible, Alice's row shows her offline, as Discord's apps show
+    // their own account, though Discord still lists her online.
+    let alice = |members: Vec<ListedMember>| {
+        members
+            .into_iter()
+            .find(|member| member.name == "Alice")
+            .map(|member| member.presence)
+    };
+    for (status, presence) in [
+        ("invisible", Presence::Offline),
+        ("online", Presence::Online),
+    ] {
+        discord.set_status(status).await.unwrap();
+        let shown = live_where(&mut live, |event| match event {
+            Live::Members { channel, members } if channel == general => Some(members),
+            _ => None,
+        })
+        .await;
+        assert_eq!(alice(shown), Some(presence), "{status}");
+    }
     post_control(server, "/_control/hide-from-bots", "");
 
     let account = snapshot.account.as_ref().expect("the account");

@@ -653,7 +653,12 @@ impl Discord {
                 live: live.clone(),
                 names: names.clone(),
                 api: api.clone(),
-                lists: MemberLists::new(lists, live.clone(), names.clone()),
+                lists: MemberLists::new(
+                    lists,
+                    live.clone(),
+                    names.clone(),
+                    Presence::parse(&presence),
+                ),
                 presence,
                 inactive: None,
                 viewing: None,
