@@ -3399,6 +3399,62 @@ async fn moderates_as_discords_client_does(discord: &Discord, server: &str, guil
         discord.unban(guild, mallory).await.is_err(),
         "no longer banned"
     );
+
+    // Audit Log, newest first: the unban, then the 2FA requirement and
+    // the levels set above.
+    let actions = |log: &serde_json::Value| -> Vec<u64> {
+        log["audit_log_entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["action_type"].as_u64().unwrap())
+            .collect()
+    };
+    let log = discord.audit_log(guild, None, None, None).await.unwrap();
+    let newest = &log["audit_log_entries"][0];
+    assert_eq!(
+        (newest["action_type"].as_u64(), newest["target_id"].as_str()),
+        (Some(23), Some(mallory))
+    );
+    assert_eq!(newest["user_id"], "1400000000000000001");
+    assert_eq!(actions(&log)[1..3], [1, 1]);
+    assert_eq!(
+        log["audit_log_entries"][1]["changes"][0]["key"],
+        "mfa_level"
+    );
+    // By Bob, and by action.
+    let bob = "1400000000000000002";
+    let by_bob = discord
+        .audit_log(guild, None, Some(bob), None)
+        .await
+        .unwrap();
+    assert_eq!(actions(&by_bob), [24, 24, 22, 22, 13, 1]);
+    assert!(
+        by_bob["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|user| user["id"] == bob && user["username"] == "bob")
+    );
+    let bans = discord
+        .audit_log(guild, None, None, Some(22))
+        .await
+        .unwrap();
+    assert!(actions(&bans).iter().all(|action| *action == 22));
+    // Fifty at a time, from before the last.
+    post_control(server, "/_control/audit-entries", r#"{"count": 60}"#);
+    let first = discord
+        .audit_log(guild, None, Some(bob), None)
+        .await
+        .unwrap();
+    assert_eq!(actions(&first).len(), 50);
+    let last = first["audit_log_entries"][49]["id"].as_str().unwrap();
+    let next = discord
+        .audit_log(guild, Some(last), Some(bob), None)
+        .await
+        .unwrap();
+    assert_eq!(actions(&next).len(), 16);
+    post_control(server, "/_control/audit-reset", "");
     post_control(server, "/_control/members-reset", "");
 }
 

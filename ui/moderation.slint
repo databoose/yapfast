@@ -1,6 +1,6 @@
 import { Theme, Middle, Label, Tip } from "theme.slint";
 import { ActionButton, Avatar, TextField } from "controls.slint";
-import { SettingsTitle, SettingsHeading, SettingsSwitch } from "settings.slint";
+import { Picker, SettingsTitle, SettingsHeading, SettingsSwitch } from "settings.slint";
 import { ListView } from "scrollview.slint";
 import { RoleMemberRow } from "roles.slint";
 
@@ -50,6 +50,45 @@ export struct BansPrompt {
     unbanning: bool,
     /// This account may lift bans: Ban Members.
     may-unban: bool,
+}
+
+/// A row of Audit Log: who did what, and when.
+export struct AuditRow {
+    initial: string,
+    avatar-url: string,
+    title: styled-text,
+    time: string,
+    /// 0 made something, 1 changed it, 2 removed it, which colours the
+    /// lines' numbers.
+    kind: int,
+    /// It has lines to open.
+    expandable: bool,
+}
+
+/// A line of the open row, or an item under one, such as a permission.
+export struct AuditLineRow {
+    /// "01" and on; empty for an item.
+    number: string,
+    text: styled-text,
+}
+
+/// What Audit Log shows.
+export struct AuditLogPrompt {
+    rows: [AuditRow],
+    /// The row whose lines show, by its place, or -1, and its lines.
+    open: int,
+    lines: [AuditLineRow],
+    /// The filters' choices, everyone and every action first, and the
+    /// chosen ones.
+    users: [string],
+    user: int,
+    actions: [string],
+    action: int,
+    fetching: bool,
+    /// Discord may have older entries.
+    older: bool,
+    /// Discord didn't send the newest.
+    failed: bool,
 }
 
 // Choices as Discord's Safety Setup lists them: each with its title in its
@@ -248,6 +287,134 @@ export component BanDialog inherits Rectangle {
                     ActionButton { text: "Done"; primary: true; clicked => { root.close(); } }
                 }
             }
+        }
+    }
+}
+
+// A filter of Audit Log's: a label over a list.
+component AuditFilter inherits VerticalLayout {
+    in property <string> label;
+    in property <[string]> options;
+    in property <int> chosen;
+    in property <bool> enabled;
+    callback choose(int);
+    spacing: 4px; width: 230px;
+    Text { text: root.label; color: Theme.secondary; font-size: 12px; font-weight: 700; }
+    Picker {
+        model: root.options; chosen: root.chosen; enabled: root.enabled;
+        accessible-label: root.label;
+        selected => { root.choose(self.current-index); }
+    }
+}
+
+// Audit Log: who did what in the server, newest first, with Discord's
+// filters by user and by action. A row's arrow opens its numbered lines;
+// older entries load at the end of the list.
+export component AuditLogSection inherits VerticalLayout {
+    in property <AuditLogPrompt> page;
+    /// 0 filter by user and 1 by action, by index; 2 load older entries;
+    /// 3 open or close a row, by its place.
+    callback act(int, int);
+    spacing: 16px;
+    HorizontalLayout {
+        spacing: 16px;
+        Middle { horizontal-stretch: 1; SettingsTitle { text: "Audit Log"; } }
+        // Discord's client ignores a filter while it's fetching.
+        AuditFilter {
+            label: "Filter by User"; options: root.page.users; chosen: root.page.user;
+            enabled: !root.page.fetching;
+            choose(index) => { root.act(0, index); }
+        }
+        AuditFilter {
+            label: "Filter by Action"; options: root.page.actions; chosen: root.page.action;
+            enabled: !root.page.fetching;
+            choose(index) => { root.act(1, index); }
+        }
+    }
+    Rectangle { height: 1px; background: Theme.line; }
+    if root.page.rows.length == 0 && root.page.fetching: Label { text: "Loading..."; vertical-stretch: 1; }
+    if root.page.rows.length == 0 && !root.page.fetching: VerticalLayout {
+        alignment: center; spacing: 8px; vertical-stretch: 1;
+        Text {
+            text: root.page.failed ? "This is Awkward" : "No Logs Yet";
+            color: Theme.text; font-size: 17px; font-weight: 700; horizontal-alignment: center;
+        }
+        Text {
+            text: root.page.failed ? "We broke something. Come back later." : "Once moderators begin moderating, you can moderate the moderation here.";
+            color: Theme.secondary; font-size: 14px; horizontal-alignment: center; wrap: word-wrap;
+        }
+    }
+    if root.page.rows.length > 0: list := ListView {
+        vertical-stretch: 1; min-height: 120px;
+        // The end of the list loads older entries, as Discord's does.
+        changed content-y => {
+            if root.page.older && !root.page.fetching && self.content-y <= self.visible-height - self.content-height + 8px {
+                root.act(2, 0);
+            }
+        }
+        for row[index] in root.page.rows: VerticalLayout {
+            property <bool> open: index == root.page.open;
+            padding-bottom: 8px;
+            Rectangle {
+                border-radius: 8px; border-width: 1px; border-color: Theme.line;
+                background: Theme.overlay.with-alpha(0.02);
+                VerticalLayout {
+                    Rectangle {
+                        height: head.preferred-height;
+                        background: area.has-hover && row.expandable ? Theme.overlay.with-alpha(0.04) : transparent;
+                        border-radius: 8px;
+                        accessible-role: button;
+                        accessible-label: row.time;
+                        accessible-expandable: row.expandable;
+                        accessible-expanded: open;
+                        accessible-action-default => { if row.expandable { root.act(3, index); } }
+                        head := HorizontalLayout {
+                            padding: 12px; spacing: 12px;
+                            Middle { Avatar { size: 40px; initial: row.initial; picture-url: row.avatar-url; } }
+                            VerticalLayout {
+                                alignment: center; spacing: 2px; horizontal-stretch: 1;
+                                StyledText { text: row.title; default-color: Theme.secondary; default-font-size: 15px; max-lines: 1; }
+                                Text { text: row.time; color: Theme.muted; font-size: 13px; overflow: elide; }
+                            }
+                            if row.expandable: Middle {
+                                Image {
+                                    source: open ? @image-url("icons/chevron-down.svg") : @image-url("icons/chevron-right.svg");
+                                    width: 18px; height: 18px; colorize: Theme.muted;
+                                }
+                            }
+                        }
+                        // Over the sentence, which would take the click.
+                        area := TouchArea {
+                            enabled: row.expandable; mouse-cursor: row.expandable ? MouseCursor.pointer : MouseCursor.default;
+                            clicked => { root.act(3, index); }
+                        }
+                    }
+                    if open: Rectangle { height: 1px; background: Theme.line; }
+                    if open: VerticalLayout {
+                        padding: 12px; spacing: 4px;
+                        for line in root.page.lines: HorizontalLayout {
+                            spacing: 6px;
+                            padding-left: line.number == "" ? 52px : 0px;
+                            if line.number != "": Text {
+                                text: line.number + "—"; font-size: 14px; font-weight: 600;
+                                color: row.kind == 0 ? Theme.live : row.kind == 2 ? Theme.danger : Theme.accent;
+                            }
+                            StyledText {
+                                horizontal-stretch: 1; text: line.text;
+                                default-color: line.number == "" ? Theme.muted : Theme.secondary;
+                                default-font-size: line.number == "" ? 13px : 14px;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if root.page.rows.length > 0 && root.page.older: HorizontalLayout {
+        alignment: center;
+        ActionButton {
+            text: root.page.fetching ? "Loading..." : "Load More"; enabled: !root.page.fetching;
+            clicked => { root.act(2, 0); }
         }
     }
 }

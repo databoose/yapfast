@@ -2,7 +2,7 @@ import { Theme, Middle, Label } from "theme.slint";
 import { ActionButton, Avatar, TextField, PictureStore } from "controls.slint";
 import { Choices, Picker, SettingsFrame, SettingsRow, SettingsTitle, SettingsHeading, SettingsSwitch, UnsavedBar } from "settings.slint";
 import { AddMembersDialog, RoleConfirmDialog, RolesPrompt, RolesSection } from "roles.slint";
-import { BanDialog, BansPrompt, BansSection, SafetyPrompt, SafetySection } from "moderation.slint";
+import { AuditLogPrompt, AuditLogSection, BanDialog, BansPrompt, BansSection, SafetyPrompt, SafetySection } from "moderation.slint";
 
 /// What Server Profile shows besides what's written in it.
 export struct ServerProfilePrompt {
@@ -82,6 +82,7 @@ export struct ServerSettingsPrompt {
     roles: RolesPrompt,
     safety: SafetyPrompt,
     bans: BansPrompt,
+    audit-log: AuditLogPrompt,
 }
 
 // A text of a settings page, several lines high, with how many characters
@@ -364,6 +365,9 @@ export component ServerSettingsScreen inherits Rectangle {
     /// Something done on Bans: what, a text such as a user's id, and a
     /// number; see BansSection, then 4 close the ban shown, 5 lift it.
     callback ban(int, string, int);
+    /// Something done on Audit Log: what, and a number; see
+    /// AuditLogSection.
+    callback audit-log(int, int);
     property <bool> bar: (root.prompt.changed || root.prompt.saving) && !root.prompt.immediate;
     // A ban's dialog closes itself once Discord lifts the ban: the keys go
     // back to the frame, for Escape.
@@ -373,7 +377,7 @@ export component ServerSettingsScreen inherits Rectangle {
         rows: root.prompt.rows; selected: root.prompt.section; label: "Server settings";
         bottom: root.bar ? 140px : 56px;
         // A role's permissions are a list view.
-        fill: root.prompt.loaded && ((root.prompt.section == 3 && root.prompt.roles.open && root.prompt.roles.tab == 1) || root.prompt.section == 5);
+        fill: root.prompt.loaded && ((root.prompt.section == 3 && root.prompt.roles.open && root.prompt.roles.tab == 1) || root.prompt.section == 5 || root.prompt.section == 6);
         chose(id) => { root.choose(id); }
         close => { root.close(); }
         if root.prompt.loading: Label { text: "Loading..."; }
@@ -416,6 +420,10 @@ export component ServerSettingsScreen inherits Rectangle {
         if root.prompt.loaded && root.prompt.section == 5: BansSection {
             page: root.prompt.bans;
             act(what, text, number) => { root.ban(what, text, number); }
+        }
+        if root.prompt.loaded && root.prompt.section == 6: AuditLogSection {
+            page: root.prompt.audit-log;
+            act(what, number) => { root.audit-log(what, number); }
         }
         if root.prompt.problem != "": Text { text: root.prompt.problem; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
         if root.prompt.error != "": Text { text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }

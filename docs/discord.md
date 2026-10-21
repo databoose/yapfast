@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [push-to-talk](#push-to-talk) on a recorded key, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio, cameras and push-to-talk on real Windows, and of push-to-talk on real Wayland desktops; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, [joining by invite](#joining-by-invite), making and changing channels, [server settings](#server-settings)' Server Profile, Engagement, Boost Perks, [Roles](#roles), [Safety Setup](#safety-setup) and [Bans](#bans), [channel settings](#channel-settings) and their permissions, [two-factor authentication](#two-factor-authentication), threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, most of a server's settings and its privacy, membership forms when joining |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, [joining by invite](#joining-by-invite), making and changing channels, [server settings](#server-settings)' Server Profile, Engagement, Boost Perks, [Roles](#roles), [Safety Setup](#safety-setup), [Audit Log](#audit-log) and [Bans](#bans), [channel settings](#channel-settings) and their permissions, [two-factor authentication](#two-factor-authentication), threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, most of a server's settings and its privacy, membership forms when joining |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, [editing one's profile](#editing-ones-main-profile) and [server profiles](#editing-ones-server-profile), notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored; changing the username |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -2336,6 +2336,8 @@ permission:
 - [Safety Setup](#safety-setup), with Manage Server, under Moderation: the
   verification level, whether moderators need two-factor authentication,
   and the sensitive content filter.
+- [Audit Log](#audit-log), with View Audit Log, under Moderation: who did
+  what in the server.
 - [Bans](#bans), with Ban Members or View Audit Log, under Moderation: the
   server's bans, and revoking one, which takes Ban Members.
 
@@ -2519,6 +2521,94 @@ puts back what Discord has, with its words.
 
 On a Community server Discord's client spreads these over its own Safety
 Setup pages; Yapfast keeps them on one, with Discord's Community wording.
+
+#### Audit Log
+
+Audit Log is Discord's page of that name: who did what in the server,
+newest first, each row with the moderator's avatar, Discord's sentence for
+it, such as "**alice** kicked **mallory**", and when, as Discord's client
+words it: "Today at 16:20", "Yesterday at …", "Last Monday at …", then the
+day. `GET /guilds/{id}/audit-logs?limit=50` fetches the newest 50, and
+older ones follow with `before`, the last row's id, when the list is
+scrolled to its end or Load More is pressed, while the last page was full.
+Filter by User and Filter by Action ask again from the newest, with
+`user_id` and `action_type`; the actions are Discord's 68, in its order.
+Discord's client waits on a filter while a page is coming, and so does
+Yapfast. With no entries the page says "No Logs Yet"; a refused first page
+says "This is Awkward", and a refused older one only stops loading, as in
+Discord's client.
+
+Each page Discord sends is put into words once, as it arrives
+(`application/server_settings/audit_log.rs`), and only the words are kept.
+They are Discord's, from its web client's templates:
+
+- **Rows.** Entries by the same moderator, of the same action, to the same
+  thing and with the same options, within 30 minutes of the first, show as
+  one row, of at most 51, with when the first and last were, "Today at
+  16:20—Today at 16:41"; invites, messages, members moved or disconnected,
+  channel and role moves, bots added, prunes and command permissions never
+  group. An entry whose target is gone and has no name is dropped, but for
+  the actions that have none.
+- **Sentences** for every action Discord's client words, from "made changes
+  to" a server to AutoMod's and Server Guide's, with each channel's kind
+  for a new channel or thread, and Discord's four forms for members moved
+  or disconnected from voice. An action Discord's client has no sentence
+  for reads "{user} made changes".
+- **Names.** A channel is `#name` where it holds messages; a role, emoji or
+  channel by the server's names, a user, webhook, integration, thread,
+  event, AutoMod rule or app command by the names Discord sends with the
+  page, and something deleted by the name its deletion recorded, also on
+  earlier rows; failing those, the name its own changes give, then its id.
+- **Lines.** A row's arrow opens its lines, one row at a time, numbered
+  "01—" and on in the green, yellow or red of making, changing or
+  removing. The reason comes first, "With reason **spam**", then each
+  change in Discord's words for the kind of thing changed: the server, a
+  channel and its permission overrides, a member, a role, an invite, a
+  webhook, an emoji, a sticker, an integration, a stage, an event and its
+  recurrences, a thread, an AutoMod rule, a sound, a voice channel's status,
+  onboarding and its questions, the Server Guide, member applications and
+  the server profile. A role's permissions granted or denied, and a channel
+  override's granted, denied or reset, list each permission by Discord's
+  name under their line ("Manage Channel" and "View Channel" for a
+  channel's); a member's roles added or removed list each role; a timeout
+  gives its end as the times above. A deletion shows only its reason, but
+  for a kick, prune or ban, and keys Discord's client hides, such as a
+  channel's overwrites or a sticker's asset, stay hidden.
+
+Yapfast differs where Discord's client needs what it doesn't hold: Filter
+by User lists the moderators the fetched entries name, where Discord's
+lists the loaded members with moderation permissions; a row has no action
+icon beside the avatar; a channel's type reads as its kind, where
+Discord's client shows its number; and an app's, an emoji's or a forum
+tag's picture is left out of its line, as are the answers under a changed
+onboarding question and the Server Guide's changed items. Load More shows
+while there may be more, where Discord's waits for three pages loaded by
+scrolling.
+
+A row holds its sentence as one string, with its bold and times marked
+in it, its oldest entry's id as a number, and its moderator as a place in
+the user filter's list, whose avatar its rows share; only the open row's
+lines are made for the screen. Heap in use (window-control `stats`,
+`measure` builds, the fake's "Server", three runs each, against Stage 4a's
+build): 7.71 to 7.72 MiB on #general, as before; 8.72 to 8.74 on Safety
+Setup (8.70 to 8.73 before); 8.90 to 8.92 on Audit Log with its six rows;
+9.28 to 9.30 with 500 more loaded by scrolling, about 0.75 KiB a row; 8.70
+to 8.73 on Bans (8.66 to 8.69 before, the sidebar's Audit Log added); and
+8.48 to 8.50 once closed after all of them (8.45 to 8.49 before). Opening
+either filter's list the first time keeps about 0.3 MiB until Yapfast
+closes, as every list of Slint's ComboBox does: Engagement's channel list
+keeps 0.28.
+
+The fake's "Server" has seven entries from before the run, by Bob and
+Alice: a verification level, an override on #general, two bans, two
+nickname changes 10 minutes apart, which show as one row, and a role's
+permissions. Each kick, ban, unban, timeout, server settings change and
+2FA requirement Alice makes adds Discord's entry. It answers for View
+Audit Log, newest first, 50 at a time with `before`, `user_id` and
+`action_type`, with the users the entries name; `POST
+/_control/audit-entries` with `{"count": n}` adds n of Bob's message
+deletions, for paging, and `/_control/audit-reset` puts back the seven.
+`GET /_control/audit-log` still lists the reasons moderation gave.
 
 #### Bans
 

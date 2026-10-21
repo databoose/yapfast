@@ -9,11 +9,12 @@ use super::*;
 use crate::{
     application::profile_editor::PictureEdit,
     chat::{
-        Ban, BansAction, GuildSettings, Permission, PickedPicture, ServerPicture,
-        ServerSettingsChange, ServerSettingsPage, SettingsSection,
+        AuditLog, AuditQuery, Ban, BansAction, GuildSettings, Permission, PickedPicture,
+        ServerPicture, ServerSettingsChange, ServerSettingsPage, SettingsSection,
     },
 };
 
+mod audit_log;
 mod bans;
 mod boost;
 mod engagement;
@@ -23,6 +24,11 @@ mod role_input;
 mod roles;
 mod safety;
 
+use audit_log::Known;
+pub use audit_log::{
+    AUDIT_ACTIONS, AUDIT_PAGE, AuditInput, AuditKind, AuditLine, AuditLogPage, AuditRow,
+    Span as AuditSpan, Words as AuditWords,
+};
 pub use bans::{BANS_BATCH, BANS_PER_PAGE, BanInput, BansPage};
 pub use boost::BoostPage;
 pub use engagement::{AFK_TIMEOUTS, BOOSTED, EngagementPage, SETUP_TIPS, WELCOME, WELCOME_STICKER};
@@ -62,6 +68,7 @@ pub enum Page {
     BoostPerks(BoostPage),
     Roles(Box<RolesPage>),
     Safety(SafetyPage),
+    AuditLog(Box<AuditLogPage>),
     Bans(Box<BansPage>),
 }
 
@@ -107,7 +114,7 @@ impl ServerSettings {
             Page::BoostPerks(page) => page.change(),
             Page::Roles(page) => page.change(),
             // Saved as they're made, as in Discord's client.
-            Page::Safety(_) | Page::Bans(_) => None,
+            Page::Safety(_) | Page::AuditLog(_) | Page::Bans(_) => None,
         }
     }
 
@@ -115,7 +122,7 @@ impl ServerSettings {
     pub fn immediate(&self) -> bool {
         matches!(
             self.section,
-            SettingsSection::Safety | SettingsSection::Bans
+            SettingsSection::Safety | SettingsSection::AuditLog | SettingsSection::Bans
         )
     }
 
@@ -124,7 +131,11 @@ impl ServerSettings {
         match self.page.as_ref()? {
             Page::Profile(page) => page.problem(),
             Page::Roles(page) => page.problem(),
-            Page::Engagement(_) | Page::BoostPerks(_) | Page::Safety(_) | Page::Bans(_) => None,
+            Page::Engagement(_)
+            | Page::BoostPerks(_)
+            | Page::Safety(_)
+            | Page::AuditLog(_)
+            | Page::Bans(_) => None,
         }
     }
 
@@ -156,6 +167,9 @@ impl Application {
         // Discord's Moderation.
         if self.may(server, Permission::ManageServer) {
             sections.push(SettingsSection::Safety);
+        }
+        if self.may(server, Permission::ViewAuditLog) {
+            sections.push(SettingsSection::AuditLog);
         }
         if self.may(server, Permission::Ban) || self.may(server, Permission::ViewAuditLog) {
             sections.push(SettingsSection::Bans);
@@ -241,14 +255,92 @@ impl Application {
         section: SettingsSection,
         result: Result<ServerSettingsPage, String>,
     ) {
-        let Some(settings) = self.state.server_settings.as_mut().filter(|settings| {
+        let waiting = |settings: &ServerSettings| {
             settings.server == server && settings.section == section && settings.loading()
-        }) else {
+        };
+        if !self.state.server_settings.as_ref().is_some_and(waiting) {
+            return;
+        }
+        // Audit Log's entries are put into words as they arrive, naming
+        // the channels and roles the server has.
+        let result = result.map(|page| match page {
+            ServerSettingsPage::AuditLog(log) if section == SettingsSection::AuditLog => {
+                let mut page = AuditLogPage::default();
+                let known = Known {
+                    app: self,
+                    server: &server,
+                };
+                page.take(&AuditQuery::default(), log, &known);
+                Some(Page::AuditLog(Box::new(page)))
+            }
+            page => Page::new(section, page),
+        });
+        let Some(settings) = self.state.server_settings.as_mut() else {
             return;
         };
         match result {
-            Ok(page) => settings.page = Page::new(section, page),
+            Ok(page) => settings.page = page,
             Err(error) => settings.error = Some(error),
+        }
+    }
+
+    /// Something done on Audit Log.
+    pub(super) fn audit_log_input(&mut self, input: AuditInput) -> Vec<Effect> {
+        let Some(settings) = self.state.server_settings.as_mut() else {
+            return vec![];
+        };
+        let server = settings.server.clone();
+        let Some(Page::AuditLog(page)) = settings.page.as_mut() else {
+            return vec![];
+        };
+        let query = match input {
+            AuditInput::User(user) => page.filter(user, page.action),
+            AuditInput::Action(action) => page.filter(page.user.clone(), action),
+            AuditInput::More => page.more(),
+            AuditInput::Toggle(row) => {
+                page.toggle(row);
+                None
+            }
+        };
+        query
+            .map(|query| {
+                Effect::Backend(Command::Discord(DiscordCommand::AuditLog { server, query }))
+            })
+            .into_iter()
+            .collect()
+    }
+
+    /// The audit log page asked for, unless another was asked for since.
+    pub(super) fn audit_log_loaded(
+        &mut self,
+        server: String,
+        query: AuditQuery,
+        result: Result<AuditLog, String>,
+    ) {
+        let asked = |settings: &ServerSettings| {
+            settings.server == server
+                && matches!(&settings.page, Some(Page::AuditLog(page))
+                    if page.asking.as_ref() == Some(&query))
+        };
+        let Some(settings) = self.state.server_settings.as_mut().filter(|s| asked(s)) else {
+            return;
+        };
+        // Taken out while it's put into words, which reads the server.
+        let Some(Page::AuditLog(mut page)) = settings.page.take() else {
+            return;
+        };
+        match result {
+            Ok(log) => {
+                let known = Known {
+                    app: self,
+                    server: &server,
+                };
+                page.take(&query, log, &known);
+            }
+            Err(_) => page.refused(),
+        }
+        if let Some(settings) = self.state.server_settings.as_mut() {
+            settings.page = Some(Page::AuditLog(page));
         }
     }
 
@@ -660,7 +752,7 @@ impl Application {
             Some(Page::Engagement(page)) => *page = EngagementPage::new(page.original.clone()),
             Some(Page::BoostPerks(page)) => *page = BoostPage::new(page.original.clone()),
             Some(Page::Roles(page)) => page.undo(),
-            Some(Page::Safety(_) | Page::Bans(_)) | None => {}
+            Some(Page::Safety(_) | Page::AuditLog(_) | Page::Bans(_)) | None => {}
         }
     }
 
@@ -737,7 +829,7 @@ impl Application {
             Some(Page::Engagement(page)) => page.follow(changed),
             Some(Page::BoostPerks(page)) => page.follow(changed),
             Some(Page::Safety(page)) => page.settings = changed,
-            Some(Page::Profile(_) | Page::Roles(_) | Page::Bans(_)) | None => {}
+            Some(Page::Profile(_) | Page::Roles(_) | Page::AuditLog(_) | Page::Bans(_)) | None => {}
         }
     }
 

@@ -409,9 +409,9 @@ const bit = (n: number) => 2 ** n;
 // voice activity, change one's own nickname, make public and private threads
 // and write in them, and post polls: Discord's defaults for @everyone.
 const EVERYONE = [0, 10, 11, 14, 15, 16, 6, 20, 21, 25, 26, 35, 36, 38, 49].reduce((sum, n) => sum + bit(n), 0);
-// Kick, ban, manage nicknames, manage roles, moderate members, and mute,
-// deafen and move members in voice.
-const MODERATION = [1, 2, 27, 28, 40, 22, 23, 24].reduce((sum, n) => sum + bit(n), 0);
+// Kick, ban, view the audit log, manage nicknames, manage roles, moderate
+// members, and mute, deafen and move members in voice.
+const MODERATION = [1, 2, 7, 27, 28, 40, 22, 23, 24].reduce((sum, n) => sum + bit(n), 0);
 
 function snowflake(ms: number, increment = 0): string {
   return (((BigInt(ms) - DISCORD_EPOCH) << 22n) | BigInt(increment)).toString();
@@ -503,6 +503,52 @@ const BANNED: User[] = [
  *  /_control/voice-changes. */
 const voiceChanges: Record<string, unknown>[] = [];
 const auditLog: { action: string; user: string; reason: string | null }[] = [];
+/** The server's audit log as Discord keeps it, oldest first: a few entries
+ *  by Bob and Alice from before the run, then each kick, ban, unban,
+ *  timeout and server settings change Alice makes. GET
+ *  /guilds/{id}/audit-logs lists it newest first, 50 at a time, with
+ *  `before`, `user_id` and `action_type`, as Audit Log asks, and the users
+ *  it names. POST /_control/audit-entries with `{"count": n}` adds n of
+ *  Bob's message deletions, for paging; POST /_control/audit-reset puts
+ *  back the seeded entries alone. */
+type AuditEntry = {
+  id: string;
+  action_type: number;
+  target_id: string | null;
+  user_id: string | null;
+  reason?: string;
+  changes?: { key: string; old_value?: unknown; new_value?: unknown }[];
+  options?: Record<string, string>;
+};
+const auditEntries: AuditEntry[] = [];
+let auditIncrement = 0;
+function logAudit(action_type: number, target_id: string | null, extra: Partial<AuditEntry> = {}, user = ALICE, ms = Date.now()) {
+  auditEntries.push({ id: snowflake(ms, auditIncrement++ % 4096), action_type, target_id, user_id: user, ...extra });
+  auditEntries.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+}
+function seedAudit() {
+  auditEntries.length = 0;
+  const [now, minute, day] = [Date.now(), 60_000, 86_400_000];
+  const bob = users.bob.id;
+  logAudit(1, GUILD, { changes: [{ key: "verification_level", old_value: 0, new_value: 1 }] }, bob, now - 3 * day);
+  logAudit(13, GENERAL, {
+    options: { id: MODS, type: "0", role_name: "Mods" },
+    changes: [
+      { key: "id", new_value: MODS },
+      { key: "type", new_value: 0 },
+      { key: "allow", new_value: String(bit(13) + bit(51)) },
+      { key: "deny", new_value: "0" },
+    ],
+  }, bob, now - 2 * day);
+  logAudit(22, BANNED[0]!.id, { reason: "Spamming invites in #general" }, bob, now - 26 * 3_600_000);
+  logAudit(22, BANNED[1]!.id, {}, bob, now - 25 * 3_600_000);
+  // Two close together, which Audit Log shows as one row.
+  logAudit(24, users.carol.id, { changes: [{ key: "nick", new_value: "Caz" }] }, bob, now - 90 * minute);
+  logAudit(24, users.carol.id, { changes: [{ key: "nick", old_value: "Caz", new_value: "Carol B" }] }, bob, now - 80 * minute);
+  logAudit(31, LEADS, {
+    changes: [{ key: "permissions", old_value: "0", new_value: String(bit(13) + bit(27)) }],
+  }, ALICE, now - 20 * minute);
+}
 function resetMembers() {
   memberRoles.clear();
   memberRoles.set(ALICE, [CREW, STAFF]);
@@ -519,6 +565,7 @@ function resetMembers() {
   bans.set(BANNED[1]!.id, { user: wireUser(BANNED[1]!), reason: null });
 }
 resetMembers();
+seedAudit();
 
 function member(user: User, roles: string[] = memberRoles.get(user.id) ?? []) {
   return {
@@ -4023,6 +4070,14 @@ async function api(req: Request, path: string, origin: string): Promise<Response
         }
         changes[field] = kept.hash;
       }
+      const logged = Object.entries(changes)
+        .filter(([key, value]) => (serverSettings as any)[key] !== value)
+        .map(([key, value]) => ({
+          key: key === "banner" || key === "splash" ? `${key}_hash` : key,
+          old_value: (serverSettings as any)[key],
+          new_value: value,
+        }));
+      if (logged.length > 0) logAudit(1, GUILD, { changes: logged });
       Object.assign(serverSettings, changes);
       const { properties } = guild();
       dispatch("GUILD_UPDATE", { ...properties, roles: serverRoles, emojis: guild().emojis });
@@ -5055,6 +5110,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
       const ban = bans.get(which);
       if (!ban) return notFound("Unknown Ban", 10026);
       bans.delete(which);
+      logAudit(23, which);
       dispatch("GUILD_BAN_REMOVE", { guild_id: GUILD, user: ban.user });
       return empty();
     }
@@ -5077,6 +5133,31 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return json(found.slice(0, limit));
   }
 
+  // Audit Log in Server Settings, newest first; see "auditEntries".
+  if (method === "GET" && (m = path.match(/^\/guilds\/(\d+)\/audit-logs$/))) {
+    if (m[1] !== GUILD) return notFound("Unknown Guild", 10004);
+    if (!aliceMay(7)) return json({ message: "Missing Permissions", code: 50013 }, 403);
+    const query = url.searchParams;
+    const limit = Math.min(Math.max(Number(query.get("limit") ?? 50) || 50, 1), 100);
+    const before = query.get("before");
+    const user = query.get("user_id");
+    const action = query.get("action_type");
+    const found = auditEntries
+      .filter((entry) => before === null || BigInt(entry.id) < BigInt(before))
+      .filter((entry) => user === null || entry.user_id === user)
+      .filter((entry) => action === null || entry.action_type === Number(action))
+      .reverse()
+      .slice(0, limit);
+    const named = new Set(found.flatMap((entry) => [entry.user_id, entry.target_id]));
+    const known = [...userById.values(), ...BANNED].filter((who) => named.has(who.id));
+    return json({
+      audit_log_entries: found.map((entry) => ({ changes: [], options: {}, reason: null, ...entry })),
+      users: known.map(wireUser),
+      integrations: [], webhooks: [], guild_scheduled_events: [], threads: [],
+      application_commands: [], auto_moderation_rules: [],
+    });
+  }
+
   // Safety Setup: whether moderators need 2FA, which only the owner may
   // change, with 2FA on.
   if (method === "POST" && (m = path.match(/^\/guilds\/(\d+)\/mfa$/))) {
@@ -5087,6 +5168,9 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     const body: any = await req.json().catch(() => ({}));
     if (![0, 1].includes(body.level)) {
       return json({ message: "Invalid Form Body", code: 50035, errors: { level: { _errors: [{ code: "BASE_TYPE_CHOICES", message: "Value must be one of {0, 1}." }] } } }, 400);
+    }
+    if (mfa.on !== (body.level === 1)) {
+      logAudit(1, GUILD, { changes: [{ key: "mfa_level", old_value: mfa.on ? 1 : 0, new_value: body.level }] });
     }
     mfa.on = body.level === 1;
     const { properties } = guild();
@@ -5103,8 +5187,12 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     if (!user || (removed.has(user.id) && kind === "members")) return notFound("Unknown Member", 10007);
     const refused = () => json({ message: "Missing Permissions", code: 50013 }, 403);
     const header = req.headers.get("x-audit-log-reason");
-    const audit = (action: string) =>
-      auditLog.push({ action, user: user.id, reason: header === null ? null : decodeURIComponent(header) });
+    const audit = (action: string, changes?: AuditEntry["changes"]) => {
+      const reason = header === null ? null : decodeURIComponent(header);
+      auditLog.push({ action, user: user.id, reason });
+      const type = { kick: 20, ban: 22, timeout: 24, "timeout-removed": 24 }[action] ?? 24;
+      logAudit(type, user.id, { ...(reason ? { reason } : {}), ...(changes ? { changes } : {}) });
+    };
     if (kind === "members" && role !== undefined && (method === "PUT" || method === "DELETE")) {
       const known = serverRoles.find((found) => found.id === role);
       if (!known) return notFound("Unknown Role", 10011);
@@ -5183,9 +5271,12 @@ async function api(req: Request, path: string, origin: string): Promise<Response
         if (avatar !== undefined) serverProfile(user.id).avatar = avatar;
         if ("communication_disabled_until" in body) {
           const until = body.communication_disabled_until;
+          const was = timeouts.get(user.id) ?? null;
           if (until === null) timeouts.delete(user.id);
           else timeouts.set(user.id, until);
-          audit(until === null ? "timeout-removed" : "timeout");
+          audit(until === null ? "timeout-removed" : "timeout", [
+            { key: "communication_disabled_until", old_value: was, new_value: until },
+          ]);
         }
         memberUpdated(user);
       });
@@ -6305,6 +6396,19 @@ const server = Bun.serve<SocketData>({
     if (path === "/_control/cookies") return Response.json(cookieCounts);
     if (path === "/_control/list-requests") return Response.json(listRequests);
     if (path === "/_control/audit-log") return Response.json(auditLog);
+    if (req.method === "POST" && path === "/_control/audit-entries") {
+      const body: any = await req.json().catch(() => ({}));
+      const count = Number(body.count) || 0;
+      const start = Date.now() - count * 60_000;
+      for (let n = 0; n < count; n++) {
+        logAudit(72, users.dave.id, { options: { channel_id: GENERAL, count: "1" } }, users.bob.id, start + n * 60_000);
+      }
+      return new Response(`${auditEntries.length} entries\n`);
+    }
+    if (req.method === "POST" && path === "/_control/audit-reset") {
+      seedAudit();
+      return new Response("ok\n");
+    }
     if (req.method === "POST" && path === "/_control/bans") {
       const body: any = await req.json().catch(() => ({}));
       const count = Number(body.count) || 0;

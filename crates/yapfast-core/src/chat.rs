@@ -2,7 +2,7 @@
 //! Matrix and Discord are Cargo features, so a build carries either or both.
 //! Each network runs in its own module beside this one: `matrix_chat` and
 //! `discord_text`. This module routes the UI's commands to them.
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -2064,6 +2064,12 @@ pub enum DiscordCommand {
         server: String,
         action: BansAction,
     },
+    /// A page of a Discord server's audit log; [`Event::AuditLogLoaded`]
+    /// follows.
+    AuditLog {
+        server: String,
+        query: AuditQuery,
+    },
 }
 
 /// What Bans asks of Discord.
@@ -2129,6 +2135,7 @@ pub enum SettingsSection {
     BoostPerks,
     Roles,
     Safety,
+    AuditLog,
     Bans,
 }
 
@@ -2152,6 +2159,61 @@ pub enum ServerSettingsPage {
     Roles(ServerRoles),
     /// The first batch of the server's bans.
     Bans(Vec<Ban>),
+    /// The audit log's newest page.
+    AuditLog(AuditLog),
+}
+
+/// A page of a Discord server's audit log, as Discord sends it: its
+/// entries, newest first, and the names they refer to.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuditLog {
+    pub entries: Vec<AuditEntry>,
+    /// The users the entries name, by id.
+    pub users: HashMap<String, AuditUser>,
+    /// The names of the webhooks, integrations, threads, events, AutoMod
+    /// rules and app commands the entries name, by id.
+    pub names: HashMap<String, String>,
+}
+
+/// Something done in a Discord server, as its audit log records it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuditEntry {
+    /// A snowflake, which holds when.
+    pub id: String,
+    /// Discord's `action_type`, such as 20 for a kick.
+    pub action: u16,
+    pub target: Option<String>,
+    /// Who did it, by user id.
+    pub user: Option<String>,
+    pub reason: Option<String>,
+    pub changes: Vec<AuditChange>,
+    /// What Discord adds for some actions, such as a count or a channel.
+    pub options: serde_json::Value,
+}
+
+/// A field an entry changed, from and to.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuditChange {
+    pub key: String,
+    pub old: serde_json::Value,
+    pub new: serde_json::Value,
+}
+
+/// A user an audit log names: their username, as Discord's log shows it,
+/// and their avatar's address.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuditUser {
+    pub name: String,
+    pub avatar: String,
+}
+
+/// Which audit log entries to fetch: before an entry's id, by a user, of
+/// an action.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuditQuery {
+    pub before: Option<String>,
+    pub user: Option<String>,
+    pub action: Option<u16>,
 }
 
 /// Someone banned from a Discord server, as Bans lists them: their name,
@@ -2759,6 +2821,13 @@ pub enum Event {
         server: String,
         searched: bool,
         result: Result<Vec<Ban>, String>,
+    },
+    /// The audit log page [`DiscordCommand::AuditLog`] asked for, or why
+    /// Discord didn't send it.
+    AuditLogLoaded {
+        server: String,
+        query: AuditQuery,
+        result: Result<AuditLog, String>,
     },
     /// Whether Discord lifted a user's ban, or why not.
     Unbanned {

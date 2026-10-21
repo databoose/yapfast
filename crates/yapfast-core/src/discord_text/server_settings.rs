@@ -122,6 +122,10 @@ pub(super) fn command(
                         .roles_page(&guild)
                         .await
                         .map(|roles| ServerSettingsPage::Roles(super::roles::page(roles))),
+                    SettingsSection::AuditLog => discord
+                        .audit_log(&guild, None, None, None)
+                        .await
+                        .map(|log| ServerSettingsPage::AuditLog(super::audit_log::parse(&log))),
                     SettingsSection::Bans => discord
                         .bans(&guild, None)
                         .await

@@ -1327,6 +1327,18 @@ impl Discord {
         Ok(parse_bans(&bans))
     }
 
+    /// A page of a server's audit log, as Discord sends it; see
+    /// [`Api::audit_log`].
+    pub async fn audit_log(
+        &self,
+        guild: &str,
+        before: Option<&str>,
+        user: Option<&str>,
+        action: Option<u16>,
+    ) -> Result<Value> {
+        self.api.audit_log(guild, before, user, action).await
+    }
+
     pub async fn unban(&self, guild: &str, user: &str) -> Result<()> {
         self.api.unban(guild, user).await
     }

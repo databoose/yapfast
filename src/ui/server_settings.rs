@@ -4,15 +4,17 @@
 
 use yapfast_core::{
     application::{
-        AFK_TIMEOUTS, BOOSTED, BanInput, BansPage, DEFAULT_ROLE_COLOR, MfaRule, PermissionLock,
-        PictureEdit, ROLE_COLORS, ROLE_PERMISSIONS, RoleConfirm, RoleInput, RoleLock, RoleRules,
-        RoleTab, RolesPage, SETUP_TIPS, SafetyChoice, SafetyPage, SettingsChoice, SettingsPage,
+        AFK_TIMEOUTS, AUDIT_ACTIONS, AuditInput, AuditKind, AuditLogPage, AuditSpan, AuditWords,
+        BOOSTED, BanInput, BansPage, DEFAULT_ROLE_COLOR, MfaRule, PermissionLock, PictureEdit,
+        ROLE_COLORS, ROLE_PERMISSIONS, RoleConfirm, RoleInput, RoleLock, RoleRules, RoleTab,
+        RolesPage, SETUP_TIPS, SafetyChoice, SafetyPage, SettingsChoice, SettingsPage,
         SettingsText, SettingsToggle, WELCOME, WELCOME_STICKER,
     },
     chat::{MfaMethod, RoleManager, RoleMember, ServerPicture, SettingsSection},
 };
 
-use super::*;
+use super::{messages::escape_markdown, *};
+use yapfast_core::clock;
 
 /// A page's id in the sidebar and the screen.
 fn section_id(section: SettingsSection) -> i32 {
@@ -23,6 +25,7 @@ fn section_id(section: SettingsSection) -> i32 {
         SettingsSection::Roles => 3,
         SettingsSection::Safety => 4,
         SettingsSection::Bans => 5,
+        SettingsSection::AuditLog => 6,
     }
 }
 
@@ -34,6 +37,7 @@ fn section(id: i32) -> Option<SettingsSection> {
         3 => Some(SettingsSection::Roles),
         4 => Some(SettingsSection::Safety),
         5 => Some(SettingsSection::Bans),
+        6 => Some(SettingsSection::AuditLog),
         _ => None,
     }
 }
@@ -113,8 +117,12 @@ impl Adapter {
         }];
         let mut moderation = false;
         for section in self.app.settings_sections(&settings.server) {
-            // Safety Setup and Bans under Discord's Moderation.
-            if matches!(section, SettingsSection::Safety | SettingsSection::Bans) && !moderation {
+            // Safety Setup, Audit Log and Bans under Discord's Moderation.
+            let moderating = matches!(
+                section,
+                SettingsSection::Safety | SettingsSection::AuditLog | SettingsSection::Bans
+            );
+            if moderating && !moderation {
                 moderation = true;
                 rows.push(SettingsRow {
                     heading: true,
@@ -136,6 +144,7 @@ impl Adapter {
                     ("Roles", &self.icons.roles)
                 }
                 SettingsSection::Safety => ("Safety Setup", &self.icons.lock),
+                SettingsSection::AuditLog => ("Audit Log", &self.icons.history),
                 SettingsSection::Bans => ("Bans", &self.icons.ban),
             };
             rows.push(SettingsRow {
@@ -263,6 +272,9 @@ impl Adapter {
                     self.app
                         .may(&settings.server, yapfast_core::chat::Permission::Ban),
                 );
+            }
+            Some(SettingsPage::AuditLog(page)) => {
+                prompt.audit_log = audit_log_prompt(page, self.layout.twelve_hour_clock);
             }
             None => {}
         }
@@ -639,6 +651,10 @@ fn keep_lists(old: &ServerSettingsPrompt, new: &mut ServerSettingsPrompt) {
     keep!(safety.verification_options);
     keep!(safety.filter_options);
     keep!(bans.rows);
+    keep!(audit_log.rows);
+    keep!(audit_log.lines);
+    keep!(audit_log.users);
+    keep!(audit_log.actions);
 }
 
 /// Discord's colours for the verification levels and content filters.
@@ -818,6 +834,130 @@ fn ban_input(what: i32, text: SharedString, number: i32) -> Option<BanInput> {
     })
 }
 
+/// A sentence of Audit Log's, its bold parts in bold.
+fn audit_text(words: &AuditWords, twelve_hour: bool, now: u64) -> slint::StyledText {
+    let markdown: String = words
+        .spans()
+        .map(|span| match span {
+            AuditSpan::Text(text) => escape_markdown(text),
+            AuditSpan::Bold("") => String::new(),
+            AuditSpan::Bold(text) => format!("**{}**", escape_markdown(text)),
+            AuditSpan::Time(seconds) => format!(
+                "**{}**",
+                escape_markdown(&clock::calendar(seconds, now, twelve_hour))
+            ),
+        })
+        .collect();
+    slint::StyledText::from_markdown(&markdown)
+        .unwrap_or_else(|_| slint::StyledText::from_plain_text(&markdown))
+}
+
+/// Audit Log's rows, the open one's lines, and its filters.
+fn audit_log_prompt(page: &AuditLogPage, twelve_hour: bool) -> AuditLogPrompt {
+    let now = clock::now_ms() / 1000;
+    let when = |seconds: u64| clock::calendar(seconds, now, twelve_hour);
+    // Each moderator's avatar and initial, shared by their rows.
+    let faces: Vec<(SharedString, SharedString)> = page
+        .actors
+        .iter()
+        .map(|(_, user)| (user.avatar.as_str().into(), initials(&user.name)))
+        .collect();
+    let rows: Vec<AuditRow> = page
+        .rows
+        .iter()
+        .map(|row| {
+            let (start, end) = (when(row.start), when(row.end));
+            let (avatar_url, initial) = row
+                .actor
+                .and_then(|index| faces.get(index as usize))
+                .cloned()
+                .unwrap_or_default();
+            AuditRow {
+                initial,
+                avatar_url,
+                title: audit_text(&row.title, twelve_hour, now),
+                // A row of several entries gives when the first and the
+                // last were, as Discord's does.
+                time: if start == end {
+                    start
+                } else {
+                    format!("{start}—{end}")
+                }
+                .into(),
+                kind: match row.kind {
+                    AuditKind::Create => 0,
+                    AuditKind::Update => 1,
+                    AuditKind::Delete => 2,
+                },
+                expandable: !row.lines.is_empty(),
+            }
+        })
+        .collect();
+    let open = page.open.and_then(|index| page.rows.get(index));
+    let mut lines = vec![];
+    for (index, line) in open.into_iter().flat_map(|row| &row.lines).enumerate() {
+        lines.push(AuditLineRow {
+            number: format!("{:02}", index + 1).into(),
+            text: audit_text(&line.words, twelve_hour, now),
+        });
+        lines.extend(line.items.iter().map(|item| AuditLineRow {
+            number: SharedString::default(),
+            text: slint::StyledText::from_plain_text(item),
+        }));
+    }
+    let users: Vec<SharedString> = std::iter::once("All Users".into())
+        .chain(
+            page.actors
+                .iter()
+                .map(|(_, user)| user.name.as_str().into()),
+        )
+        .collect();
+    let user = page
+        .user
+        .as_ref()
+        .and_then(|chosen| page.actors.iter().position(|(id, _)| id == chosen))
+        .map_or(0, |index| i32::try_from(index + 1).unwrap_or_default());
+    let actions: Vec<SharedString> = std::iter::once("All Actions".into())
+        .chain(AUDIT_ACTIONS.iter().map(|(_, name)| (*name).into()))
+        .collect();
+    let action = page
+        .action
+        .and_then(|chosen| {
+            AUDIT_ACTIONS
+                .iter()
+                .position(|(number, _)| *number == chosen)
+        })
+        .map_or(0, |index| i32::try_from(index + 1).unwrap_or_default());
+    AuditLogPrompt {
+        rows: ModelRc::new(VecModel::from(rows)),
+        open: page
+            .open
+            .and_then(|index| i32::try_from(index).ok())
+            .unwrap_or(-1),
+        lines: ModelRc::new(VecModel::from(lines)),
+        users: ModelRc::new(VecModel::from(users)),
+        user,
+        actions: ModelRc::new(VecModel::from(actions)),
+        action,
+        fetching: page.fetching(),
+        older: page.older,
+        failed: page.failed,
+    }
+}
+
+/// What Audit Log sent: what was done, with a number. A user is chosen by
+/// its place in the filter, after All Users.
+fn audit_log_input(page: Option<&AuditLogPage>, what: i32, number: i32) -> Option<AuditInput> {
+    let chosen = usize::try_from(number - 1).ok();
+    Some(match what {
+        0 => AuditInput::User(chosen.and_then(|index| Some(page?.actors.get(index)?.0.clone()))),
+        1 => AuditInput::Action(chosen.and_then(|index| Some(AUDIT_ACTIONS.get(index)?.0))),
+        2 => AuditInput::More,
+        3 => AuditInput::Toggle(usize::try_from(number).ok()?),
+        _ => return None,
+    })
+}
+
 /// What Roles' screen sent: what was done, with a text or a number.
 fn role_input(what: i32, text: SharedString, number: i32) -> Option<RoleInput> {
     let text = || text.to_string();
@@ -892,6 +1032,32 @@ pub(super) fn bind(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
     act!(on_remove_server_picture(kind) => Some(Action::RemoveServerPicture(picture(kind))));
     act!(on_role_input(what, text, number) => role_input(what, text, number).map(Action::Roles));
     act!(on_ban_input(what, text, number) => ban_input(what, text, number).map(Action::Bans));
+    {
+        let state = adapter.clone();
+        let weak = window.as_weak();
+        window.on_audit_log_input(move |what, number| {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            let input = {
+                let adapter = state.borrow();
+                let page = match adapter
+                    .app
+                    .state
+                    .server_settings
+                    .as_ref()
+                    .and_then(|settings| settings.page.as_ref())
+                {
+                    Some(SettingsPage::AuditLog(page)) => Some(&**page),
+                    _ => None,
+                };
+                audit_log_input(page, what, number)
+            };
+            if let Some(input) = input {
+                state.borrow_mut().action(&window, Action::AuditLog(input));
+            }
+        });
+    }
     act!(on_undo_server_settings() => Some(Action::UndoServerSettings));
     act!(on_save_server_settings() => Some(Action::SaveServerSettings));
     act!(on_close_server_settings() => Some(Action::CloseServerSettings));

@@ -4284,6 +4284,98 @@ fn moderation_shows_safety_setup_and_bans_as_discords_pages_do() {
     assert!(again.rows == shown.rows && again.bans.rows == shown.bans.rows);
 }
 
+#[cfg(feature = "discord")]
+#[test]
+fn audit_log_shows_rows_that_open_their_numbered_lines() {
+    use slint::Model;
+    use yapfast_core::{
+        chat::{AuditEntry, AuditLog, AuditUser, ServerSettingsPage, SettingsSection},
+        yapfast_discord::ready::permission,
+    };
+    let (window, adapter, _directory) = discord_server_window_granting(permission::VIEW_AUDIT_LOG);
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    window.invoke_choose_menu("header:discord:10".into(), false, "server-settings".into());
+    let rows: Vec<String> = window
+        .get_server_settings_prompt()
+        .rows
+        .iter()
+        .map(|row| row.text.to_string())
+        .collect();
+    assert_eq!(rows, ["MODERATION", "Audit Log", "Bans"]);
+    // A kick an hour ago, with its reason, and an unban without lines.
+    let now = yapfast_core::clock::now_ms();
+    let id = |ago_ms: u64| (((now - ago_ms) - 1_420_070_400_000) << 22).to_string();
+    let entry = |id: String, action: u16, reason: Option<&str>| AuditEntry {
+        id,
+        action,
+        target: Some("5".into()),
+        user: Some("1".into()),
+        reason: reason.map(str::to_owned),
+        ..Default::default()
+    };
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section: SettingsSection::AuditLog,
+            result: Ok(ServerSettingsPage::AuditLog(AuditLog {
+                entries: vec![
+                    entry(id(60_000), 20, Some("spam")),
+                    entry(id(120_000), 23, None),
+                ],
+                users: [("1", "alice"), ("5", "mallory")]
+                    .into_iter()
+                    .map(|(id, name)| {
+                        let user = AuditUser {
+                            name: name.into(),
+                            avatar: String::new(),
+                        };
+                        (id.to_owned(), user)
+                    })
+                    .collect(),
+                names: Default::default(),
+            })),
+        });
+        adapter.refresh(&window);
+    }
+    let prompt = window.get_server_settings_prompt();
+    assert!(prompt.immediate && prompt.section == 6);
+    let log = prompt.audit_log;
+    let rows: Vec<(bool, i32, String)> = log
+        .rows
+        .iter()
+        .map(|row| (row.expandable, row.kind, row.initial.to_string()))
+        .collect();
+    assert_eq!(rows, [(true, 2, "A".into()), (false, 0, "A".into())]);
+    // A minute ago: yesterday's in the first minute after midnight.
+    let time = log.rows.row_data(0).unwrap().time;
+    assert!(time.starts_with("Today at ") || time.starts_with("Yesterday at "));
+    assert_eq!(log.users.iter().collect::<Vec<_>>(), ["All Users", "alice"]);
+    assert_eq!(log.actions.row_count(), 69);
+    assert_eq!(log.lines.row_count(), 0);
+
+    // The arrow opens a row's lines, numbered.
+    window.invoke_audit_log_input(3, 0);
+    let log = window.get_server_settings_prompt().audit_log;
+    assert_eq!(log.open, 0);
+    let numbers: Vec<String> = log.lines.iter().map(|line| line.number.into()).collect();
+    assert_eq!(numbers, ["01"]);
+
+    // A refresh with nothing new keeps the lists.
+    let shown = window.get_server_settings_prompt().audit_log;
+    adapter.borrow_mut().refresh(&window);
+    let again = window.get_server_settings_prompt().audit_log;
+    assert!(
+        again.rows == shown.rows && again.lines == shown.lines && again.actions == shown.actions
+    );
+
+    // Filtering by Kick Member asks Discord from the newest.
+    window.invoke_audit_log_input(1, 9);
+    let log = window.get_server_settings_prompt().audit_log;
+    assert!(log.fetching && log.rows.row_count() == 0);
+    assert_eq!(log.action, 9);
+}
+
 #[test]
 #[cfg(feature = "discord")]
 fn roles_lock_what_ranks_above_her_and_the_permissions_she_lacks() {

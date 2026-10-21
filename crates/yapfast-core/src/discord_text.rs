@@ -37,6 +37,7 @@ use crate::{
 };
 
 mod account;
+mod audit_log;
 mod channels;
 mod commands;
 mod gifs;

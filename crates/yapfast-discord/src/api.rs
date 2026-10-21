@@ -91,6 +91,10 @@ pub const THREAD_PAGE: u32 = 25;
 /// How many bans Bans fetches at a time, as Discord's client does; a
 /// batch this full may have more after it.
 pub const BANS_PAGE: usize = 1000;
+
+/// How many audit log entries Audit Log fetches at a time, as Discord's
+/// client does; a page this full may have older ones.
+pub const AUDIT_PAGE: usize = 50;
 /// How many posts' messages Discord's client asks a forum for at a time.
 pub const POSTS_PER_ASK: usize = 10;
 
@@ -1206,6 +1210,29 @@ impl Api {
     pub async fn unban(&self, guild: &str, user: &str) -> Result<()> {
         let path = format!("/guilds/{guild}/bans/{user}");
         self.empty(self.request(Method::DELETE, &path)).await
+    }
+
+    /// A page of a server's audit log, newest first: before an entry's id,
+    /// by one user, or of one action, as Audit Log asks; it takes View
+    /// Audit Log.
+    pub async fn audit_log(
+        &self,
+        guild: &str,
+        before: Option<&str>,
+        user: Option<&str>,
+        action: Option<u16>,
+    ) -> Result<Value> {
+        let mut path = format!("/guilds/{guild}/audit-logs?limit={AUDIT_PAGE}");
+        if let Some(before) = before {
+            path.push_str(&format!("&before={}", encode(before)));
+        }
+        if let Some(user) = user {
+            path.push_str(&format!("&user_id={}", encode(user)));
+        }
+        if let Some(action) = action {
+            path.push_str(&format!("&action_type={action}"));
+        }
+        self.json(self.request(Method::GET, &path)).await
     }
 
     /// Whether a server's moderators need two-factor authentication, 1, or

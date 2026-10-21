@@ -1219,6 +1219,8 @@ struct Icons {
     timeout: slint::Image,
     kick: slint::Image,
     ban: slint::Image,
+    /// A Discord server's Audit Log.
+    history: slint::Image,
     // A Discord server's and channel's menus.
     create: slint::Image,
     create_category: slint::Image,
@@ -1424,6 +1426,7 @@ impl Adapter {
             timeout: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/clock.svg"))?,
             kick: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/user-x.svg"))?,
             ban: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/gavel.svg"))?,
+            history: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/history.svg"))?,
             create: slint::Image::load_from_svg_data(include_bytes!(
                 "../ui/icons/circle-plus.svg"
             ))?,
