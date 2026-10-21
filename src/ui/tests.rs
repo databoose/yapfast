@@ -3934,6 +3934,126 @@ fn edit_server_profile_opens_the_per_server_profile_editor() {
 
 #[test]
 #[cfg(feature = "discord")]
+fn server_settings_open_from_the_menu_and_hold_their_changes_until_saved() {
+    use slint::Model;
+    use yapfast_core::{
+        chat::{ServerProfile, ServerSettingsPage, SettingsSection},
+        yapfast_discord::ready::permission,
+    };
+    let (window, adapter, _directory) = discord_server_window_granting(permission::MANAGE_GUILD);
+    let texts = |window: &YapfastWindow| -> Vec<String> {
+        window
+            .get_menu_rows()
+            .iter()
+            .map(|row| row.text.to_string())
+            .collect()
+    };
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    assert!(
+        texts(&window).contains(&"Server settings".to_owned()),
+        "{:?}",
+        texts(&window)
+    );
+    window.invoke_choose_menu("header:discord:10".into(), false, "server-settings".into());
+    assert!(window.get_server_settings_open());
+    let prompt = window.get_server_settings_prompt();
+    assert!(prompt.loading && !prompt.loaded);
+    let rows: Vec<(bool, String)> = prompt
+        .rows
+        .iter()
+        .map(|row| (row.heading, row.text.to_string()))
+        .collect();
+    assert_eq!(
+        rows,
+        [(true, "TEST".into()), (false, "Server Profile".into())]
+    );
+
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section: SettingsSection::Profile,
+            result: Ok(ServerSettingsPage::Profile(ServerProfile {
+                name: "Test".into(),
+                description: "Hi".into(),
+                icon: None,
+            })),
+        });
+        adapter.refresh(&window);
+    }
+    let prompt = window.get_server_settings_prompt();
+    assert!(prompt.loaded && !prompt.changed && !prompt.profile.has_icon);
+    assert_eq!(window.get_server_settings_name(), "Test");
+    assert_eq!(window.get_server_settings_description(), "Hi");
+    assert_eq!(prompt.profile.description_left, 298);
+
+    // Typing shows the bar; closing then shakes it instead.
+    window.set_server_settings_name("T".into());
+    window.invoke_write_server_setting(0, "T".into());
+    let prompt = window.get_server_settings_prompt();
+    assert!(prompt.changed && !prompt.may_save);
+    assert_eq!(
+        prompt.problem,
+        "The server name must be between 2 and 100 characters."
+    );
+    window.invoke_close_server_settings();
+    assert!(window.get_server_settings_open());
+    assert_eq!(window.get_server_settings_prompt().nudge, 1);
+
+    // Reset puts Discord's back, and closing closes.
+    window.invoke_undo_server_settings();
+    assert_eq!(window.get_server_settings_name(), "Test");
+    assert!(!window.get_server_settings_prompt().changed);
+    window.invoke_close_server_settings();
+    assert!(!window.get_server_settings_open());
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn the_two_factor_prompt_offers_discords_methods() {
+    use slint::Model;
+    use yapfast_core::chat::MfaMethod;
+    let (window, adapter, _directory) = discord_server_window_granting(0);
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::MfaRequired {
+            id: 3,
+            methods: vec![MfaMethod::App, MfaMethod::Backup],
+        });
+        adapter.refresh(&window);
+    }
+    assert!(window.get_mfa_open());
+    let prompt = window.get_mfa_prompt();
+    assert!(!prompt.listing && !prompt.ready && !prompt.password);
+    assert_eq!(prompt.field, "6-digit code");
+    assert_eq!(prompt.choices.row_count(), 2);
+    window.set_mfa_code("123456".into());
+    window.invoke_write_mfa("123456".into());
+    assert!(window.get_mfa_prompt().ready);
+
+    // "Verify with something else" lists them.
+    window.invoke_choose_mfa(-1);
+    let prompt = window.get_mfa_prompt();
+    assert!(prompt.listing);
+    let texts: Vec<String> = prompt
+        .choices
+        .iter()
+        .map(|choice| choice.text.to_string())
+        .collect();
+    assert_eq!(texts, ["Use your authenticator app", "Use a backup code"]);
+    window.invoke_choose_mfa(3);
+    assert!(window.get_mfa_prompt().warning, "Discord's warning first");
+    window.invoke_confirm_mfa();
+    assert!(!window.get_mfa_prompt().warning);
+    assert_eq!(window.get_mfa_prompt().field, "Backup code");
+    assert_eq!(window.get_mfa_code(), "", "a new method starts empty");
+
+    window.invoke_cancel_mfa();
+    assert!(!window.get_mfa_open());
+}
+
+#[test]
+#[cfg(feature = "discord")]
 fn edit_profile_opens_the_main_profile_editor() {
     let (window, adapter, _directory) = discord_server_window_granting(0);
     window.invoke_edit_profile();

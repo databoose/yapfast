@@ -207,6 +207,8 @@ impl Adapter {
         self.show_channel_dialog(window);
         self.show_leave(window);
         self.show_profile_editor(window);
+        self.show_server_settings(window);
+        self.show_mfa(window);
         self.show_dialogs(window);
         self.show_reactions(window);
         self.show_gifs(window);

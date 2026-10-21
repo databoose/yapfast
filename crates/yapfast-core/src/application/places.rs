@@ -17,8 +17,9 @@ pub struct ListedCategory {
 }
 
 /// The server menu's choices its header's dropdown lists, in its order.
-const HEADER: [MenuChoice; 7] = [
+const HEADER: [MenuChoice; 8] = [
     MenuChoice::Invite,
+    MenuChoice::ServerSettings,
     MenuChoice::CreateChannel,
     MenuChoice::CreateCategory,
     MenuChoice::ServerNotifications,
@@ -188,6 +189,9 @@ impl Application {
                 MenuChoice::MuteServer
             });
             choices.extend([MenuChoice::ServerNotifications, MenuChoice::HideMuted]);
+        }
+        if self.state.discord_online && !self.settings_sections(id).is_empty() {
+            choices.push(MenuChoice::ServerSettings);
         }
         // One's own profile there, which anyone may change something of.
         if self.state.discord_online && self.state.discord_user.is_some() {

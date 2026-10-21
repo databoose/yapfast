@@ -27,6 +27,7 @@ mod header;
 mod join;
 mod members;
 mod messages;
+mod mfa;
 mod new_post;
 mod places;
 mod polls;
@@ -36,6 +37,7 @@ mod profiles;
 mod reactions;
 mod rooms;
 mod server;
+mod server_settings;
 mod session;
 mod threads;
 
@@ -45,6 +47,7 @@ pub use join::JoinDialog;
 pub use members::{BAN_HISTORY, RoleChoice, TIMEOUT_TIMES};
 #[cfg(all(feature = "discord", any(test, feature = "test-fixtures")))]
 pub use members::{member_server, with_clubs};
+pub use mfa::MfaPrompt;
 pub use new_post::{NewPost, POST_TAGS, POST_TITLE_LIMIT};
 pub use places::{
     ChannelAsk, ChannelDialog, INVITE_AGES, INVITE_USES, InviteDialog, LeaveDialog, ListedCategory,
@@ -58,6 +61,9 @@ pub use profile_editor::{
 };
 pub use reactions::{ReactionTip, ReactionsWindow, TIP_PEOPLE};
 pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
+pub use server_settings::{
+    DESCRIPTION_LIMIT, Page as SettingsPage, ProfilePage, ServerSettings, SettingsText,
+};
 pub use threads::{
     NewThread, THREAD_NAME_LIMIT, ThreadFrom, ThreadList, ThreadSearch, ThreadSections,
     default_thread_name,
@@ -389,6 +395,12 @@ pub struct AppState {
     /// The editor of this account's Discord profile, its main one or one
     /// server's, while it's open; its pictures go when it closes.
     pub profile_editor: Option<ProfileEditor>,
+    /// A Discord server's settings, while they're open: the open page's,
+    /// and only while it is.
+    pub server_settings: Option<ServerSettings>,
+    /// Requests Discord holds back for two-factor authentication, the
+    /// first one's prompt showing.
+    pub mfa: Vec<MfaPrompt>,
     /// The same friends by name, as the friends list shows them.
     pub friends: Vec<chat::Friend>,
     pub friend_requests: Vec<chat::FriendRequest>,
@@ -1462,6 +1474,33 @@ pub enum Action {
     SaveProfile,
     UnlockNitro,
     CloseProfileEditor,
+    /// Open a Discord server's settings, by its server id or one of its
+    /// channels' room ids; go to another page; change a text of the page,
+    /// read a picture chosen for the server or remove one; undo or save
+    /// what changed, as the bar's Reset and Save Changes do; or close
+    /// them. Leaving a page with unsaved changes shakes the bar instead.
+    OpenServerSettings(String),
+    ServerSettingsSection(chat::SettingsSection),
+    WriteServerSetting {
+        field: SettingsText,
+        text: String,
+    },
+    PickServerPicture {
+        kind: chat::ServerPicture,
+        path: PathBuf,
+    },
+    RemoveServerPicture(chat::ServerPicture),
+    UndoServerSettings,
+    SaveServerSettings,
+    CloseServerSettings,
+    /// Answer the two-factor prompt: use another method, or with none
+    /// list them; write the code; have Discord text it again; confirm; or
+    /// cancel, which fails the request waiting on it.
+    ChooseMfa(Option<chat::MfaMethod>),
+    WriteMfa(String),
+    ResendMfa,
+    ConfirmMfa,
+    CancelMfa,
     /// Change how the Discord account stands with someone. Unfriending and
     /// blocking ask first, through [`Action::AskPerson`].
     ChangeRelationship {
@@ -1756,6 +1795,15 @@ fn pictures_on_screen<'a>(
                 .filter(move |_| list_avatars)
                 .filter(|_| state.dm_screen == Some(DmScreen::Friends))
                 .filter_map(|friend| friend.avatar.as_deref()),
+        )
+        .chain(
+            state
+                .server_settings
+                .iter()
+                .filter_map(|settings| match &settings.page {
+                    Some(server_settings::Page::Profile(page)) => page.original.icon.as_deref(),
+                    None => None,
+                }),
         )
         .chain(state.profile_editor.iter().flat_map(|editor| {
             // The profile's pictures and its fallback's, which show where
@@ -2365,6 +2413,34 @@ impl Application {
                 self.state.profile_editor = None;
                 vec![]
             }
+            Action::OpenServerSettings(place) => self.open_server_settings(place),
+            Action::ServerSettingsSection(section) => self.server_settings_section(section),
+            Action::WriteServerSetting { field, text } => {
+                self.write_server_setting(field, text);
+                vec![]
+            }
+            Action::PickServerPicture { kind, path } => self.pick_server_picture(kind, path),
+            Action::RemoveServerPicture(kind) => {
+                self.remove_server_picture(kind);
+                vec![]
+            }
+            Action::UndoServerSettings => {
+                self.undo_server_settings();
+                vec![]
+            }
+            Action::SaveServerSettings => self.save_server_settings(),
+            Action::CloseServerSettings => {
+                self.close_server_settings();
+                vec![]
+            }
+            Action::ChooseMfa(method) => self.choose_mfa(method),
+            Action::WriteMfa(code) => {
+                self.write_mfa(code);
+                vec![]
+            }
+            Action::ResendMfa => self.resend_mfa(),
+            Action::ConfirmMfa => self.confirm_mfa(),
+            Action::CancelMfa => self.cancel_mfa(),
             Action::ChangeRelationship { user, change } => self.change_relationship(user, change),
             Action::AskPerson { user, ask } => self.ask_person(user, ask),
             Action::AnswerPerson(text) => self.answer_person(text),
@@ -2793,6 +2869,18 @@ impl Application {
                 self.profile_picture_read(kind, path, result);
             }
             Event::ProfileSaved { server, result } => self.profile_saved(server, result),
+            Event::MfaRequired { id, methods } => return self.mfa_required(id, methods),
+            Event::MfaFinished { id, result } => return self.mfa_finished(id, result),
+            Event::MfaTexted { id, result } => self.mfa_texted(id, result),
+            Event::ServerSettingsLoaded {
+                server,
+                section,
+                result,
+            } => self.server_settings_loaded(server, section, result),
+            Event::ServerPicture { path, result, .. } => self.server_picture_read(path, result),
+            Event::ServerSettingsSaved { server, result } => {
+                self.server_settings_saved(server, result);
+            }
             Event::FriendAdded(outcome) => {
                 if let Some(dialog) = &mut self.state.add_friend {
                     dialog.sending = false;

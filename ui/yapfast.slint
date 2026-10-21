@@ -28,12 +28,14 @@ import { PersonRow, CallLink, CallLinkCard, LinkTouch, SignalIcon, VoiceDock, St
 import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
 import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, MessageContent, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, PresentBar, ImageViewer, VideoViewer, VideoPlayer, Polls } from "messages.slint";
-import { SettingsScreen, AccountSettings, AppearanceSettings, ThemeCard, ThemeColour, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, AdvancedSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
+import { SettingsRow, SettingsScreen, AccountSettings, AppearanceSettings, ThemeCard, ThemeColour, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, AdvancedSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { RequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
 import { ContactRow, ForwardRow, ReactionPill, ReactorRow, StatusDialog, NewDmDialog, ForwardDialog, ReactionsDialog, StatusMenu, PersonPrompt, PersonDialog, LeavingDialog, PollAnswerDraft, PollDialog } from "dialogs.slint";
 import { InvitePrompt, InviteDialog, JoinPrompt, JoinDialog, ChannelPrompt, ChannelDialog, ProfileEditorPrompt, ProfileEditorDialog } from "server.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
+import { ServerProfilePrompt, ServerSettingsPrompt, ServerSettingsScreen } from "server_settings.slint";
+import { MfaChoice, MfaPrompt, MfaDialog } from "mfa.slint";
 import { FoundRow, PickRow, ThreadRow, HeaderSearch, PinsPopover, ThreadsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
 import { ThreadPanel, NewThreadPanel } from "thread.slint";
 import { PostTag, PostRow, PostTagChoice, ForumPanel } from "forum.slint";
@@ -180,6 +182,27 @@ export component YapfastWindow inherits Window {
     callback undo-profile;
     callback save-profile;
     callback close-profile-editor;
+    // A Discord server's settings; see ServerSettingsScreen.
+    in property <bool> server-settings-open;
+    in property <ServerSettingsPrompt> server-settings-prompt;
+    in-out property <string> server-settings-name;
+    in-out property <string> server-settings-description;
+    callback server-settings-section(int);
+    callback write-server-setting(int, string);
+    callback pick-server-icon;
+    callback remove-server-icon;
+    callback undo-server-settings;
+    callback save-server-settings;
+    callback close-server-settings;
+    // Confirming a request Discord holds back; see MfaDialog.
+    in property <bool> mfa-open;
+    in property <MfaPrompt> mfa-prompt;
+    in-out property <string> mfa-code;
+    callback choose-mfa(int);
+    callback write-mfa(string);
+    callback resend-mfa;
+    callback confirm-mfa;
+    callback cancel-mfa;
     // Asks before leaving a Discord server, in a ChannelDialog.
     in property <bool> leave-open;
     in property <ChannelPrompt> leave-prompt;
@@ -3024,6 +3047,18 @@ export component YapfastWindow inherits Window {
             sync-discord-reads-toggled(sync) => { root.sync-discord-reads = sync; root.sync-discord-reads-toggled(sync); }
         }
     }
+    // A Discord server's settings cover the window too.
+    if root.server-settings-open: ServerSettingsScreen {
+        prompt: root.server-settings-prompt;
+        name <=> root.server-settings-name; description <=> root.server-settings-description;
+        choose(section) => { root.server-settings-section(section); }
+        write(field, text) => { root.write-server-setting(field, text); }
+        pick-icon => { root.pick-server-icon(); }
+        remove-icon => { root.remove-server-icon(); }
+        undo => { root.undo-server-settings(); }
+        save => { root.save-server-settings(); }
+        close => { root.close-server-settings(); }
+    }
     // A server channel's topic in full, under the header's line of it.
     // Escape or a click outside closes it.
     if root.topic-open && root.has-topic: Rectangle {
@@ -3444,6 +3479,15 @@ export component YapfastWindow inherits Window {
                 }
             }
         }
+    }
+    // Over everything, as the request it confirms may come from anywhere.
+    if root.mfa-open: MfaDialog {
+        prompt: root.mfa-prompt; code <=> root.mfa-code;
+        choose(method) => { root.choose-mfa(method); }
+        write(code) => { root.write-mfa(code); }
+        resend => { root.resend-mfa(); }
+        confirm => { root.confirm-mfa(); }
+        cancel => { root.cancel-mfa(); }
     }
     if Tip.text != "": Rectangle {
         property <length> w: tip-text.preferred-width + 20px;

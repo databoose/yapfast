@@ -40,12 +40,14 @@ pub mod permission {
     pub const ADMINISTRATOR: u64 = 1 << 3;
     pub const MANAGE_CHANNELS: u64 = 1 << 4;
     pub const MANAGE_GUILD: u64 = 1 << 5;
+    pub const VIEW_AUDIT_LOG: u64 = 1 << 7;
     /// Deleting others' messages and removing their reactions.
     pub const MANAGE_MESSAGES: u64 = 1 << 13;
     pub const VIEW_CHANNEL: u64 = 1 << 10;
     pub const SEND_MESSAGES: u64 = 1 << 11;
     pub const READ_MESSAGE_HISTORY: u64 = 1 << 16;
     pub const MENTION_EVERYONE: u64 = 1 << 17;
+    pub const VIEW_GUILD_ANALYTICS: u64 = 1 << 19;
     pub const CONNECT: u64 = 1 << 20;
     /// Muting, deafening and moving members in voice channels; moving
     /// takes them out of voice too.
@@ -55,6 +57,9 @@ pub mod permission {
     pub const CHANGE_NICKNAME: u64 = 1 << 26;
     pub const MANAGE_NICKNAMES: u64 = 1 << 27;
     pub const MANAGE_ROLES: u64 = 1 << 28;
+    pub const MANAGE_WEBHOOKS: u64 = 1 << 29;
+    /// Changing and deleting any of a server's emoji, stickers and sounds.
+    pub const MANAGE_GUILD_EXPRESSIONS: u64 = 1 << 30;
     /// Seeing every private thread, and sending in locked ones.
     pub const MANAGE_THREADS: u64 = 1 << 34;
     pub const CREATE_PUBLIC_THREADS: u64 = 1 << 35;
@@ -62,6 +67,8 @@ pub mod permission {
     pub const SEND_MESSAGES_IN_THREADS: u64 = 1 << 38;
     /// Timing members out.
     pub const MODERATE_MEMBERS: u64 = 1 << 40;
+    /// Adding emoji, stickers and sounds, and changing one's own.
+    pub const CREATE_GUILD_EXPRESSIONS: u64 = 1 << 43;
     /// Posting polls, besides sending messages.
     pub const SEND_POLLS: u64 = 1 << 49;
     /// Pinning messages and unpinning them, which `MANAGE_MESSAGES` once gave.
@@ -71,6 +78,18 @@ pub mod permission {
     pub const BYPASS_SLOWMODE: u64 = 1 << 52;
     /// Every permission, as the owner and administrators hold.
     pub const ALL: u64 = u64::MAX;
+    /// Any of these opens a server's settings, as Discord's client has it
+    /// in `canAccessGuildSettings`.
+    pub const SETTINGS: u64 = MANAGE_GUILD
+        | MANAGE_ROLES
+        | ADMINISTRATOR
+        | BAN_MEMBERS
+        | MANAGE_NICKNAMES
+        | CREATE_GUILD_EXPRESSIONS
+        | MANAGE_GUILD_EXPRESSIONS
+        | MANAGE_WEBHOOKS
+        | VIEW_AUDIT_LOG
+        | VIEW_GUILD_ANALYTICS;
 }
 
 use permission::{

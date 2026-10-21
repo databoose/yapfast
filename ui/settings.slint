@@ -108,21 +108,75 @@ export component Choices inherits Rectangle {
     }
 }
 
-// Settings cover the window: sections on the left, the chosen one, given as
-// children, on the right. Escape or the close button returns to the conversation.
-export component SettingsScreen inherits Rectangle {
-    /// The section showing: 0 account, 1 voice and video, 2 messages,
-    /// 3 notifications, 4 Discord, 5 sounds, 6 advanced, 7 appearance.
-    in-out property <int> settings-section;
-    in property <bool> discord-build;
-    in property <bool> preview;
+// Discord's bar once a draft differs from what Discord has: Reset puts it back,
+// and Save Changes sends it. Each time leaving is refused for the changes,
+// `nudge` goes up, and the bar shakes red, as Discord's does.
+export component UnsavedBar inherits Rectangle {
+    in property <bool> saving;
+    in property <bool> may-reset: true;
+    in property <bool> may-save: true;
+    in property <int> nudge;
+    in property <length> pad: 12px;
+    callback undo;
+    callback save;
+    /// Shakes left to go, and the red that lasts a little longer.
+    property <int> shakes;
+    property <bool> red;
+    changed nudge => { root.shakes = 6; root.red = true; }
+    Timer { interval: 60ms; running: root.shakes > 0; triggered => { root.shakes -= 1; } }
+    Timer { interval: 1200ms; running: root.red; triggered => { root.red = false; } }
+    height: 60px;
+    background: root.red ? Theme.danger : Theme.raised;
+    animate background { duration: Theme.quick; }
+    Rectangle { y: 0px; height: 1px; background: Theme.edge; }
+    bar := HorizontalLayout {
+        x: root.shakes == 0 ? 0px : Math.mod(root.shakes, 2) == 0 ? -6px : 6px;
+        animate x { duration: 50ms; }
+        width: root.width;
+        padding: 12px; padding-left: root.pad; spacing: 8px;
+        Middle {
+            Text {
+                text: "Careful — you have unsaved changes!"; font-size: 14px; font-weight: 600; overflow: elide;
+                color: root.red ? Theme.on-danger : Theme.text;
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        ActionButton {
+            text: "Reset"; ghost: true; enabled: root.may-reset && !root.saving;
+            clicked => { root.undo(); }
+        }
+        ActionButton {
+            text: root.saving ? "Saving..." : "Save Changes"; primary: true;
+            enabled: root.may-save && !root.saving;
+            clicked => { root.save(); }
+        }
+    }
+}
+
+/// A row of a settings sidebar: a group's heading, or a section, by its id.
+export struct SettingsRow { heading: bool, text: string, icon: image, id: int }
+
+// Settings cover the window: sections on the left, under their groups'
+// headings, and the chosen one, given as children, on the right. Escape or the
+// close button returns to the conversation.
+export component SettingsFrame inherits Rectangle {
+    in property <[SettingsRow]> rows;
+    in property <int> selected;
+    in property <string> label: "Settings";
+    /// Room below the section, for a bar over its bottom.
+    in property <length> bottom: 56px;
+    /// Where the section's column starts and how wide it is, for such a bar.
+    out property <length> content-x: content.x;
+    out property <length> content-width: content.width;
+    callback chose(int);
     callback close;
-    callback refresh-devices;
+    /// Takes the keys back, for Escape, once what had them is gone.
+    public function focus-keys() { keys.focus(); }
     background: Theme.chat;
     accessible-role: groupbox;
-    accessible-label: "Settings";
+    accessible-label: root.label;
     TouchArea { }
-    FocusScope {
+    keys := FocusScope {
         init => { self.focus(); }
         key-pressed(event) => {
             if event.text == Key.Escape { root.close(); return accept; }
@@ -135,47 +189,24 @@ export component SettingsScreen inherits Rectangle {
                     alignment: end;
                     VerticalLayout {
                         width: 232px; padding: 16px; padding-top: 56px; spacing: 2px; alignment: start;
-                        HorizontalLayout { padding-left: 8px; padding-bottom: 6px; SettingsHeading { text: "SETTINGS"; } }
-                        ChannelRow {
-                            text: "My account"; icon: @image-url("icons/user.svg");
-                            selected: root.settings-section == 0; clicked => { root.settings-section = 0; }
-                        }
-                        ChannelRow {
-                            text: "Appearance"; icon: @image-url("icons/palette.svg");
-                            selected: root.settings-section == 7; clicked => { root.settings-section = 7; }
-                        }
-                        ChannelRow {
-                            text: "Voice & video"; icon: @image-url("icons/headphones.svg");
-                            selected: root.settings-section == 1; clicked => { root.settings-section = 1; root.refresh-devices(); }
-                        }
-                        ChannelRow {
-                            text: "Messages"; icon: @image-url("icons/message-circle.svg");
-                            selected: root.settings-section == 2; clicked => { root.settings-section = 2; }
-                        }
-                        ChannelRow {
-                            text: "Notifications"; icon: @image-url("icons/bell.svg");
-                            selected: root.settings-section == 3; clicked => { root.settings-section = 3; }
-                        }
-                        ChannelRow {
-                            text: "Sounds"; icon: @image-url("icons/volume-2.svg");
-                            selected: root.settings-section == 5; clicked => { root.settings-section = 5; }
-                        }
-                        if root.discord-build && !root.preview: ChannelRow {
-                            text: "Discord"; icon: @image-url("icons/discord.svg");
-                            selected: root.settings-section == 4; clicked => { root.settings-section = 4; }
-                        }
-                        ChannelRow {
-                            text: "Advanced"; icon: @image-url("icons/settings.svg");
-                            selected: root.settings-section == 6; clicked => { root.settings-section = 6; }
+                        for row[index] in root.rows: VerticalLayout {
+                            if row.heading: HorizontalLayout {
+                                padding-left: 8px; padding-bottom: 6px; padding-top: index == 0 ? 0px : 16px;
+                                SettingsHeading { text: row.text; overflow: elide; }
+                            }
+                            if !row.heading: ChannelRow {
+                                text: row.text; icon: row.icon;
+                                selected: root.selected == row.id; clicked => { root.chose(row.id); }
+                            }
                         }
                     }
                 }
             }
-            Rectangle {
+            content := Rectangle {
                 horizontal-stretch: 2; min-width: 440px;
                 ScrollView {
                     HorizontalLayout {
-                        padding-left: 40px; padding-right: 96px; padding-top: 56px; padding-bottom: 56px;
+                        padding-left: 40px; padding-right: 96px; padding-top: 56px; padding-bottom: root.bottom;
                         VerticalLayout {
                             max-width: 660px; horizontal-stretch: 1; spacing: 16px; alignment: start;
                             @children
@@ -187,7 +218,7 @@ export component SettingsScreen inherits Rectangle {
                     HorizontalLayout {
                         alignment: center;
                         IconButton {
-                            icon: @image-url("icons/x.svg"); label: "Close settings"; size: 36px; glyph: 18px; radius: 18px;
+                            icon: @image-url("icons/x.svg"); label: "Close " + root.label; size: 36px; glyph: 18px; radius: 18px;
                             fill: Theme.raised; clicked => { root.close(); }
                         }
                     }
@@ -198,8 +229,48 @@ export component SettingsScreen inherits Rectangle {
     }
 }
 
-// Settings: who's signed in, and ways to reconnect, edit the Discord profile,
-// set a custom status and sign out.
+// This device's settings, in a SettingsFrame.
+export component SettingsScreen inherits Rectangle {
+    /// The section showing: 0 account, 1 voice and video, 2 messages,
+    /// 3 notifications, 4 Discord, 5 sounds, 6 advanced, 7 appearance.
+    in-out property <int> settings-section;
+    in property <bool> discord-build;
+    in property <bool> preview;
+    callback close;
+    callback refresh-devices;
+    property <[SettingsRow]> with-discord: [
+        { heading: true, text: "SETTINGS" },
+        { text: "My account", icon: @image-url("icons/user.svg"), id: 0 },
+        { text: "Appearance", icon: @image-url("icons/palette.svg"), id: 7 },
+        { text: "Voice & video", icon: @image-url("icons/headphones.svg"), id: 1 },
+        { text: "Messages", icon: @image-url("icons/message-circle.svg"), id: 2 },
+        { text: "Notifications", icon: @image-url("icons/bell.svg"), id: 3 },
+        { text: "Sounds", icon: @image-url("icons/volume-2.svg"), id: 5 },
+        { text: "Discord", icon: @image-url("icons/discord.svg"), id: 4 },
+        { text: "Advanced", icon: @image-url("icons/settings.svg"), id: 6 },
+    ];
+    property <[SettingsRow]> without-discord: [
+        { heading: true, text: "SETTINGS" },
+        { text: "My account", icon: @image-url("icons/user.svg"), id: 0 },
+        { text: "Appearance", icon: @image-url("icons/palette.svg"), id: 7 },
+        { text: "Voice & video", icon: @image-url("icons/headphones.svg"), id: 1 },
+        { text: "Messages", icon: @image-url("icons/message-circle.svg"), id: 2 },
+        { text: "Notifications", icon: @image-url("icons/bell.svg"), id: 3 },
+        { text: "Sounds", icon: @image-url("icons/volume-2.svg"), id: 5 },
+        { text: "Advanced", icon: @image-url("icons/settings.svg"), id: 6 },
+    ];
+    SettingsFrame {
+        rows: root.discord-build && !root.preview ? root.with-discord : root.without-discord;
+        selected: root.settings-section;
+        chose(id) => {
+            root.settings-section = id;
+            if id == 1 { root.refresh-devices(); }
+        }
+        close => { root.close(); }
+        @children
+    }
+}
+
 export component AccountSettings inherits VerticalLayout {
     in property <string> account-name;
     in property <string> account-status;

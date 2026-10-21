@@ -1645,8 +1645,8 @@ const serverRoles = [
   { id: GUILD, name: "@everyone", permissions: String(EVERYONE), position: 0, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
   { id: MODS, name: "Mods", permissions: String(bit(13)), position: 1, color: 3447003, hoist: true, managed: false, mentionable: true, flags: 0 },
   { id: BOTS, name: "Bots", permissions: "0", position: 2, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
-  // Crew may manage channels and pin messages.
-  { id: CREW, name: "Crew", permissions: String(bit(4) + bit(51)), position: 3, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
+  // Crew may manage channels, the server and pin messages.
+  { id: CREW, name: "Crew", permissions: String(bit(4) + bit(5) + bit(51)), position: 3, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
   { id: STAFF, name: "Staff", permissions: String(MODERATION), position: 4, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
   { id: LEADS, name: "Leads", permissions: "0", position: 5, color: 0, hoist: false, managed: false, mentionable: false, flags: 0 },
 ];
@@ -1754,21 +1754,93 @@ function guildChannels(): GuildChannel[] {
     .map((channel) => ({ ...channel, ...channelEdits.get(channel.id) }));
 }
 
+// Server Settings. GET /guilds/{id}/profile gives "Server"'s profile as
+// Server Profile shows it, and PATCH changes its name, icon (a data URI,
+// served back from the CDN as it came, or null) and description, as
+// Manage Server allows, answering with the profile and GUILD_UPDATE. POST
+// /_control/guild-reset puts "Server" back as it started.
+// Two-factor authentication: POST /_control/mfa, with an optional JSON body
+// {"methods": ["totp", ...], "code": "123456"}, has Discord hold back
+// moderation (a member's PATCH, a kick, a ban, a role), channel changes and
+// Server Settings' saves with 401 code 60003 and a ticket, as a server that
+// requires 2FA for moderation does; `?off` stops it. POST /mfa/finish takes
+// the code, "password" as the password, or "12345678" as a backup code, and
+// answers with a token the request goes again with in
+// X-Discord-MFA-Authorization; anything else is code 60008. POST
+// /auth/mfa/sms/send answers with a hidden phone number. GET
+// /_control/mfa lists the confirmations tried.
+const serverSettings = { name: "Server", icon: "server1" as string | null, description: null as string | null };
+const mfa = {
+  on: false,
+  methods: ["totp"] as string[],
+  code: "123456",
+  tickets: new Set<string>(),
+  tokens: new Set<string>(),
+  tried: [] as { mfa_type: string; data: string }[],
+};
+function resetGuild() {
+  Object.assign(serverSettings, { name: "Server", icon: "server1", description: null });
+  Object.assign(mfa, { on: false, methods: ["totp"], code: "123456" });
+  mfa.tickets.clear();
+  mfa.tokens.clear();
+  mfa.tried.length = 0;
+}
+
+/** Whether Discord holds `method` on `path` back for 2FA while it's on. */
+function needsMfa(method: string, path: string): boolean {
+  if (!mfa.on) return false;
+  if (method === "PATCH" && /^\/guilds\/\d+\/profile$/.test(path)) return true;
+  if (method === "POST" && /^\/guilds\/\d+\/channels$/.test(path)) return true;
+  if ((method === "PATCH" || method === "DELETE") && /^\/channels\/\d+$/.test(path)) return true;
+  return method !== "GET" && /^\/guilds\/\d+\/(members|bans)\/\d+/.test(path);
+}
+
+/** Discord's 401 for a request held back for 2FA, unless it carries a token. */
+function heldForMfa(req: Request): Response | null {
+  const token = req.headers.get("x-discord-mfa-authorization");
+  if (token !== null && mfa.tokens.has(token)) return null;
+  const ticket = `ticket-${mfa.tickets.size + 1}`;
+  mfa.tickets.add(ticket);
+  return json({
+    message: "Two factor is required for this operation",
+    code: 60003,
+    mfa: { ticket, methods: mfa.methods.map((type) => ({ type, backup_codes_allowed: true })) },
+  }, 401);
+}
+
+/** "Server"'s profile, as GET /guilds/{id}/profile answers. */
+function guildProfile() {
+  return {
+    id: GUILD,
+    name: serverSettings.name,
+    icon_hash: serverSettings.icon,
+    description: serverSettings.description,
+    member_count: Object.keys(users).length,
+    online_count: 1,
+    brand_color_primary: null,
+    traits: [],
+    features: [],
+    visibility: 1,
+    premium_tier: 0,
+    premium_subscription_count: 0,
+  };
+}
+
 function guild() {
   const properties = {
     id: GUILD,
-    name: "Server",
+    name: serverSettings.name,
     owner_id: users.bob.id,
-    icon: "server1",
+    icon: serverSettings.icon,
     banner: null,
     splash: null,
-    description: null,
+    description: serverSettings.description,
     features: [],
     preferred_locale: "en-US",
     verification_level: 0,
     default_message_notifications: 1,
     explicit_content_filter: 0,
-    mfa_level: 0,
+    mfa_level: mfa.on ? 1 : 0,
     nsfw_level: 0,
     premium_tier: 0,
     system_channel_id: GENERAL,
@@ -3598,6 +3670,56 @@ async function api(req: Request, path: string, origin: string): Promise<Response
   const method = req.method;
   let m: RegExpMatchArray | null;
 
+  if (needsMfa(method, path)) {
+    const held = heldForMfa(req);
+    if (held) return held;
+  }
+  if (method === "POST" && path === "/mfa/finish") {
+    const body: any = await req.json().catch(() => ({}));
+    const [type, data] = [String(body.mfa_type), String(body.data ?? "")];
+    mfa.tried.push({ mfa_type: type, data });
+    if (!mfa.tickets.has(String(body.ticket))) return json({ message: "Invalid two-factor auth ticket", code: 60006 }, 400);
+    const right = type === "password" ? data === "password" : type === "backup" ? data === "12345678" : data === mfa.code;
+    if (!mfa.methods.includes(type) || !right) return json({ message: "Invalid two-factor code", code: 60008 }, 400);
+    mfa.tickets.delete(String(body.ticket));
+    const token = `mfa-token-${mfa.tried.length}`;
+    mfa.tokens.add(token);
+    return json({ token });
+  }
+  if (method === "POST" && path === "/auth/mfa/sms/send") {
+    return json({ phone: "******1234" });
+  }
+
+  // "Server"'s profile in Server Settings; see "Server Settings" above.
+  if ((m = path.match(/^\/guilds\/(\d+)\/profile$/))) {
+    if (m[1] !== GUILD) return notFound("Unknown Guild", 10004);
+    if (method === "GET") return json(guildProfile());
+    if (method === "PATCH") {
+      if (!aliceMay(5)) return json({ message: "Missing Permissions", code: 50013 }, 403);
+      const body: any = await req.json().catch(() => ({}));
+      const invalid = (field: string, code: string, message: string) =>
+        json({ message: "Invalid Form Body", code: 50035, errors: { [field]: { _errors: [{ code, message }] } } }, 400);
+      if ("name" in body && (typeof body.name !== "string" || body.name.trim().length < 2 || body.name.length > 100)) {
+        return invalid("name", "BASE_TYPE_BAD_LENGTH", "Must be between 2 and 100 in length.");
+      }
+      if (typeof body.description === "string" && body.description.length > 300) {
+        return invalid("description", "BASE_TYPE_MAX_LENGTH", "Must be 300 or fewer in length.");
+      }
+      let icon: string | null | undefined;
+      if ("icon" in body) {
+        const kept = body.icon === null ? { hash: null } : keepPicture(body.icon);
+        if ("error" in kept) return invalid("icon", "IMAGE_INVALID", kept.error);
+        icon = kept.hash;
+      }
+      if (typeof body.name === "string") serverSettings.name = body.name.trim();
+      if ("description" in body) serverSettings.description = body.description || null;
+      if (icon !== undefined) serverSettings.icon = icon;
+      const { properties } = guild();
+      dispatch("GUILD_UPDATE", { ...properties, roles: serverRoles, emojis: guild().emojis });
+      return json(guildProfile());
+    }
+  }
+
   // A live stream's preview, from its streamer: a JPEG as a data URI.
   if (method === "POST" && (m = path.match(/^\/streams\/([^/]+)\/preview$/))) {
     const stream = decodeURIComponent(m[1]!);
@@ -5102,7 +5224,7 @@ const GENERIC_CONTROLS = new Set([
   "stream-move", "sessions", "cookies", "list-requests", "audit-log", "slow", "gateway-reconnect", "qr-scan",
   "qr-confirm", "qr-captcha", "qr-cancel", "qr-expire", "voice-audio", "video", "stream-codec", "reactor-pages",
   "reactor-removals", "thread-searches", "thread-creates", "thread-members", "typed", "acks", "invites",
-  "invite-joins", "invite-captcha", "invite-form",
+  "invite-joins", "invite-captcha", "invite-form", "mfa",
 ]);
 
 /** A status's emoji as the env gives it, Unicode or `<:name:id>`, as Discord sends it. */
@@ -6138,6 +6260,26 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "GET" && path === "/_control/invite-joins") {
       return Response.json(inviteJoins);
+    }
+    if (req.method === "POST" && path === "/_control/mfa") {
+      if (url.searchParams.has("off")) {
+        mfa.on = false;
+        return new Response("Discord no longer asks for 2FA\n");
+      }
+      const body: any = await req.json().catch(() => ({}));
+      mfa.on = true;
+      if (Array.isArray(body.methods)) mfa.methods = body.methods.map(String);
+      if (typeof body.code === "string") mfa.code = body.code;
+      return new Response(`Discord asks for 2FA by ${mfa.methods.join(", ")}\n`);
+    }
+    if (req.method === "GET" && path === "/_control/mfa") {
+      return Response.json(mfa.tried);
+    }
+    if (req.method === "POST" && path === "/_control/guild-reset") {
+      resetGuild();
+      const { properties } = guild();
+      dispatch("GUILD_UPDATE", { ...properties, roles: serverRoles, emojis: guild().emojis });
+      return new Response("Server is as it started\n");
     }
     if (req.method === "POST" && path === "/_control/invite-captcha") {
       inviteCaptcha = true;

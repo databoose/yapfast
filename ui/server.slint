@@ -2,7 +2,7 @@
 import { ScrollView } from "scrollview.slint";
 import { Theme, Label, Middle } from "theme.slint";
 import { ActionButton, Avatar, IconButton, MenuItem, TextField } from "controls.slint";
-import { Choices, SettingsSwitch } from "settings.slint";
+import { Choices, SettingsSwitch, UnsavedBar } from "settings.slint";
 import { ProfileData, ProfileHeading } from "people.slint";
 
 // What an invite dialog shows: whom it invites where, and the link once
@@ -800,24 +800,12 @@ export component ProfileEditorDialog inherits Rectangle {
                         }
                     }
                     // Discord's bar, once there's something to save.
-                    if root.prompt.changed || root.prompt.saving: Rectangle {
-                        background: Theme.raised;
-                        height: root.bar-height;
-                        Rectangle { y: 0px; height: 1px; background: Theme.edge; }
-                        bar := HorizontalLayout {
-                            padding: 12px; padding-left: root.pad; spacing: 8px;
-                            Middle { Text { text: "Careful — you have unsaved changes!"; color: Theme.text; font-size: 14px; font-weight: 600; overflow: elide; } }
-                            Rectangle { horizontal-stretch: 1; }
-                            ActionButton {
-                                text: "Reset"; ghost: true; enabled: root.ready;
-                                clicked => { root.stop-editing(); root.colour-open = false; root.undo(); }
-                            }
-                            ActionButton {
-                                text: root.prompt.saving ? "Saving..." : "Save Changes"; primary: true;
-                                enabled: root.ready && root.prompt.reading == "" && root.prompt.too-long == "" && root.prompt.bio-left >= 0 && !root.prompt.colour-wrong;
-                                clicked => { root.stop-editing(); root.save(); }
-                            }
-                        }
+                    if root.prompt.changed || root.prompt.saving: UnsavedBar {
+                        height: root.bar-height; pad: root.pad; saving: root.prompt.saving;
+                        may-reset: root.ready;
+                        may-save: root.ready && root.prompt.reading == "" && root.prompt.too-long == "" && root.prompt.bio-left >= 0 && !root.prompt.colour-wrong;
+                        undo => { root.stop-editing(); root.colour-open = false; root.undo(); }
+                        save => { root.stop-editing(); root.save(); }
                     }
                 }
             }

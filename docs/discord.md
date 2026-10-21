@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [push-to-talk](#push-to-talk) on a recorded key, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio, cameras and push-to-talk on real Windows, and of push-to-talk on real Wayland desktops; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, [joining by invite](#joining-by-invite), making and changing channels, threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, server settings and privacy, membership forms when joining |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, [joining by invite](#joining-by-invite), making and changing channels, [server settings](#server-settings)' Server Profile, [two-factor authentication](#two-factor-authentication), threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, most of a server's settings and its privacy, membership forms when joining |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, [editing one's profile](#editing-ones-main-profile) and [server profiles](#editing-ones-server-profile), notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored; changing the username |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -2312,6 +2312,97 @@ card shows the game's icon, which Yapfast asks for once per game with `GET
 tick once a second, and only while a profile with one shows. Matrix members and one-to-one
 Matrix DMs get the same card with their name, Matrix ID, avatar and room role.
 
+### Server settings
+
+Server settings, in a server's menu after Hide muted channels and in its
+header's dropdown after Invite, open Yapfast's version of Discord's Server
+Settings (`application/server_settings/`): a screen over the window, as
+Yapfast's own settings are, with the server's name heading a sidebar of the
+pages this account may change and the open page beside it. Discord's
+client offers its settings to anyone with Manage Server, Manage Roles,
+Administrator, Ban Members, Manage Nicknames, either expressions
+permission, Manage Webhooks, View Audit Log or View Server Insights
+(`canAccessGuildSettings`); Yapfast offers them once at least one page it
+has is open to this account. Each page shows only with its own
+permission:
+
+- Server Profile, with Manage Server: the server's name (2 to 100
+  characters), icon and description (up to 300).
+
+The rest of Discord's pages come in later stages; the plan is kept outside
+the repository.
+
+Only the open page's settings are held, from when it opens to when it
+closes: opening a page asks Discord for it, and leaving it drops it. Each
+page edits a draft against what Discord sent. Once the draft differs,
+Discord's bar shows over the bottom of the page, "Careful — you have
+unsaved changes!", with Reset and Save Changes; until one is chosen,
+choosing another page, Escape and the close button shake the bar red
+instead, as Discord's does. Save Changes sends only what changed, and
+Discord's answer replaces the page, so the bar goes. A refusal keeps the
+draft, with Discord's words: a field it refused reads "Name: Must be
+between 2 and 100 in length.", from the `errors` of its 50035. A new
+snapshot closes the settings once this account may change none of their
+pages, or isn't in the server, and a name or icon changed elsewhere, which
+GUILD_UPDATE brings, shows unless the draft changed it.
+
+Heap in use (window-control `stats`, `measure` builds, the fake's
+"Server", three runs each): 7.70 to 7.73 MiB on #general before and after
+Server Profile came, 8.43 to 8.49 with it open, and 8.30 to 8.36 once it
+closed. Opening and closing it four times in a row stayed at 8.48 and 8.36:
+what stays is the renderer's, once.
+
+Server Profile reads `GET /guilds/{id}/profile` and saves with `PATCH
+/guilds/{id}/profile`, as Discord's page does, with `name`,
+`description` and `icon`, a data URI or `null` to remove it; Discord
+answers with the profile and sends GUILD_UPDATE. Change Server Icon reads
+the picture off the UI thread as the [profile
+editor](#editing-ones-server-profile) reads an avatar: the middle square,
+at most 1024 pixels, with a 128-pixel preview. An animated icon takes boost
+level 1 (`ANIMATED_ICON`).
+
+The fake's "Server" lets Crew, and so Alice, manage it. It answers both
+requests, refuses a name or description Discord would with its 50035, sends
+GUILD_UPDATE, and `POST /_control/guild-reset` puts "Server" back.
+`scripts/ui-session do 'pick icon PATH'` chooses an icon, as the file
+chooser would.
+
+### Two-factor authentication
+
+Discord holds some requests back until this account confirms with
+two-factor authentication: moderation in a server that requires 2FA for
+it, and an owner's own actions. It answers 401 with code 60003 and a
+ticket, `{"mfa": {"ticket": ..., "methods": [{"type": "totp"}, ...]}}`.
+Discord's client then shows "Multi-Factor Authentication", turns the
+confirmation into a token with `POST /mfa/finish` (`{ticket, mfa_type,
+data}`, answered with `{token}`), and sends the request again with the
+token in `X-Discord-MFA-Authorization`. It keeps no token: each request
+held back asks again.
+
+Yapfast does the same for member moderation (nicknames, roles, timeouts,
+kicks, bans, and voice), channel changes and server settings' saves:
+`Discord::stepping_up` in `yapfast-discord` runs the request, and on
+60003 sends `Live::MfaRequired` and waits for the prompt's answer, then
+runs it again inside the token's scope, so whatever asked keeps waiting
+for its usual answer. The prompt (`application/mfa.rs`, `ui/mfa.slint`)
+starts at Discord's first method and lists the rest under "Verify with
+something else", as Discord's does: a code from an authenticator app or a
+text, six digits; the password; or a backup code, eight to eleven
+characters, sent without its dashes, after Discord's warning, "Slow down!
+Are you sure?", whose button waits ten seconds each time it shows. A text goes out as its method opens,
+with `POST /auth/mfa/sms/send`, and "Resend Code" sends another. A
+passkey needs a browser, so Yapfast asks to confirm in Discord's app
+instead. A confirmation Discord refuses (60008) leaves the prompt open to
+try again; Cancel fails the request, "Two-factor authentication was
+cancelled." Requests held back at once each get a prompt, one after
+another.
+
+`POST /_control/mfa` has the fake hold back moderation, channel changes
+and Server Profile's saves, with the methods and code its JSON body
+gives, by default `totp` and `123456`; "password" is the password and
+"12345678" a backup code. `?off` stops it, and `GET /_control/mfa` lists
+the confirmations tried.
+
 ### Later
 
 In rough order. The browser covers these until then.
@@ -2327,7 +2418,7 @@ In rough order. The browser covers these until then.
 - Discord's voice settings beyond those above, and push-to-talk's sounds,
   mouse buttons or key combinations as its key, and more than one key.
 - The soundboard.
-- Polls, activities, and server administration.
+- Polls, activities, and the rest of a server's settings.
 - [Mirroring into Matrix](#mirroring-into-matrix).
 - The blocked on the friends page, beside Online and All.
 - Blocking and unblocking from a profile.

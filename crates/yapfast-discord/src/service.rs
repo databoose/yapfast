@@ -19,10 +19,11 @@ use crate::{
     cache, forum, invite, limits,
     member_list::{ListedMember, Presence},
     message::{self, Message, Names, Page},
+    mfa,
     notifications::Change,
     profile::{self, Profile},
     ready::{self, PRIVATE, Server},
-    search,
+    search, server_settings,
     settings::{self, CustomStatus},
     stream::StreamServer,
 };
@@ -401,6 +402,14 @@ pub enum Live {
     /// Discord moved a stream this account shares or watches to another
     /// server.
     StreamMoved(StreamServer),
+    /// Discord holds a request back until this account confirms with
+    /// two-factor authentication, by one of `methods`; the prompt is
+    /// answered by [`Discord::finish_mfa`] or [`Discord::cancel_mfa`] with
+    /// its id.
+    MfaRequired {
+        id: u64,
+        methods: Vec<mfa::Method>,
+    },
 }
 
 /// What a call needs to open the voice connection Discord assigned.
@@ -542,6 +551,9 @@ pub struct Discord {
     /// The addresses of the icons of applications activities showed, by
     /// id; none for one without an icon.
     application_icons: Arc<Mutex<HashMap<String, Option<String>>>>,
+    /// Requests held back for two-factor authentication, waiting for the
+    /// person; see [`Self::stepping_up`].
+    mfa: Arc<mfa::Prompts>,
 }
 
 /// Discord allows starting 10 new DMs with people in 10 minutes, and treats
@@ -619,6 +631,7 @@ impl Discord {
             listed_threads: Arc::default(),
             new_dms: Arc::new(Mutex::new(limits::Window::new(NEW_DMS, NEW_DM_SPAN))),
             application_icons: Arc::default(),
+            mfa: Arc::default(),
         })
     }
 
@@ -1126,6 +1139,70 @@ impl Discord {
         )
     }
 
+    /// Does `work`, and when Discord holds it back for two-factor
+    /// authentication, asks the person with [`Live::MfaRequired`] and does
+    /// it again once they confirm, as Discord's client does. Cancelling
+    /// fails it. `work` may send several requests; each carries the token.
+    pub async fn stepping_up<T, F, Work>(&self, mut work: Work) -> Result<T>
+    where
+        Work: FnMut() -> F,
+        F: std::future::Future<Output = Result<T>>,
+    {
+        let mut token = None;
+        loop {
+            let result = match token.take() {
+                Some(token) => mfa::with_token(token, work()).await,
+                None => work().await,
+            };
+            let error = match result {
+                Ok(done) => return Ok(done),
+                Err(error) => error,
+            };
+            let Some(required) = error.downcast_ref::<mfa::Required>() else {
+                return Err(error);
+            };
+            let (id, answered) = self.mfa.ask(required.ticket.clone());
+            let _ = self.live.send(Live::MfaRequired {
+                id,
+                methods: required.methods.clone(),
+            });
+            match answered.await {
+                Ok(mfa::Answer::Token(confirmed)) => token = Some(confirmed),
+                Ok(mfa::Answer::Cancelled) | Err(_) => {
+                    bail!("Two-factor authentication was cancelled.")
+                }
+            }
+        }
+    }
+
+    /// Confirms a prompt of [`Live::MfaRequired`] with a code, password or
+    /// backup code; the request waiting on it goes again. A confirmation
+    /// Discord refuses fails here and leaves the prompt open.
+    pub async fn finish_mfa(&self, id: u64, method: mfa::Method, data: &str) -> Result<()> {
+        let ticket = self
+            .mfa
+            .ticket(id)
+            .context("That confirmation is no longer waiting.")?;
+        let token = self.api.finish_mfa(&ticket, method, data).await?;
+        self.mfa.answer(id, mfa::Answer::Token(token));
+        Ok(())
+    }
+
+    /// Has Discord text a code for a prompt; the phone number it went to,
+    /// partly hidden, comes back.
+    pub async fn send_mfa_sms(&self, id: u64) -> Result<String> {
+        let ticket = self
+            .mfa
+            .ticket(id)
+            .context("That confirmation is no longer waiting.")?;
+        self.api.send_mfa_sms(&ticket).await
+    }
+
+    /// Gives up on a prompt; the request waiting on it fails.
+    pub fn cancel_mfa(&self, id: u64) {
+        self.mfa.answer(id, mfa::Answer::Cancelled);
+    }
+
     /// This account's own profile, for its editor, fetched afresh: in
     /// `guild`, or its main one.
     pub async fn own_profile(&self, guild: Option<&str>) -> Result<profile::OwnProfile> {
@@ -1158,6 +1235,23 @@ impl Discord {
         }
         self.forget_own_profile(Some(guild));
         Ok(())
+    }
+
+    /// A server's profile, for its settings' Server Profile page.
+    pub async fn guild_profile(&self, guild: &str) -> Result<server_settings::ServerProfile> {
+        let profile = self.api.server_profile(guild).await?;
+        Ok(server_settings::parse_profile(guild, &profile))
+    }
+
+    /// Changes a server's profile with `body`'s fields, as Server Profile's
+    /// Save Changes does, giving it as it now stands; GUILD_UPDATE follows.
+    pub async fn save_guild_profile(
+        &self,
+        guild: &str,
+        body: &Value,
+    ) -> Result<server_settings::ServerProfile> {
+        let profile = self.api.modify_server_profile(guild, body).await?;
+        Ok(server_settings::parse_profile(guild, &profile))
     }
 
     /// Changes this account's main profile as Discord's client does:

@@ -144,7 +144,8 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 | MenuChoice::RemoveTimeout
                 | MenuChoice::Kick
                 | MenuChoice::Ban => 5,
-                MenuChoice::EditServerProfile
+                MenuChoice::ServerSettings
+                | MenuChoice::EditServerProfile
                 | MenuChoice::CreateChannel
                 | MenuChoice::CreateCategory
                 | MenuChoice::EditChannel
@@ -308,6 +309,7 @@ fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &sl
         MenuChoice::JoinThread => ("Join thread", &icons.thread),
         MenuChoice::LeaveThread => ("Leave thread", &icons.leave),
         MenuChoice::EditServerProfile => ("Edit server profile", &icons.rename),
+        MenuChoice::ServerSettings => ("Server settings", &icons.settings),
     }
 }
 
@@ -877,6 +879,7 @@ pub(super) fn choose(
                 Some(Action::EditServerProfile(target))
             }
         }
+        MenuChoice::ServerSettings => Some(Action::OpenServerSettings(target)),
         // A server's notifications change above; their rows are submenus.
         MenuChoice::MuteServer
         | MenuChoice::UnmuteServer
@@ -924,7 +927,7 @@ pub(super) fn server_change(
     }
 }
 
-const CHOICES: [MenuChoice; 57] = [
+const CHOICES: [MenuChoice; 58] = [
     MenuChoice::MarkRead,
     MenuChoice::JoinVoice,
     MenuChoice::OpenChat,
@@ -975,6 +978,7 @@ const CHOICES: [MenuChoice; 57] = [
     MenuChoice::JoinThread,
     MenuChoice::LeaveThread,
     MenuChoice::EditServerProfile,
+    MenuChoice::ServerSettings,
     MenuChoice::LocalMute,
     MenuChoice::SelfMute,
     MenuChoice::SelfDeafen,
@@ -1036,6 +1040,7 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::JoinThread => "join-thread",
         MenuChoice::LeaveThread => "leave-thread",
         MenuChoice::EditServerProfile => "edit-server-profile",
+        MenuChoice::ServerSettings => "server-settings",
         MenuChoice::LocalMute => "local-mute",
         MenuChoice::SelfMute => "self-mute",
         MenuChoice::SelfDeafen => "self-deafen",

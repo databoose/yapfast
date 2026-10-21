@@ -8048,3 +8048,6 @@ fn going_idle_while_signed_out_tells_nobody() {
         ))]
     ));
 }
+
+#[cfg(feature = "discord")]
+mod server_settings;

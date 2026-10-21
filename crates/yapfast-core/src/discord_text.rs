@@ -43,6 +43,7 @@ mod gifs;
 mod open_channel;
 mod own_profile;
 mod render;
+mod server_settings;
 
 pub use channels::Channels;
 pub use commands::{command, finished, live};

@@ -1,0 +1,178 @@
+import { Theme, Middle, Label } from "theme.slint";
+import { ActionButton, Avatar, TextField } from "controls.slint";
+import { SettingsFrame, SettingsRow, SettingsTitle, SettingsHeading, UnsavedBar } from "settings.slint";
+
+/// What Server Profile shows besides what's written in it.
+export struct ServerProfilePrompt {
+    /// The icon: Discord's by its address, or a new one's preview.
+    icon-url: string,
+    new-icon: image,
+    has-icon: bool,
+    initial: string,
+    /// A picture chosen for the icon is being read.
+    reading: bool,
+    /// How many characters the description has left; below 0, too many.
+    description-left: int,
+}
+
+/// What a Discord server's settings show besides what's written in them.
+export struct ServerSettingsPrompt {
+    /// The sidebar: the server's name heading the pages this account may
+    /// change, under Discord's groups.
+    rows: [SettingsRow],
+    /// The page showing: 0 Server Profile.
+    section: int,
+    /// Discord sends the page; it's here; Discord takes the change.
+    loading: bool,
+    loaded: bool,
+    saving: bool,
+    error: string,
+    /// Why the draft can't be saved as it is, as Discord's client says it.
+    problem: string,
+    /// The draft differs from what Discord has, and may be saved.
+    changed: bool,
+    may-save: bool,
+    /// Goes up each time leaving is refused for unsaved changes.
+    nudge: int,
+    profile: ServerProfilePrompt,
+}
+
+// A text of a settings page, several lines high, with how many characters
+// are left below it.
+component SettingsArea inherits VerticalLayout {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <string> label;
+    in property <int> left;
+    in property <bool> enabled: true;
+    callback edited(string);
+    spacing: 4px;
+    Rectangle {
+        height: 96px; border-radius: 6px; background: Theme.sunken;
+        border-width: input.has-focus ? 1px : 0px; border-color: Theme.accent.with-alpha(0.8);
+        Text {
+            x: 10px; y: 8px; width: parent.width - 20px;
+            visible: root.text == "";
+            text: root.placeholder; color: Theme.muted; font-size: 14px;
+            wrap: word-wrap; overflow: elide;
+        }
+        input := TextInput {
+            x: 10px; y: 8px; width: parent.width - 20px; height: parent.height - 16px;
+            text <=> root.text; enabled: root.enabled;
+            single-line: false; wrap: word-wrap;
+            font-size: 14px; color: Theme.text;
+            selection-background-color: Theme.accent.with-alpha(0.35);
+            selection-foreground-color: Theme.text;
+            accessible-label: root.label;
+            edited => { root.edited(self.text); }
+        }
+    }
+    Text {
+        horizontal-alignment: right;
+        text: root.left < 0 ? "Too long by " + (-root.left) : root.left + " left";
+        color: root.left < 0 ? Theme.danger : Theme.muted; font-size: 12px;
+    }
+}
+
+// Server Profile: the server's name, icon and description, as Discord's page
+// has them.
+component ServerProfileSection inherits VerticalLayout {
+    in property <ServerSettingsPrompt> prompt;
+    in-out property <string> name;
+    in-out property <string> description;
+    callback write(int, string);
+    callback pick-icon;
+    callback remove-icon;
+    property <bool> ready: !root.prompt.saving;
+    spacing: 16px;
+    SettingsTitle { text: "Server Profile"; }
+    Label { text: "Customize how your server appears in invite links and, if enabled, in Server Discovery and Announcement Channel messages."; }
+    VerticalLayout {
+        spacing: 8px;
+        SettingsHeading { text: "NAME"; }
+        TextField {
+            text <=> root.name; label: "Server name"; enabled: root.ready;
+            edited(text) => { root.write(0, text); }
+        }
+    }
+    VerticalLayout {
+        spacing: 8px;
+        SettingsHeading { text: "ICON"; }
+        HorizontalLayout {
+            spacing: 16px; alignment: start;
+            Avatar {
+                size: 80px; initial: root.prompt.profile.initial;
+                picture-url: root.prompt.profile.icon-url; picture: root.prompt.profile.new-icon;
+            }
+            VerticalLayout {
+                spacing: 8px; alignment: center;
+                Label { text: root.prompt.profile.reading ? "Reading the picture..." : "We recommend an image of at least 512x512."; }
+                HorizontalLayout {
+                    spacing: 8px; alignment: start;
+                    ActionButton {
+                        text: "Change Server Icon"; enabled: root.ready && !root.prompt.profile.reading;
+                        clicked => { root.pick-icon(); }
+                    }
+                    if root.prompt.profile.has-icon: ActionButton {
+                        text: "Remove Icon"; ghost: true; enabled: root.ready;
+                        clicked => { root.remove-icon(); }
+                    }
+                }
+            }
+        }
+    }
+    VerticalLayout {
+        spacing: 8px;
+        SettingsHeading { text: "DESCRIPTION"; }
+        SettingsArea {
+            text <=> root.description; label: "Description"; enabled: root.ready;
+            placeholder: "Tell people what your server is about.";
+            left: root.prompt.profile.description-left;
+            edited(text) => { root.write(1, text); }
+        }
+    }
+}
+
+// A Discord server's settings, covering the window: the pages this account
+// may change down the left, the chosen one on the right, and Discord's bar
+// over its bottom once the page has unsaved changes. Leaving the page or the
+// settings waits until they're reset or saved.
+export component ServerSettingsScreen inherits Rectangle {
+    in property <ServerSettingsPrompt> prompt;
+    in-out property <string> name;
+    in-out property <string> description;
+    callback choose(int);
+    /// A text changed: 0 the name, 1 the description.
+    callback write(int, string);
+    callback pick-icon;
+    callback remove-icon;
+    callback undo;
+    callback save;
+    callback close;
+    property <bool> bar: root.prompt.changed || root.prompt.saving;
+    frame := SettingsFrame {
+        rows: root.prompt.rows; selected: root.prompt.section; label: "Server settings";
+        bottom: root.bar ? 140px : 56px;
+        chose(id) => { root.choose(id); }
+        close => { root.close(); }
+        if root.prompt.loading: Label { text: "Loading..."; }
+        if root.prompt.loaded && root.prompt.section == 0: ServerProfileSection {
+            prompt: root.prompt; name <=> root.name; description <=> root.description;
+            write(field, text) => { root.write(field, text); }
+            pick-icon => { root.pick-icon(); }
+            remove-icon => { root.remove-icon(); }
+        }
+        if root.prompt.problem != "": Text { text: root.prompt.problem; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
+        if root.prompt.error != "": Text { text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
+    }
+    if root.bar: UnsavedBar {
+        x: frame.content-x + 24px; width: min(700px, frame.content-width - 48px);
+        y: root.height - self.height - 24px;
+        border-radius: 8px; drop-shadow-blur: 16px; drop-shadow-color: #00000066; drop-shadow-offset-y: 4px;
+        saving: root.prompt.saving; may-save: root.prompt.may-save; nudge: root.prompt.nudge;
+        // The fields go still while Discord takes the change, so Escape
+        // goes to the frame.
+        undo => { frame.focus-keys(); root.undo(); }
+        save => { frame.focus-keys(); root.save(); }
+    }
+}

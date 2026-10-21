@@ -75,6 +75,9 @@ pub fn command(
     let Some(command) = gifs::command(command, discord, events) else {
         return;
     };
+    let Some(command) = super::server_settings::command(command, discord, events) else {
+        return;
+    };
     let room = match &command {
         Command::Open(room)
         | Command::Send { room, .. }
@@ -579,6 +582,14 @@ pub fn live(
         tokio::spawn(yapfast_discord::service::keep_favorite_gifs(
             favorites.clone(),
         ));
+        return;
+    }
+    if let Ok(Live::MfaRequired { id, methods }) = &event {
+        let methods = methods
+            .iter()
+            .map(|&method| super::server_settings::method(method))
+            .collect();
+        let _ = events.send(Event::MfaRequired { id: *id, methods });
         return;
     }
     if let Ok(Live::PlacesUsed(places)) = &event {

@@ -11,6 +11,7 @@ use crate::{
     captcha::Captcha,
     client,
     limits::{self, Limits, Refusals, Stopped},
+    mfa,
     settings::{self, CustomStatus},
 };
 
@@ -157,6 +158,29 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
+/// Discord's own code and words for a refusal, in its error's chain: `{:#}`
+/// shows them, and [`code`] finds the code.
+#[derive(Debug)]
+pub struct DiscordError {
+    pub code: u64,
+    pub message: String,
+}
+
+impl std::fmt::Display for DiscordError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "code {}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for DiscordError {}
+
+/// The code Discord refused a request with, if it gave one.
+pub fn code(error: &anyhow::Error) -> Option<u64> {
+    error
+        .downcast_ref::<DiscordError>()
+        .map(|refusal| refusal.code)
+}
+
 /// Whether a failed [`Api::download`] may work if tried later: Discord was
 /// out of reach, failed or asked Yapfast to slow down, rather than refusing the
 /// file or Yapfast refusing what came.
@@ -259,6 +283,11 @@ impl Api {
             .http
             .request(method, format!("{}{path}", self.base))
             .header("X-Super-Properties", client::super_properties());
+        // A request sent again once confirmed carries what confirmed it.
+        let request = match mfa::token() {
+            Some(confirmed) => request.header("X-Discord-MFA-Authorization", confirmed),
+            None => request,
+        };
         let token = self.token();
         if token.is_empty() {
             return request;
@@ -1077,6 +1106,54 @@ impl Api {
             .await
     }
 
+    /// Turns a confirmation into the token a request held back for
+    /// two-factor authentication goes again with: `data` is the code, the
+    /// password or the backup code, by `method`.
+    pub async fn finish_mfa(
+        &self,
+        ticket: &str,
+        method: mfa::Method,
+        data: &str,
+    ) -> Result<String> {
+        let body = json!({"ticket": ticket, "mfa_type": method.name(), "data": data});
+        let answer = self
+            .json(with_json(self.request(Method::POST, "/mfa/finish"), &body))
+            .await?;
+        answer["token"]
+            .as_str()
+            .map(str::to_owned)
+            .context("Discord gave no token for the confirmation")
+    }
+
+    /// Has Discord text a code for a ticket; it answers with the phone
+    /// number it went to, partly hidden.
+    pub async fn send_mfa_sms(&self, ticket: &str) -> Result<String> {
+        let body = json!({"ticket": ticket});
+        let answer = self
+            .json(with_json(
+                self.request(Method::POST, "/auth/mfa/sms/send"),
+                &body,
+            ))
+            .await?;
+        Ok(answer["phone"].as_str().unwrap_or_default().to_owned())
+    }
+
+    /// A server's profile, as its settings' Server Profile page shows it:
+    /// its name, icon and description, among more.
+    pub async fn server_profile(&self, guild: &str) -> Result<Value> {
+        let path = format!("/guilds/{guild}/profile");
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Changes a server's profile, as Server Profile's Save Changes does;
+    /// it takes Manage Server. Discord answers with the profile, and
+    /// GUILD_UPDATE.
+    pub async fn modify_server_profile(&self, guild: &str, body: &Value) -> Result<Value> {
+        let path = format!("/guilds/{guild}/profile");
+        self.json(with_json(self.request(Method::PATCH, &path), body))
+            .await
+    }
+
     /// Changes this account's user: its display name and avatar, as
     /// Discord's profile editor sends them. Discord answers with the user,
     /// and USER_UPDATE.
@@ -1480,9 +1557,19 @@ fn refusal(status: StatusCode, body: &Value) -> anyhow::Error {
     // The status stays at its root, for callers to tell refusals apart.
     let detail = anyhow::Error::new(Refused(status));
     let detail = match (body["code"].as_u64(), body["message"].as_str()) {
-        (Some(code), Some(message)) => detail.context(format!("code {code}: {message}")),
+        (Some(code), Some(message)) => detail.context(DiscordError {
+            code,
+            message: message.to_owned(),
+        }),
         _ => detail,
     };
+    // A request held back for two-factor authentication carries its ticket.
+    if status == StatusCode::UNAUTHORIZED
+        && body["code"] == mfa::MFA_REQUIRED
+        && let Some(required) = mfa::Required::from_body(body)
+    {
+        return detail.context(required);
+    }
     detail.context(match (status, body["code"].as_u64()) {
         (_, Some(UNKNOWN_USERNAME)) => anyhow!("Discord has nobody by that username."),
         (_, Some(REQUESTS_CLOSED)) => {
@@ -1498,6 +1585,21 @@ fn refusal(status: StatusCode, body: &Value) -> anyhow::Error {
         }
         (_, Some(SERVER_FULL)) => anyhow!("This server is full."),
         (_, Some(INVITES_PAUSED)) => anyhow!("This server has paused invites."),
+        (_, Some(mfa::INVALID_MFA)) => anyhow!("That didn't work. Check it and try again."),
+        (_, Some(mfa::MFA_REQUIRED)) => {
+            anyhow!("Discord asks for two-factor authentication, which Yapfast can't do here.")
+        }
+        (_, Some(MISSING_PERMISSIONS)) => {
+            anyhow!("You don't have permission to do that in this server.")
+        }
+        (StatusCode::BAD_REQUEST, Some(INVALID_FORM_BODY)) if form_errors(body).is_some() => {
+            anyhow!(form_errors(body).unwrap_or_default())
+        }
+        // Only a 401 without a code of its own is about the login.
+        (StatusCode::UNAUTHORIZED, Some(code)) if code != 0 => match body["message"].as_str() {
+            Some(message) => anyhow!("Discord refused: {message}"),
+            None => anyhow!("Discord answered {status}."),
+        },
         _ => match status {
             StatusCode::UNAUTHORIZED => anyhow!(UNAUTHORIZED),
             StatusCode::FORBIDDEN => {
@@ -1527,6 +1629,44 @@ fn refusal(status: StatusCode, body: &Value) -> anyhow::Error {
     })
 }
 
+/// What Discord found wrong in a form it refused (code 50035), field by
+/// field, as "Name: Must be between 2 and 100 in length."; none when it
+/// named no field.
+fn form_errors(body: &Value) -> Option<String> {
+    fn walk(value: &Value, field: &str, found: &mut Vec<String>) {
+        let Some(object) = value.as_object() else {
+            return;
+        };
+        if let Some(errors) = object.get("_errors").and_then(Value::as_array) {
+            for error in errors {
+                if let Some(message) = error["message"].as_str() {
+                    found.push(match field {
+                        "" => message.to_owned(),
+                        field => format!("{field}: {message}"),
+                    });
+                }
+            }
+        }
+        for (key, value) in object.iter().filter(|(key, _)| *key != "_errors") {
+            // An index names the field around it: `traits.0.label` is a
+            // trait's label.
+            let field = if key.bytes().all(|byte| byte.is_ascii_digit()) {
+                field.to_owned()
+            } else {
+                let mut words = key.replace('_', " ");
+                if let Some(first) = words.get_mut(..1) {
+                    first.make_ascii_uppercase();
+                }
+                words
+            };
+            walk(value, &field, found);
+        }
+    }
+    let mut found = Vec::new();
+    walk(&body["errors"], "", &mut found);
+    (!found.is_empty()).then(|| found.join(" "))
+}
+
 /// Discord's error codes that Yapfast words itself.
 const REQUESTS_CLOSED: u64 = 80000;
 const UNKNOWN_USERNAME: u64 = 80004;
@@ -1537,6 +1677,8 @@ const BANNED: u64 = 40007;
 const TOO_MANY_SERVERS: u64 = 30001;
 const SERVER_FULL: u64 = 30019;
 const INVITES_PAUSED: u64 = 40069;
+const MISSING_PERMISSIONS: u64 = 50013;
+const INVALID_FORM_BODY: u64 = 50035;
 
 /// The X-Context-Properties header Discord's client sends: where an action
 /// happened, as base64 JSON.
@@ -1769,5 +1911,47 @@ mod tests {
         assert!(!super::discord_file(
             "https://cdn.discordapp.com.example.com/a.png"
         ));
+    }
+
+    #[test]
+    fn refusals_carry_discords_code_and_say_what_went_wrong() {
+        use super::{StatusCode, code, mfa, refusal};
+        use serde_json::json;
+        let form = json!({"code": 50035, "message": "Invalid Form Body", "errors": {
+            "name": {"_errors": [{"code": "BASE_TYPE_BAD_LENGTH", "message": "Must be between 2 and 100 in length."}]},
+            "traits": {"0": {"label": {"_errors": [{"message": "Too long."}]}}},
+        }});
+        let error = refusal(StatusCode::BAD_REQUEST, &form);
+        assert_eq!(code(&error), Some(50035));
+        assert_eq!(
+            error.to_string(),
+            "Name: Must be between 2 and 100 in length. Label: Too long."
+        );
+
+        let denied = json!({"code": 50013, "message": "Missing Permissions"});
+        let error = refusal(StatusCode::FORBIDDEN, &denied);
+        assert_eq!(
+            error.to_string(),
+            "You don't have permission to do that in this server."
+        );
+
+        let held = json!({"code": 60003, "message": "Two factor is required for this operation",
+            "mfa": {"ticket": "t", "methods": [{"type": "totp"}]}});
+        let error = refusal(StatusCode::UNAUTHORIZED, &held);
+        let required = error.downcast_ref::<mfa::Required>().unwrap();
+        assert_eq!(required.methods, [mfa::Method::Totp]);
+        assert_eq!(code(&error), Some(60003));
+
+        // Only a 401 without a code is about the login.
+        let other = json!({"code": 50001, "message": "Missing Access"});
+        assert_eq!(
+            refusal(StatusCode::UNAUTHORIZED, &other).to_string(),
+            "Discord refused: Missing Access"
+        );
+        let login = json!({"code": 0, "message": "401: Unauthorized"});
+        assert_eq!(
+            refusal(StatusCode::UNAUTHORIZED, &login).to_string(),
+            super::UNAUTHORIZED
+        );
     }
 }

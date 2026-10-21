@@ -425,6 +425,9 @@ pub enum Permission {
     ManageThreads,
     /// Join a voice channel.
     Connect,
+    /// Any permission that opens the server's settings: Manage Server,
+    /// Manage Roles, Ban Members and more, as Discord's client has them.
+    Settings,
     /// Mute, deafen, and move or disconnect members in voice channels.
     MuteMembers,
     DeafenMembers,
@@ -2007,6 +2010,90 @@ pub enum DiscordCommand {
         server: Option<String>,
         change: Box<ProfileChange>,
     },
+    /// Confirm a request Discord held back for two-factor authentication,
+    /// by its prompt's id, with a code, password or backup code;
+    /// [`Event::MfaFinished`] follows, and the request goes again.
+    FinishMfa {
+        id: u64,
+        method: MfaMethod,
+        code: String,
+    },
+    /// Have Discord text a code for a prompt; [`Event::MfaTexted`] follows.
+    TextMfa(u64),
+    /// Give up on a prompt; the request waiting on it fails.
+    CancelMfa(u64),
+    /// A page of a Discord server's settings, by its server id, as it
+    /// opens; [`Event::ServerSettingsLoaded`] follows.
+    ServerSettings {
+        server: String,
+        section: SettingsSection,
+    },
+    /// Read the picture at `path` for a server, as Discord takes it, with a
+    /// preview; [`Event::ServerPicture`] follows.
+    ServerPicture {
+        kind: ServerPicture,
+        path: PathBuf,
+    },
+    /// Save what changed on a page of a Discord server's settings;
+    /// [`Event::ServerSettingsSaved`] follows.
+    SaveServerSettings {
+        server: String,
+        change: Box<ServerSettingsChange>,
+    },
+}
+
+/// A way to confirm with two-factor authentication, as Discord offers them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MfaMethod {
+    /// A passkey or security key, which takes Discord's app.
+    Passkey,
+    /// A code from an authenticator app.
+    App,
+    /// A code Discord texts.
+    Sms,
+    Password,
+    /// One of the account's backup codes.
+    Backup,
+}
+
+/// A page of a Discord server's settings, as its sidebar lists them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsSection {
+    Profile,
+}
+
+/// A picture of a Discord server's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerPicture {
+    Icon,
+}
+
+/// What a page of a Discord server's settings shows, as Discord sent it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ServerSettingsPage {
+    Profile(ServerProfile),
+}
+
+/// A Discord server's profile, as Server Profile shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerProfile {
+    pub name: String,
+    pub description: String,
+    /// The address of its icon, when it has one; see
+    /// [`DiscordCommand::Pictures`].
+    pub icon: Option<String>,
+}
+
+/// What saving a page of a Discord server's settings changes: each field
+/// that does.
+#[derive(Clone, Debug)]
+pub enum ServerSettingsChange {
+    Profile {
+        name: Option<String>,
+        description: Option<String>,
+        /// A new icon, or `None` to remove it.
+        icon: Option<Option<PickedPicture>>,
+    },
 }
 
 /// This account's profile as its editor shows it, in a Discord server or
@@ -2349,6 +2436,46 @@ pub enum Event {
     ProfileSaved {
         server: Option<String>,
         result: Result<(), String>,
+    },
+    /// Discord holds a request back until this account confirms with
+    /// two-factor authentication, by one of `methods` in Discord's order;
+    /// [`DiscordCommand::FinishMfa`] or [`DiscordCommand::CancelMfa`]
+    /// answers it by `id`.
+    MfaRequired {
+        id: u64,
+        methods: Vec<MfaMethod>,
+    },
+    /// Whether Discord took a confirmation, or why not; the prompt stays
+    /// open for another try when it didn't.
+    MfaFinished {
+        id: u64,
+        result: Result<(), String>,
+    },
+    /// Where Discord texted a code for a prompt, or why it didn't.
+    MfaTexted {
+        id: u64,
+        result: Result<String, String>,
+    },
+    /// A page of a Discord server's settings, by its server id, as
+    /// [`DiscordCommand::ServerSettings`] asked, or why Discord didn't give
+    /// it.
+    ServerSettingsLoaded {
+        server: String,
+        section: SettingsSection,
+        result: Result<ServerSettingsPage, String>,
+    },
+    /// The picture [`DiscordCommand::ServerPicture`] read, from `path`, or
+    /// why it can't be one.
+    ServerPicture {
+        kind: ServerPicture,
+        path: PathBuf,
+        result: Result<PickedPicture, String>,
+    },
+    /// The page Discord took the change to a server's settings on, as it
+    /// now stands, or why Discord didn't take it.
+    ServerSettingsSaved {
+        server: String,
+        result: Result<ServerSettingsPage, String>,
     },
     /// Whether this account left a Discord server, by its server id, or why
     /// not.

@@ -105,6 +105,9 @@ pub enum MenuChoice {
     /// Change this account's nickname in a Discord server, through a
     /// member's nickname dialog.
     EditServerProfile,
+    /// Open a Discord server's settings, to the pages this account may
+    /// change.
+    ServerSettings,
 }
 
 /// How long [`MenuChoice::Mute`] mutes for, as Discord's client offers.

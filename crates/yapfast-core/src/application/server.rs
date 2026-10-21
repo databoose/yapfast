@@ -54,6 +54,7 @@ fn bits(permission: Permission) -> u64 {
         Permission::SendPolls => permission::SEND_POLLS,
         Permission::ManageThreads => permission::MANAGE_THREADS,
         Permission::Connect => permission::CONNECT,
+        Permission::Settings => permission::SETTINGS,
         Permission::MuteMembers => permission::MUTE_MEMBERS,
         Permission::DeafenMembers => permission::DEAFEN_MEMBERS,
         Permission::MoveMembers => permission::MOVE_MEMBERS,
@@ -131,6 +132,16 @@ impl Application {
         }
         let _ = (place, user, roles);
         false
+    }
+
+    /// The boost level of the Discord server a place names: 0 to 3.
+    pub fn premium_tier(&self, place: &str) -> u8 {
+        #[cfg(feature = "discord")]
+        if let Some((server, _, _)) = self.discord_place(place) {
+            return server.premium_tier;
+        }
+        let _ = place;
+        0
     }
 
     /// Whether this account may give `role` to someone, or take it, in the

@@ -2879,6 +2879,7 @@ async fn talks_to_the_fake_server() {
     finds_gifs_as_discords_client_does(&discord, server, &guild, &general).await;
     starts_threads_as_discords_client_does(&discord, server, &guild, &general).await;
     posts_in_a_forum_as_discords_client_does(&discord, server, &guild).await;
+    changes_server_settings_as_discords_client_does(&discord, server, &guild).await;
 
     // Leaving "Server", which Bob owns, takes it out of her list; the fake
     // lets her back in, so the tests after these find it again.
@@ -2921,6 +2922,125 @@ async fn talks_to_the_fake_server() {
     // Signing out ends the session on Discord.
     discord.logout().await.unwrap();
     assert_eq!(self::control(server, "GET", "/_control/logouts", ""), "1");
+}
+
+/// Changing "Server"'s profile in its settings as Discord's client does,
+/// which Crew's Manage Server allows, and confirming with 2FA what Discord
+/// holds back; part of [`talks_to_the_fake_server`], whose session it
+/// shares. It puts "Server" and its members back after.
+async fn changes_server_settings_as_discords_client_does(
+    discord: &Discord,
+    server: &str,
+    guild: &str,
+) {
+    use serde_json::json;
+    use yapfast_discord::mfa::Method;
+    let profile = discord.guild_profile(guild).await.unwrap();
+    assert_eq!(
+        (profile.name.as_str(), profile.description.as_str()),
+        ("Server", "")
+    );
+    assert!(profile.icon.is_some());
+
+    // Discord's own words for a field it refuses.
+    let refused = discord
+        .save_guild_profile(guild, &json!({"name": "S"}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        "Name: Must be between 2 and 100 in length."
+    );
+    let saved = discord
+        .save_guild_profile(
+            guild,
+            &json!({"name": "Crew", "description": "Where we talk", "icon": null}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (saved.name.as_str(), saved.description.as_str(), saved.icon),
+        ("Crew", "Where we talk", None)
+    );
+    snapshot_where(discord, |snapshot| {
+        snapshot
+            .servers
+            .iter()
+            .any(|known| known.id == guild && known.name == "Crew" && known.icon.is_none())
+    })
+    .await;
+
+    // Once "Server" requires 2FA for moderation, a kick waits for her to
+    // confirm, and goes again with the token; a wrong code leaves the
+    // prompt open.
+    post_control(
+        server,
+        "/_control/mfa",
+        r#"{"methods": ["totp", "backup"]}"#,
+    );
+    let dave = "1400000000000000004";
+    let mut live = discord.live();
+    let required = |live: Live| match live {
+        Live::MfaRequired { id, methods } => Some((id, methods)),
+        _ => None,
+    };
+    let kick = tokio::spawn({
+        let (discord, guild) = (discord.clone(), guild.to_owned());
+        async move {
+            discord
+                .stepping_up(|| discord.kick(&guild, dave, "spam"))
+                .await
+        }
+    });
+    let (id, methods) = live_where(&mut live, required).await;
+    assert_eq!(methods, [Method::Totp, Method::Backup]);
+    let wrong = discord
+        .finish_mfa(id, Method::Totp, "000000")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        wrong.to_string(),
+        "That didn't work. Check it and try again."
+    );
+    discord
+        .finish_mfa(id, Method::Totp, "123456")
+        .await
+        .unwrap();
+    kick.await.unwrap().unwrap();
+
+    // Cancelling fails what waits.
+    let save = tokio::spawn({
+        let (discord, guild) = (discord.clone(), guild.to_owned());
+        async move {
+            let body = json!({"name": "Server"});
+            discord
+                .stepping_up(|| discord.save_guild_profile(&guild, &body))
+                .await
+        }
+    });
+    let (id, _) = live_where(&mut live, required).await;
+    discord.cancel_mfa(id);
+    assert_eq!(
+        save.await.unwrap().unwrap_err().to_string(),
+        "Two-factor authentication was cancelled."
+    );
+    let tried: serde_json::Value =
+        serde_json::from_str(&control(server, "GET", "/_control/mfa", "")).unwrap();
+    assert_eq!(
+        tried,
+        json!([{"mfa_type": "totp", "data": "000000"}, {"mfa_type": "totp", "data": "123456"}])
+    );
+
+    post_control(server, "/_control/mfa?off", "");
+    post_control(server, "/_control/guild-reset", "");
+    post_control(server, "/_control/members-reset", "");
+    snapshot_where(discord, |snapshot| {
+        snapshot
+            .servers
+            .iter()
+            .any(|known| known.id == guild && known.name == "Server")
+    })
+    .await;
 }
 
 /// Editing her main profile as Discord's client does, then putting it

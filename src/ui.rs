@@ -51,6 +51,7 @@ mod placement;
 mod polls;
 mod profile;
 mod refresh;
+mod server_settings;
 mod shell;
 mod theme;
 mod tiles;
@@ -639,23 +640,28 @@ fn control(path: PathBuf, shell: Rc<shell::Shell>) -> slint::Timer {
                     }
                     "quit" => slint::quit_event_loop().map_err(|error| error.to_string().into()),
                     // `pick avatar PATH` or `pick banner PATH` chooses a
-                    // picture in the server profile editor.
+                    // picture in the server profile editor, and `pick icon
+                    // PATH` a server's icon in its settings.
                     command if command.starts_with("pick ") => {
                         let (kind, path) =
                             command["pick ".len()..].split_once(' ').unwrap_or_default();
-                        let kind = if kind == "banner" {
-                            ProfilePicture::Banner
-                        } else {
-                            ProfilePicture::Avatar
+                        let path = PathBuf::from(path);
+                        let action = match kind {
+                            "icon" => Action::PickServerPicture {
+                                kind: yapfast_core::chat::ServerPicture::Icon,
+                                path,
+                            },
+                            "banner" => Action::PickProfilePicture {
+                                kind: ProfilePicture::Banner,
+                                path,
+                            },
+                            _ => Action::PickProfilePicture {
+                                kind: ProfilePicture::Avatar,
+                                path,
+                            },
                         };
                         if let Some(window) = window {
-                            adapter.borrow_mut().action(
-                                &window,
-                                Action::PickProfilePicture {
-                                    kind,
-                                    path: PathBuf::from(path),
-                                },
-                            );
+                            adapter.borrow_mut().action(&window, action);
                         }
                         Ok(())
                     }
@@ -1202,6 +1208,7 @@ struct Icons {
     // A Discord server's and channel's menus.
     create: slint::Image,
     create_category: slint::Image,
+    settings: slint::Image,
     edit: slint::Image,
     duplicate: slint::Image,
     delete: slint::Image,
@@ -1409,6 +1416,7 @@ impl Adapter {
             create_category: slint::Image::load_from_svg_data(include_bytes!(
                 "../ui/icons/folder-plus.svg"
             ))?,
+            settings: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/settings.svg"))?,
             edit: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/pencil.svg"))?,
             duplicate: slint::Image::load_from_svg_data(include_bytes!(
                 "../ui/icons/copy-plus.svg"
@@ -1911,12 +1919,19 @@ impl Adapter {
         // stays as it is.
         let composing = matches!(action, Action::SetDraft(_) | Action::MentionQuery(_));
         let profiling = matches!(action, Action::WriteProfile { .. });
+        let setting = matches!(
+            action,
+            Action::WriteServerSetting { .. } | Action::WriteMfa(_)
+        );
         let effects = self.app.dispatch(action);
         self.execute(effects);
         if composing {
             self.show_composer(window);
         } else if profiling {
             self.show_profile_editor(window);
+        } else if setting {
+            self.show_server_settings(window);
+            self.show_mfa(window);
         } else {
             self.refresh(window);
         }
