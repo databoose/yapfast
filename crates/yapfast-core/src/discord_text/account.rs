@@ -996,14 +996,17 @@ fn manage_channel(
                 };
                 let parent = parent.as_deref().and_then(channel);
                 let copy_of = copy_of.as_deref().and_then(channel);
+                let chosen = settings(&chosen);
                 let made = discord
-                    .create_channel(
-                        &guild,
-                        code,
-                        parent.as_deref(),
-                        copy_of.as_deref(),
-                        &settings(&chosen),
-                    )
+                    .stepping_up(|| {
+                        discord.create_channel(
+                            &guild,
+                            code,
+                            parent.as_deref(),
+                            copy_of.as_deref(),
+                            &chosen,
+                        )
+                    })
                     .await
                     .map(|id| Some(discord::room_id(&guild, &id)));
                 (made, "make the channel")
@@ -1013,9 +1016,12 @@ fn manage_channel(
                 kind,
                 settings: chosen,
             } => {
+                let chosen = settings(&chosen);
                 let result = match channel(&room) {
                     Some(id) => discord
-                        .edit_channel(&id, kind == ChannelKind::Text, &settings(&chosen))
+                        .stepping_up(|| {
+                            discord.edit_channel(&id, kind == ChannelKind::Text, &chosen)
+                        })
                         .await
                         .map(|()| None),
                     None => Err(anyhow::anyhow!(NOT_DISCORD)),
@@ -1024,7 +1030,10 @@ fn manage_channel(
             }
             DiscordCommand::DeleteChannel { room } => {
                 let result = match channel(&room) {
-                    Some(id) => discord.delete_channel(&id).await.map(|()| None),
+                    Some(id) => discord
+                        .stepping_up(|| discord.delete_channel(&id))
+                        .await
+                        .map(|()| None),
                     None => Err(anyhow::anyhow!(NOT_DISCORD)),
                 };
                 (result, "delete the channel")
@@ -1129,11 +1138,15 @@ fn change_person(
                 let dialog = from_dialog(&change);
                 let (result, what) = match change {
                     MemberChange::Nickname(nick) => (
-                        discord.set_member_nick(guild, &user, &nick).await,
+                        discord
+                            .stepping_up(|| discord.set_member_nick(guild, &user, &nick))
+                            .await,
                         "change the nickname",
                     ),
                     MemberChange::Role { role, add } => (
-                        discord.member_role(guild, &user, &role, add).await,
+                        discord
+                            .stepping_up(|| discord.member_role(guild, &user, &role, add))
+                            .await,
                         if add {
                             "give the role"
                         } else {
@@ -1141,25 +1154,34 @@ fn change_person(
                         },
                     ),
                     MemberChange::Timeout { until_ms, reason } => (
-                        discord.time_out(guild, &user, until_ms, &reason).await,
+                        discord
+                            .stepping_up(|| discord.time_out(guild, &user, until_ms, &reason))
+                            .await,
                         if until_ms.is_some() {
                             "time them out"
                         } else {
                             "remove the timeout"
                         },
                     ),
-                    MemberChange::Kick { reason } => {
-                        (discord.kick(guild, &user, &reason).await, "kick them")
-                    }
+                    MemberChange::Kick { reason } => (
+                        discord
+                            .stepping_up(|| discord.kick(guild, &user, &reason))
+                            .await,
+                        "kick them",
+                    ),
                     MemberChange::Ban {
                         delete_seconds,
                         reason,
                     } => (
-                        discord.ban(guild, &user, delete_seconds, &reason).await,
+                        discord
+                            .stepping_up(|| discord.ban(guild, &user, delete_seconds, &reason))
+                            .await,
                         "ban them",
                     ),
                     MemberChange::ServerMute(mute) => (
-                        discord.server_mute(guild, &user, mute).await,
+                        discord
+                            .stepping_up(|| discord.server_mute(guild, &user, mute))
+                            .await,
                         if mute {
                             "server mute them"
                         } else {
@@ -1167,7 +1189,9 @@ fn change_person(
                         },
                     ),
                     MemberChange::ServerDeafen(deaf) => (
-                        discord.server_deafen(guild, &user, deaf).await,
+                        discord
+                            .stepping_up(|| discord.server_deafen(guild, &user, deaf))
+                            .await,
                         if deaf {
                             "server deafen them"
                         } else {
@@ -1180,7 +1204,9 @@ fn change_person(
                             .and_then(discord::parse_room)
                             .map(|(_, channel)| channel);
                         (
-                            discord.move_member(guild, &user, channel).await,
+                            discord
+                                .stepping_up(|| discord.move_member(guild, &user, channel))
+                                .await,
                             if to.is_some() {
                                 "move them"
                             } else {

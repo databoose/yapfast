@@ -40,12 +40,14 @@ pub mod permission {
     pub const ADMINISTRATOR: u64 = 1 << 3;
     pub const MANAGE_CHANNELS: u64 = 1 << 4;
     pub const MANAGE_GUILD: u64 = 1 << 5;
+    pub const VIEW_AUDIT_LOG: u64 = 1 << 7;
     /// Deleting others' messages and removing their reactions.
     pub const MANAGE_MESSAGES: u64 = 1 << 13;
     pub const VIEW_CHANNEL: u64 = 1 << 10;
     pub const SEND_MESSAGES: u64 = 1 << 11;
     pub const READ_MESSAGE_HISTORY: u64 = 1 << 16;
     pub const MENTION_EVERYONE: u64 = 1 << 17;
+    pub const VIEW_GUILD_ANALYTICS: u64 = 1 << 19;
     pub const CONNECT: u64 = 1 << 20;
     /// Muting, deafening and moving members in voice channels; moving
     /// takes them out of voice too.
@@ -55,6 +57,9 @@ pub mod permission {
     pub const CHANGE_NICKNAME: u64 = 1 << 26;
     pub const MANAGE_NICKNAMES: u64 = 1 << 27;
     pub const MANAGE_ROLES: u64 = 1 << 28;
+    pub const MANAGE_WEBHOOKS: u64 = 1 << 29;
+    /// Changing and deleting any of a server's emoji, stickers and sounds.
+    pub const MANAGE_GUILD_EXPRESSIONS: u64 = 1 << 30;
     /// Seeing every private thread, and sending in locked ones.
     pub const MANAGE_THREADS: u64 = 1 << 34;
     pub const CREATE_PUBLIC_THREADS: u64 = 1 << 35;
@@ -62,6 +67,8 @@ pub mod permission {
     pub const SEND_MESSAGES_IN_THREADS: u64 = 1 << 38;
     /// Timing members out.
     pub const MODERATE_MEMBERS: u64 = 1 << 40;
+    /// Adding emoji, stickers and sounds, and changing one's own.
+    pub const CREATE_GUILD_EXPRESSIONS: u64 = 1 << 43;
     /// Posting polls, besides sending messages.
     pub const SEND_POLLS: u64 = 1 << 49;
     /// Pinning messages and unpinning them, which `MANAGE_MESSAGES` once gave.
@@ -71,6 +78,18 @@ pub mod permission {
     pub const BYPASS_SLOWMODE: u64 = 1 << 52;
     /// Every permission, as the owner and administrators hold.
     pub const ALL: u64 = u64::MAX;
+    /// Any of these opens a server's settings, as Discord's client has it
+    /// in `canAccessGuildSettings`.
+    pub const SETTINGS: u64 = MANAGE_GUILD
+        | MANAGE_ROLES
+        | ADMINISTRATOR
+        | BAN_MEMBERS
+        | MANAGE_NICKNAMES
+        | CREATE_GUILD_EXPRESSIONS
+        | MANAGE_GUILD_EXPRESSIONS
+        | MANAGE_WEBHOOKS
+        | VIEW_AUDIT_LOG
+        | VIEW_GUILD_ANALYTICS;
 }
 
 use permission::{
@@ -136,6 +155,9 @@ pub struct Server {
     /// as `FORWARDING_DISABLED`.
     #[serde(default)]
     pub forwarding_disabled: bool,
+    /// Verified or Partnered, which Discord's client won't give away.
+    #[serde(default)]
+    pub verified: bool,
     /// Muted in the account's notification settings; set when the service
     /// publishes it.
     pub muted: bool,
@@ -160,6 +182,10 @@ pub struct Server {
     /// Its boost level, from 0 to 3, which raises everyone's upload limit
     /// in it; see [`crate::api::upload_limit`].
     pub premium_tier: u8,
+    /// 1 when its moderators need two-factor authentication, which its
+    /// owner then needs to delete it or give it away.
+    #[serde(default)]
+    pub mfa_level: u8,
     /// Its custom emoji, by name.
     pub emojis: Arc<Vec<Emoji>>,
     /// When this account joined it, as Discord's ISO 8601 time.
@@ -894,7 +920,8 @@ impl Server {
 
     /// [`Self::server_permissions`] with a channel's or category's
     /// overwrites applied: @everyone's, the roles', then the member's.
-    fn overwritten(&self, overwrites: &[Overwrite], user: &str, roles: &[String]) -> u64 {
+    /// Channel Permissions asks it of a draft's overwrites too.
+    pub fn overwritten(&self, overwrites: &[Overwrite], user: &str, roles: &[String]) -> u64 {
         let mut permissions = self.role_permissions(user, roles);
         if permissions == permission::ALL {
             return permissions;
@@ -1144,6 +1171,15 @@ pub fn server(guild: &Value) -> Option<Server> {
         .as_str()
         .or_else(|| guild["properties"]["banner"].as_str())
         .map(|hash| self::banner(&id, hash));
+    let features = guild["features"]
+        .as_array()
+        .or_else(|| guild["properties"]["features"].as_array());
+    let has = |name: &str| {
+        features
+            .into_iter()
+            .flatten()
+            .any(|feature| feature.as_str() == Some(name))
+    };
     let premium_tier = guild["premium_tier"]
         .as_u64()
         .or_else(|| guild["properties"]["premium_tier"].as_u64())
@@ -1156,18 +1192,18 @@ pub fn server(guild: &Value) -> Option<Server> {
         member_count: guild["member_count"].as_u64(),
         owner_id,
         premium_tier: u8::try_from(premium_tier).unwrap_or(u8::MAX),
+        mfa_level: guild["mfa_level"]
+            .as_u64()
+            .or_else(|| guild["properties"]["mfa_level"].as_u64())
+            .map_or(0, |level| u8::try_from(level).unwrap_or(1)),
         emojis: Arc::new(emojis(&guild["emojis"])),
         joined_at: guild["joined_at"].as_str().map(str::to_owned),
         default_level: Level::from(&guild["properties"]["default_message_notifications"])
             .or_else(|| Level::from(&guild["default_message_notifications"]))
             .unwrap_or_default(),
         unavailable: guild["unavailable"].as_bool().unwrap_or(false),
-        forwarding_disabled: guild["features"]
-            .as_array()
-            .or_else(|| guild["properties"]["features"].as_array())
-            .into_iter()
-            .flatten()
-            .any(|feature| feature.as_str() == Some("FORWARDING_DISABLED")),
+        forwarding_disabled: has("FORWARDING_DISABLED"),
+        verified: has("VERIFIED") || has("PARTNERED"),
         ..Default::default()
     };
     for role in guild["roles"].as_array().into_iter().flatten() {
@@ -1336,6 +1372,16 @@ pub fn avatar(user: &str, hash: Option<&str>) -> String {
 /// A profile or server banner, at the profile card's widest.
 pub fn banner(user: &str, hash: &str) -> String {
     format!("{}/banners/{user}/{hash}.png?size=600", cdn())
+}
+
+/// A server's invite background, at the width its settings show it.
+pub fn splash(guild: &str, hash: &str) -> String {
+    format!("{}/splashes/{guild}/{hash}.png?size=600", cdn())
+}
+
+/// A role's icon, as its settings show it.
+pub fn role_icon(role: &str, hash: &str) -> String {
+    format!("{}/role-icons/{role}/{hash}.png?size=64", cdn())
 }
 
 /// The banner a member set for one server.

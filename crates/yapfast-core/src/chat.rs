@@ -2,7 +2,7 @@
 //! Matrix and Discord are Cargo features, so a build carries either or both.
 //! Each network runs in its own module beside this one: `matrix_chat` and
 //! `discord_text`. This module routes the UI's commands to them.
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -425,10 +425,18 @@ pub enum Permission {
     ManageThreads,
     /// Join a voice channel.
     Connect,
+    /// Any permission that opens the server's settings: Manage Server,
+    /// Manage Roles, Ban Members and more, as Discord's client has them.
+    Settings,
     /// Mute, deafen, and move or disconnect members in voice channels.
     MuteMembers,
     DeafenMembers,
     MoveMembers,
+    ViewAuditLog,
+    /// Change and delete any of a server's emoji and stickers, and add
+    /// them and change one's own.
+    ManageExpressions,
+    CreateExpressions,
 }
 
 /// Which messages notify, in a Discord server or channel.
@@ -1950,9 +1958,41 @@ pub enum DiscordCommand {
     DeleteChannel {
         room: String,
     },
+    /// Change a Discord channel's or category's overwrites, by its room id;
+    /// [`Event::OverwritesChanged`] follows.
+    ChangeOverwrites {
+        room: String,
+        change: OverwriteChange,
+    },
+    /// The names of members a channel's overwrites are for, by their user
+    /// ids; [`Event::OverwriteNames`] follows.
+    OverwriteNames {
+        room: String,
+        members: Vec<String>,
+    },
     /// Leave a Discord server, by its server id; [`Event::LeftServer`]
     /// follows.
     LeaveServer {
+        server: String,
+    },
+    /// Delete a Discord server this account owns, confirming with
+    /// two-factor authentication if Discord asks; [`Event::ServerDeleted`]
+    /// follows.
+    DeleteServer {
+        server: String,
+    },
+    /// Give a Discord server this account owns to a member, by user id,
+    /// with the code Discord emailed or none, confirming with two-factor
+    /// authentication if Discord asks; [`Event::ServerTransferred`]
+    /// follows.
+    TransferServer {
+        server: String,
+        user: String,
+        code: Option<String>,
+    },
+    /// Have Discord email the code that gives a server away;
+    /// [`Event::ServerPincodeSent`] follows.
+    SendServerPincode {
         server: String,
     },
     /// Set the Discord custom status, or clear it with `None`;
@@ -2006,6 +2046,610 @@ pub enum DiscordCommand {
     SaveProfile {
         server: Option<String>,
         change: Box<ProfileChange>,
+    },
+    /// Confirm a request Discord held back for two-factor authentication,
+    /// by its prompt's id, with a code, password or backup code;
+    /// [`Event::MfaFinished`] follows, and the request goes again.
+    FinishMfa {
+        id: u64,
+        method: MfaMethod,
+        code: String,
+    },
+    /// Have Discord text a code for a prompt; [`Event::MfaTexted`] follows.
+    TextMfa(u64),
+    /// Give up on a prompt; the request waiting on it fails.
+    CancelMfa(u64),
+    /// A page of a Discord server's settings, by its server id, as it
+    /// opens; [`Event::ServerSettingsLoaded`] follows.
+    ServerSettings {
+        server: String,
+        section: SettingsSection,
+    },
+    /// Read the picture at `path` for a server, as Discord takes it, with a
+    /// preview; [`Event::ServerPicture`] follows.
+    ServerPicture {
+        kind: ServerPicture,
+        path: PathBuf,
+    },
+    /// Save what changed on a page of a Discord server's settings;
+    /// [`Event::ServerSettingsSaved`] follows.
+    SaveServerSettings {
+        server: String,
+        change: Box<ServerSettingsChange>,
+    },
+    /// Do something on Roles in a Discord server's settings that Discord's
+    /// client does at once, without the bar.
+    RoleAction {
+        server: String,
+        action: RoleAction,
+    },
+    /// Do something on Bans in a Discord server's settings.
+    Bans {
+        server: String,
+        action: BansAction,
+    },
+    /// A page of a Discord server's audit log; [`Event::AuditLogLoaded`]
+    /// follows.
+    AuditLog {
+        server: String,
+        query: AuditQuery,
+    },
+    /// A chunk of a Discord server's members, as Members searches them;
+    /// [`Event::MembersFound`] follows, after [`Event::MembersIndexing`]
+    /// while Discord indexes the server.
+    Members {
+        server: String,
+        query: MembersQuery,
+    },
+    /// What Invites asks of Discord; [`Event::InvitesLoaded`],
+    /// [`Event::InviteRevoked`] or [`Event::ServerPaused`] follows.
+    Invites {
+        server: String,
+        action: InvitesAction,
+    },
+    /// What Emoji asks of Discord; [`Event::EmojisChanged`] follows.
+    Emoji {
+        server: String,
+        action: EmojiAction,
+    },
+    /// What Stickers asks of Discord; [`Event::StickersChanged`] follows.
+    Stickers {
+        server: String,
+        /// Boxed: a new sticker's form and file would make every command
+        /// bigger.
+        action: Box<StickerAction>,
+    },
+}
+
+/// What Emoji asks of Discord. Each is followed by the server's emoji
+/// again, as Discord's client fetches them after GUILD_EMOJIS_UPDATE.
+#[derive(Clone, Debug)]
+pub enum EmojiAction {
+    Reload,
+    /// A new emoji: its name and its picture, read for it.
+    Upload {
+        name: String,
+        picture: PickedPicture,
+    },
+    Rename {
+        id: String,
+        name: String,
+    },
+    Delete(String),
+}
+
+/// What Stickers asks of Discord; each is followed by the stickers again.
+#[derive(Clone, Debug)]
+pub enum StickerAction {
+    /// A new sticker: what the form says, and its file, read for it.
+    Upload {
+        form: StickerForm,
+        file: PickedPicture,
+    },
+    Edit {
+        id: String,
+        form: StickerForm,
+    },
+    Delete(String),
+}
+
+/// A sticker's name, related emoji, as a Unicode emoji or a custom emoji's
+/// id, and description, which may be empty.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StickerForm {
+    pub name: String,
+    pub tags: String,
+    pub description: String,
+}
+
+/// Which members Members asks Discord for: those named like `text`, in an
+/// order, Discord's `sort`, 0 for its own, after a member's join time in
+/// Unix milliseconds and user id, `limit` at most, 0 for Discord's chunk of
+/// 250.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MembersQuery {
+    pub text: String,
+    pub sort: u8,
+    pub after: Option<(u64, String)>,
+    pub limit: usize,
+}
+
+impl MembersQuery {
+    /// How many Discord is asked for.
+    pub fn chunk(&self) -> usize {
+        if self.limit == 0 {
+            crate::application::MEMBERS_CHUNK
+        } else {
+            self.limit
+        }
+    }
+}
+
+/// What Invites asks of Discord.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InvitesAction {
+    /// The list again, as after making one.
+    Reload,
+    Revoke(String),
+    /// Pause invites, DMs or both for some hours, or resume both.
+    Pause {
+        invites: bool,
+        dms: bool,
+        hours: u8,
+    },
+}
+
+/// What Bans asks of Discord.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BansAction {
+    /// The next batch, after a user's id; [`Event::BansLoaded`] follows.
+    More(String),
+    /// Bans of users named, or by id, as Discord's search finds them;
+    /// [`Event::BansLoaded`] follows.
+    Search(String),
+    /// Lift a user's ban; [`Event::Unbanned`] follows.
+    Unban(String),
+}
+
+/// What Roles does at once: each but [`RoleAction::Members`] and
+/// [`RoleAction::FindMembers`] is followed by [`Event::ServerSettingsSaved`]
+/// with the roles as they then stand.
+#[derive(Clone, Debug)]
+pub enum RoleAction {
+    /// Make a role, "new role", and open it.
+    Create,
+    /// Copy a role, as its draft stands, as `name`, just below it, and
+    /// open the copy.
+    Duplicate {
+        role: Box<RoleChange>,
+        name: String,
+    },
+    Delete(String),
+    /// The members holding a role; [`Event::RoleHolders`] follows.
+    Members(String),
+    /// Members whose names start with a text, for Add Members;
+    /// [`Event::RoleCandidates`] follows.
+    FindMembers(String),
+    AddMembers {
+        role: String,
+        members: Vec<String>,
+    },
+    RemoveMember {
+        role: String,
+        member: String,
+    },
+}
+
+/// A way to confirm with two-factor authentication, as Discord offers them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MfaMethod {
+    /// A passkey or security key, which takes Discord's app.
+    Passkey,
+    /// A code from an authenticator app.
+    App,
+    /// A code Discord texts.
+    Sms,
+    Password,
+    /// One of the account's backup codes.
+    Backup,
+}
+
+/// A page of a Discord server's settings, as its sidebar lists them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsSection {
+    Profile,
+    Engagement,
+    BoostPerks,
+    Emoji,
+    Stickers,
+    Members,
+    Roles,
+    Invites,
+    Safety,
+    AuditLog,
+    Bans,
+}
+
+/// A picture of a Discord server's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerPicture {
+    Icon,
+    Banner,
+    /// The invite background.
+    Splash,
+    /// The icon of the role open on Roles.
+    RoleIcon,
+    /// A new emoji's or sticker's.
+    Emoji,
+    Sticker,
+}
+
+/// What a page of a Discord server's settings shows, as Discord sent it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ServerSettingsPage {
+    Profile(ServerProfile),
+    /// Engagement's and Boost Perks', which the guild object holds.
+    Guild(GuildSettings),
+    Roles(ServerRoles),
+    /// The first batch of the server's bans.
+    Bans(Vec<Ban>),
+    /// The audit log's newest page.
+    AuditLog(AuditLog),
+    /// The newest members, as Members first finds them, and how many there
+    /// are in all.
+    Members {
+        members: Vec<ListedMember>,
+        total: Option<u64>,
+    },
+    /// The server's invites, and its settings, which say whether invites
+    /// are paused.
+    Invites {
+        invites: Vec<ServerInvite>,
+        settings: GuildSettings,
+    },
+    /// The server's emoji or stickers, and its settings, which give its
+    /// slots.
+    Emoji {
+        emojis: Vec<ServerEmoji>,
+        settings: GuildSettings,
+    },
+    Stickers {
+        stickers: Vec<ServerSticker>,
+        settings: GuildSettings,
+    },
+}
+
+/// A page of a Discord server's audit log, as Discord sends it: its
+/// entries, newest first, and the names they refer to.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuditLog {
+    pub entries: Vec<AuditEntry>,
+    /// The users the entries name, by id.
+    pub users: HashMap<String, AuditUser>,
+    /// The names of the webhooks, integrations, threads, events, AutoMod
+    /// rules and app commands the entries name, by id.
+    pub names: HashMap<String, String>,
+}
+
+/// Something done in a Discord server, as its audit log records it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuditEntry {
+    /// A snowflake, which holds when.
+    pub id: String,
+    /// Discord's `action_type`, such as 20 for a kick.
+    pub action: u16,
+    pub target: Option<String>,
+    /// Who did it, by user id.
+    pub user: Option<String>,
+    pub reason: Option<String>,
+    pub changes: Vec<AuditChange>,
+    /// What Discord adds for some actions, such as a count or a channel.
+    pub options: serde_json::Value,
+}
+
+/// A field an entry changed, from and to.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuditChange {
+    pub key: String,
+    pub old: serde_json::Value,
+    pub new: serde_json::Value,
+}
+
+/// A user an audit log names: their username, as Discord's log shows it,
+/// and their avatar's address.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuditUser {
+    pub name: String,
+    pub avatar: String,
+}
+
+/// Which audit log entries to fetch: before an entry's id, by a user, of
+/// an action.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuditQuery {
+    pub before: Option<String>,
+    pub user: Option<String>,
+    pub action: Option<u16>,
+}
+
+/// Someone banned from a Discord server, as Bans lists them: their name,
+/// and their username under it once they have a display name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ban {
+    pub user: RoleMember,
+    /// Why, as the moderator gave it; none from a ban made while Bans was
+    /// open, as in Discord's client.
+    pub reason: Option<String>,
+}
+
+/// What Roles shows: a server's roles and what they may have.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerRoles {
+    /// Highest first, @everyone last.
+    pub roles: Vec<RoleDetail>,
+    /// The server's boost level or features give roles icons
+    /// (`ROLE_ICONS`).
+    pub role_icons: bool,
+    /// A Community server, whose roles have Stage and Insights permissions.
+    pub community: bool,
+    /// A role to open, which the action that sent these just made.
+    pub open: Option<String>,
+}
+
+/// A role of a Discord server in full, as Roles shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RoleDetail {
+    pub id: String,
+    pub name: String,
+    pub permissions: u64,
+    /// Higher roles list first; @everyone is 0.
+    pub position: i64,
+    /// Its colour, 0 for none, and a gradient's others, which Yapfast
+    /// keeps as they are.
+    pub color: u32,
+    pub secondary_color: Option<u32>,
+    pub tertiary_color: Option<u32>,
+    /// Listed apart from online members.
+    pub hoist: bool,
+    pub mentionable: bool,
+    /// What gives it, when not people.
+    pub managed: Option<RoleManager>,
+    /// Its icon's address, or a Unicode emoji in its place.
+    pub icon: Option<String>,
+    pub unicode_emoji: Option<String>,
+    /// How many members hold it.
+    pub members: u64,
+}
+
+/// What gives a role, when people don't.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoleManager {
+    Bot,
+    Booster,
+    Integration,
+}
+
+/// A role as saving it sends it: every field, as Discord's client sends
+/// them, and its icon only when it changes.
+#[derive(Clone, Debug)]
+pub struct RoleChange {
+    pub id: String,
+    pub name: String,
+    pub permissions: u64,
+    pub color: u32,
+    pub secondary_color: Option<u32>,
+    pub tertiary_color: Option<u32>,
+    pub hoist: bool,
+    pub mentionable: bool,
+    /// A new icon, or `None` to remove it, which removes the emoji too.
+    pub icon: Option<Option<PickedPicture>>,
+    pub unicode_emoji: Option<String>,
+}
+
+/// A Discord channel's or category's change to what a role or member may
+/// do there: the bits it allows and those it denies, over the server's.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChannelOverwrite {
+    /// The role's id, the server's for @everyone, or the member's user id.
+    pub id: String,
+    pub member: bool,
+    pub allow: u64,
+    pub deny: u64,
+}
+
+/// What Channel Permissions has Discord do with a channel's overwrites.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OverwriteChange {
+    /// Set these, one at a time: a save, or a role or member added.
+    Put(Vec<ChannelOverwrite>),
+    /// Take a role's or member's off.
+    Delete(String),
+    /// Replace them all with these, the category's, as Sync Now does.
+    Sync(Vec<ChannelOverwrite>),
+}
+
+/// A member as Members lists them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedMember {
+    /// Their name here, username and avatar.
+    pub person: RoleMember,
+    pub roles: Vec<String>,
+    /// When they joined the server, in Unix milliseconds.
+    pub joined: u64,
+    /// Until when they're timed out, in Unix milliseconds; 0 for not.
+    pub timed_out_until: u64,
+    /// Discord's safety signals: unusual DMs lately, an account it
+    /// suspects of spam, a name AutoMod quarantined.
+    pub unusual_dms: bool,
+    pub spammer: bool,
+    pub quarantined: bool,
+    pub joined_by: JoinMethod,
+    /// A bot, which can't be given the server.
+    pub bot: bool,
+}
+
+/// How a member joined a server, as Members' Join Method shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum JoinMethod {
+    #[default]
+    Unknown,
+    Bot,
+    /// An integration, such as `twitch` or `youtube`.
+    Integration(Option<String>),
+    Discovery,
+    Hub,
+    /// An invite's code.
+    Invite(String),
+    Vanity(String),
+    /// Manual verification, with the invite's code if any.
+    Manual(Option<String>),
+    LinkedChannel,
+}
+
+/// A server's custom emoji, as Emoji lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerEmoji {
+    pub id: String,
+    pub name: String,
+    pub animated: bool,
+    /// Usable: a server that lost boosts keeps emoji past its slots,
+    /// unavailable.
+    pub available: bool,
+    /// Who uploaded it, when Discord says.
+    pub user: Option<RoleMember>,
+    /// Its picture's address, the one the emoji picker shows.
+    pub picture: String,
+}
+
+/// A server's sticker, as Stickers lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerSticker {
+    pub id: String,
+    pub form: StickerForm,
+    /// Discord's `format_type`: 1 PNG, 2 APNG, 3 Lottie, 4 GIF.
+    pub format: u8,
+    pub available: bool,
+    /// Who uploaded it, by id, and as a user when Discord says.
+    pub user_id: Option<String>,
+    pub user: Option<RoleMember>,
+    /// Its picture's address; none for Lottie, which isn't drawn.
+    pub picture: Option<String>,
+}
+
+/// An invite to a Discord server, as Invites lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerInvite {
+    pub code: String,
+    pub inviter: Option<RoleMember>,
+    /// The channel it leads to, as `#name`.
+    pub channel: String,
+    pub uses: u64,
+    /// Its limit, 0 for none.
+    pub max_uses: u64,
+    /// When it expires, in Unix seconds; none for never.
+    pub expires: Option<u64>,
+    /// The roles it gives, by id.
+    pub roles: Vec<String>,
+    /// New members skip join applications.
+    pub bypass: bool,
+}
+
+/// A member holding a role, as Manage Members lists them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RoleMember {
+    pub id: String,
+    pub name: String,
+    pub username: Option<String>,
+    pub avatar: String,
+}
+
+/// A Discord server's settings, as its Engagement and Boost Perks pages
+/// show them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GuildSettings {
+    /// The channel system messages go to, by its Discord id.
+    pub system_channel: Option<String>,
+    /// Which system messages Discord leaves out, each bit suppressing one:
+    /// Discord's `system_channel_flags`.
+    pub system_flags: u64,
+    /// Whether members who set nothing are notified of every message, 0,
+    /// or only of mentions, 1.
+    pub default_notifications: u8,
+    /// The voice channel idle members move to, by its Discord id, and
+    /// after how many seconds.
+    pub afk_channel: Option<String>,
+    pub afk_timeout: u32,
+    /// The addresses of its banner and invite background, when set.
+    pub banner: Option<String>,
+    pub splash: Option<String>,
+    pub progress_bar: bool,
+    /// Its boost level, 0 to 3, and Discord's features, which the level
+    /// unlocks, such as `BANNER`.
+    pub premium_tier: u8,
+    pub features: Vec<String>,
+    /// Safety Setup's: what members must have done before they may talk,
+    /// 0 nothing to 4 a verified phone; whose images Discord filters, 0 no
+    /// one, 1 those without roles, 2 everyone's; and whether moderators
+    /// need two-factor authentication, 1, or not, 0.
+    pub verification_level: u8,
+    pub explicit_content_filter: u8,
+    pub mfa_level: u8,
+    /// When paused invites and DMs resume, in Unix seconds.
+    pub invites_paused_until: Option<u64>,
+    pub dms_paused_until: Option<u64>,
+    /// The emoji slots its boosts add to each kind's 50, when Discord says.
+    pub extra_emoji_slots: Option<u16>,
+}
+
+impl GuildSettings {
+    /// Whether Discord gives the server a feature.
+    pub fn has(&self, feature: &str) -> bool {
+        self.features.iter().any(|known| known == feature)
+    }
+}
+
+/// A Discord server's profile, as Server Profile shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerProfile {
+    pub name: String,
+    pub description: String,
+    /// The address of its icon, when it has one; see
+    /// [`DiscordCommand::Pictures`].
+    pub icon: Option<String>,
+}
+
+/// What saving a page of a Discord server's settings changes: each field
+/// that does.
+#[derive(Clone, Debug)]
+pub enum ServerSettingsChange {
+    Profile {
+        name: Option<String>,
+        description: Option<String>,
+        /// A new icon, or `None` to remove it.
+        icon: Option<Option<PickedPicture>>,
+    },
+    /// Engagement's and Boost Perks', saved with `PATCH /guilds/{id}`.
+    Guild {
+        /// A channel by its Discord id, or `None` for none.
+        system_channel: Option<Option<String>>,
+        system_flags: Option<u64>,
+        default_notifications: Option<u8>,
+        afk_channel: Option<Option<String>>,
+        afk_timeout: Option<u32>,
+        banner: Option<Option<PickedPicture>>,
+        splash: Option<Option<PickedPicture>>,
+        progress_bar: Option<bool>,
+        verification_level: Option<u8>,
+        explicit_content_filter: Option<u8>,
+    },
+    /// Whether moderators need two-factor authentication, 1, or not, 0,
+    /// saved with `POST /guilds/{id}/mfa`.
+    MfaLevel(u8),
+    /// Roles': the roles that move, as `(id, position)`, then the open
+    /// role, if it changed.
+    Roles {
+        positions: Vec<(String, i64)>,
+        role: Option<Box<RoleChange>>,
     },
 }
 
@@ -2330,6 +2974,17 @@ pub enum Event {
     /// Whether Discord made, changed or deleted the channel a dialog asked
     /// it to: the room id of one it made, or why it didn't.
     ChannelSaved(Result<Option<String>, String>),
+    /// Whether Discord took a [`DiscordCommand::ChangeOverwrites`], or why
+    /// not.
+    OverwritesChanged {
+        room: String,
+        result: Result<(), String>,
+    },
+    /// The members [`DiscordCommand::OverwriteNames`] asked about, named.
+    OverwriteNames {
+        room: String,
+        members: Vec<RoleMember>,
+    },
     /// This account's profile in a Discord server, by its server id, or
     /// its main profile, as [`DiscordCommand::OwnProfile`] asked, or why
     /// Discord didn't give it.
@@ -2350,9 +3005,173 @@ pub enum Event {
         server: Option<String>,
         result: Result<(), String>,
     },
+    /// Discord holds a request back until this account confirms with
+    /// two-factor authentication, by one of `methods` in Discord's order;
+    /// [`DiscordCommand::FinishMfa`] or [`DiscordCommand::CancelMfa`]
+    /// answers it by `id`.
+    MfaRequired {
+        id: u64,
+        methods: Vec<MfaMethod>,
+    },
+    /// Whether Discord took a confirmation, or why not; the prompt stays
+    /// open for another try when it didn't.
+    MfaFinished {
+        id: u64,
+        result: Result<(), String>,
+    },
+    /// Where Discord texted a code for a prompt, or why it didn't.
+    MfaTexted {
+        id: u64,
+        result: Result<String, String>,
+    },
+    /// A page of a Discord server's settings, by its server id, as
+    /// [`DiscordCommand::ServerSettings`] asked, or why Discord didn't give
+    /// it.
+    ServerSettingsLoaded {
+        server: String,
+        section: SettingsSection,
+        result: Result<ServerSettingsPage, String>,
+    },
+    /// The picture [`DiscordCommand::ServerPicture`] read, from `path`, or
+    /// why it can't be one.
+    ServerPicture {
+        kind: ServerPicture,
+        path: PathBuf,
+        result: Result<PickedPicture, String>,
+    },
+    /// A Discord server's settings changed, by its server id, as
+    /// GUILD_UPDATE gives them, for its open settings to follow.
+    ServerSettingsChanged {
+        server: String,
+        settings: Box<GuildSettings>,
+    },
+    /// The page Discord took the change to a server's settings on, as it
+    /// now stands, or why Discord didn't take it.
+    ServerSettingsSaved {
+        server: String,
+        result: Result<ServerSettingsPage, String>,
+    },
+    /// A role was made or changed elsewhere, or by this account, as
+    /// GUILD_ROLE_CREATE and GUILD_ROLE_UPDATE give it, for an open Roles
+    /// to follow; its member count isn't known.
+    ServerRoleChanged {
+        server: String,
+        role: Box<RoleDetail>,
+    },
+    ServerRoleDeleted {
+        server: String,
+        role: String,
+    },
+    /// Bans Discord sent for [`BansAction::More`] or [`BansAction::Search`],
+    /// or why not.
+    BansLoaded {
+        server: String,
+        searched: bool,
+        result: Result<Vec<Ban>, String>,
+    },
+    /// The audit log page [`DiscordCommand::AuditLog`] asked for, or why
+    /// Discord didn't send it.
+    AuditLogLoaded {
+        server: String,
+        query: AuditQuery,
+        result: Result<AuditLog, String>,
+    },
+    /// The members [`DiscordCommand::Members`] asked for, and how many
+    /// match in all, or why Discord didn't send them.
+    MembersFound {
+        server: String,
+        query: MembersQuery,
+        result: Result<(Vec<ListedMember>, Option<u64>), String>,
+    },
+    /// Discord is indexing the server before it can search its members.
+    MembersIndexing {
+        server: String,
+        query: MembersQuery,
+    },
+    /// A server's invites again, or why not.
+    InvitesLoaded {
+        server: String,
+        result: Result<Vec<ServerInvite>, String>,
+    },
+    /// Whether Discord revoked an invite.
+    InviteRevoked {
+        server: String,
+        code: String,
+        result: Result<(), String>,
+    },
+    /// When a server's paused invites and DMs now resume, or why Discord
+    /// didn't pause or resume them.
+    ServerPaused {
+        server: String,
+        result: Result<(Option<u64>, Option<u64>), String>,
+    },
+    /// Whether what Emoji asked of Discord went, uploading or not, and the
+    /// server's emoji after it, when Discord sent them.
+    EmojisChanged {
+        server: String,
+        upload: bool,
+        result: Result<(), String>,
+        emojis: Option<Vec<ServerEmoji>>,
+    },
+    /// The same for Stickers: `form` for an upload or an edit.
+    StickersChanged {
+        server: String,
+        form: bool,
+        result: Result<(), String>,
+        stickers: Option<Vec<ServerSticker>>,
+    },
+    /// A server's stickers changed, as GUILD_STICKERS_UPDATE gives them,
+    /// for an open Stickers.
+    ServerStickers {
+        server: String,
+        stickers: Vec<ServerSticker>,
+    },
+    /// Whether Discord lifted a user's ban, or why not.
+    Unbanned {
+        server: String,
+        user: String,
+        result: Result<(), String>,
+    },
+    /// Someone was banned elsewhere, or unbanned, as GUILD_BAN_ADD and
+    /// GUILD_BAN_REMOVE say, for an open Bans to follow.
+    ServerBan {
+        server: String,
+        ban: Box<Ban>,
+        banned: bool,
+    },
+    /// The members [`RoleAction::Members`] found holding a role, or why
+    /// not.
+    RoleHolders {
+        server: String,
+        role: String,
+        result: Result<Vec<RoleMember>, String>,
+        /// How many hold it, after a change to them.
+        count: Option<u64>,
+    },
+    /// The members [`RoleAction::FindMembers`] found for a text.
+    RoleCandidates {
+        server: String,
+        query: String,
+        members: Vec<RoleMember>,
+    },
     /// Whether this account left a Discord server, by its server id, or why
     /// not.
     LeftServer {
+        server: String,
+        result: Result<(), String>,
+    },
+    /// Whether Discord deleted a server, or why not.
+    ServerDeleted {
+        server: String,
+        result: Result<(), String>,
+    },
+    /// Whether Discord gave a server away, or why not.
+    ServerTransferred {
+        server: String,
+        result: Result<(), String>,
+    },
+    /// Whether Discord emailed the code to give a server away, or why not.
+    ServerPincodeSent {
         server: String,
         result: Result<(), String>,
     },

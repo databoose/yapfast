@@ -25,8 +25,7 @@ logs=target/check
 mkdir -p "$logs"
 rm -f "$logs"/*.log "$logs"/*.rc
 
-# Runs a step and prints its report in one write, so the reports of steps
-# running at the same time don't interleave.
+# Runs a step and prints its report.
 run() {
   local name=$1
   shift
@@ -48,32 +47,13 @@ run() {
 
 clippy=(cargo clippy --locked "${profile[@]}" --all-targets)
 
-# Each network alone, in the desktop and in the shared core with its tests,
-# and the headless build. These build yapfast and yapfast-core with other features
-# than the steps below, so they run alongside them in a target directory of
-# their own: Cargo lets one build at a time use a target directory. The
-# headless binary stays out of target/<profile>/ that way too.
-combinations() {
-  export CARGO_TARGET_DIR=target/check-combinations
-  run clippy-discord-only "${clippy[@]}" -p yapfast -p yapfast-core --no-default-features \
-    --features yapfast/desktop,yapfast/discord,yapfast-core/discord -- -D warnings
-  run clippy-matrix-only "${clippy[@]}" -p yapfast -p yapfast-core --no-default-features \
-    --features yapfast/desktop,yapfast/matrix,yapfast-core/matrix -- -D warnings
-  run clippy-headless "${clippy[@]}" -p yapfast --no-default-features --features matrix,discord -- -D warnings
-  run smoke-headless cargo run --locked "${profile[@]}" --no-default-features --features matrix,discord -- --smoke-test
-}
-
-# In a process group of its own, so an interrupt can stop all of it: a
-# background job doesn't get the terminal's Ctrl-C.
-set -m
-combinations &
-combinations_pid=$!
-set +m
-trap 'kill -TERM -- -"$combinations_pid" 2>/dev/null; exit 130' INT TERM
-
 run fmt cargo fmt --all -- --check
 run doc-links scripts/check-doc-links
-run clippy "${clippy[@]}" --workspace -- -D warnings
+# Without yapfast-ui: --all-targets checks a library in test mode too, despite
+# its `test = false`, and that compiles the generated interface a second time
+# alongside the first. It still builds, as a dependency, and holds no code to
+# lint.
+run clippy "${clippy[@]}" --workspace --exclude yapfast-ui -- -D warnings
 run test cargo test --locked "${profile[@]}" --workspace
 run build cargo build --locked "${profile[@]}" --workspace
 # The binary the build step made: `cargo run` would resolve the dependencies'
@@ -83,11 +63,25 @@ if [[ "$(cat "$logs/build.rc")" == 0 ]]; then
 else
   echo "=== smoke: skipped, as the build failed"
 fi
-wait "$combinations_pid"
+
+# Each network alone, in the desktop and in the shared core with its tests,
+# and the headless build. These build yapfast and yapfast-core with other
+# features than the steps above, in a target directory of their own, so they
+# don't replace the main build's artifacts and the headless binary stays out of
+# target/<profile>/. They run after the steps above, not beside them: each
+# build compiles the Slint UI crate, which takes several GiB, and two or three
+# at once ran the machine out of memory.
+export CARGO_TARGET_DIR=target/check-combinations
+run clippy-discord-only "${clippy[@]}" -p yapfast -p yapfast-core --no-default-features \
+  --features yapfast/desktop,yapfast/discord,yapfast-core/discord -- -D warnings
+run clippy-matrix-only "${clippy[@]}" -p yapfast -p yapfast-core --no-default-features \
+  --features yapfast/desktop,yapfast/matrix,yapfast-core/matrix -- -D warnings
+run clippy-headless "${clippy[@]}" -p yapfast --no-default-features --features matrix,discord -- -D warnings
+run smoke-headless cargo run --locked "${profile[@]}" --no-default-features --features matrix,discord -- --smoke-test
 
 failed=()
-for name in fmt doc-links clippy test clippy-discord-only clippy-matrix-only clippy-headless \
-  build smoke-headless smoke; do
+for name in fmt doc-links clippy test build smoke clippy-discord-only clippy-matrix-only \
+  clippy-headless smoke-headless; do
   # A step without a result was skipped.
   [[ ! -e "$logs/$name.rc" || "$(cat "$logs/$name.rc")" == 0 ]] || failed+=("$name")
 done

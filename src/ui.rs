@@ -14,9 +14,10 @@ use slint::{
 };
 use yapfast_core::{
     application::{
-        Action, AddFriend, AppState, Application, BAN_HISTORY, ChannelAsk, ClearAfter, Compose,
-        DmScreen, Effect, INVITE_AGES, INVITE_USES, ListedCategory, MenuChoice, Navigation, NewDm,
-        PersonAsk, ProfileText, ProfileView, Relation, SLOWMODES, Search, TIMEOUT_TIMES,
+        Action, AddFriend, AppState, Application, BAN_HISTORY, ChannelAsk, ChannelInput,
+        ClearAfter, Compose, DmScreen, Effect, INVITE_AGES, INVITE_USES, ListedCategory,
+        MenuChoice, Navigation, NewDm, PersonAsk, ProfileText, ProfileView, Relation, RoleInput,
+        Search, TIMEOUT_TIMES,
     },
     backend::Backend,
     chat::{
@@ -41,6 +42,7 @@ mod browser;
 mod call_link;
 mod call_timer;
 mod callbacks;
+mod channel_settings;
 mod gifs;
 mod menus;
 mod messages;
@@ -51,6 +53,7 @@ mod placement;
 mod polls;
 mod profile;
 mod refresh;
+mod server_settings;
 mod shell;
 mod theme;
 mod tiles;
@@ -639,23 +642,49 @@ fn control(path: PathBuf, shell: Rc<shell::Shell>) -> slint::Timer {
                     }
                     "quit" => slint::quit_event_loop().map_err(|error| error.to_string().into()),
                     // `pick avatar PATH` or `pick banner PATH` chooses a
-                    // picture in the server profile editor.
+                    // picture in the server profile editor, `pick icon PATH`
+                    // a server's icon in its settings, and `pick emoji` and
+                    // `pick sticker` a new emoji's or sticker's.
                     command if command.starts_with("pick ") => {
                         let (kind, path) =
                             command["pick ".len()..].split_once(' ').unwrap_or_default();
-                        let kind = if kind == "banner" {
-                            ProfilePicture::Banner
-                        } else {
-                            ProfilePicture::Avatar
+                        let path = PathBuf::from(path);
+                        let action = match kind {
+                            "icon" => Action::PickServerPicture {
+                                kind: yapfast_core::chat::ServerPicture::Icon,
+                                path,
+                            },
+                            "server-banner" => Action::PickServerPicture {
+                                kind: yapfast_core::chat::ServerPicture::Banner,
+                                path,
+                            },
+                            "splash" => Action::PickServerPicture {
+                                kind: yapfast_core::chat::ServerPicture::Splash,
+                                path,
+                            },
+                            "role-icon" => Action::PickServerPicture {
+                                kind: yapfast_core::chat::ServerPicture::RoleIcon,
+                                path,
+                            },
+                            "emoji" => Action::PickServerPicture {
+                                kind: yapfast_core::chat::ServerPicture::Emoji,
+                                path,
+                            },
+                            "sticker" => Action::PickServerPicture {
+                                kind: yapfast_core::chat::ServerPicture::Sticker,
+                                path,
+                            },
+                            "banner" => Action::PickProfilePicture {
+                                kind: ProfilePicture::Banner,
+                                path,
+                            },
+                            _ => Action::PickProfilePicture {
+                                kind: ProfilePicture::Avatar,
+                                path,
+                            },
                         };
                         if let Some(window) = window {
-                            adapter.borrow_mut().action(
-                                &window,
-                                Action::PickProfilePicture {
-                                    kind,
-                                    path: PathBuf::from(path),
-                                },
-                            );
+                            adapter.borrow_mut().action(&window, action);
                         }
                         Ok(())
                     }
@@ -1199,9 +1228,18 @@ struct Icons {
     timeout: slint::Image,
     kick: slint::Image,
     ban: slint::Image,
+    /// A Discord server's Audit Log, Members and Invites.
+    history: slint::Image,
+    members: slint::Image,
+    invites: slint::Image,
+    /// A Discord server's Emoji; its Stickers have `note`.
+    emoji: slint::Image,
+    /// Transfer Ownership in a member's menu.
+    crown: slint::Image,
     // A Discord server's and channel's menus.
     create: slint::Image,
     create_category: slint::Image,
+    settings: slint::Image,
     edit: slint::Image,
     duplicate: slint::Image,
     delete: slint::Image,
@@ -1403,12 +1441,18 @@ impl Adapter {
             timeout: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/clock.svg"))?,
             kick: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/user-x.svg"))?,
             ban: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/gavel.svg"))?,
+            history: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/history.svg"))?,
+            members: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/users.svg"))?,
+            invites: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/link.svg"))?,
+            emoji: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/smile.svg"))?,
+            crown: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/crown.svg"))?,
             create: slint::Image::load_from_svg_data(include_bytes!(
                 "../ui/icons/circle-plus.svg"
             ))?,
             create_category: slint::Image::load_from_svg_data(include_bytes!(
                 "../ui/icons/folder-plus.svg"
             ))?,
+            settings: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/settings.svg"))?,
             edit: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/pencil.svg"))?,
             duplicate: slint::Image::load_from_svg_data(include_bytes!(
                 "../ui/icons/copy-plus.svg"
@@ -1911,12 +1955,37 @@ impl Adapter {
         // stays as it is.
         let composing = matches!(action, Action::SetDraft(_) | Action::MentionQuery(_));
         let profiling = matches!(action, Action::WriteProfile { .. });
+        // Typing on Roles changes only the settings, too.
+        let setting = matches!(
+            action,
+            Action::WriteServerSetting { .. }
+                | Action::WriteMfa(_)
+                | Action::Roles(
+                    RoleInput::Name(_)
+                        | RoleInput::Search(_)
+                        | RoleInput::PermissionSearch(_)
+                        | RoleInput::MemberSearch(_)
+                        | RoleInput::FindCandidates(_)
+                )
+        );
+        // As is typing in a channel's settings.
+        let channel_setting = matches!(
+            action,
+            Action::ChannelSettings(
+                ChannelInput::Name(_) | ChannelInput::Topic(_) | ChannelInput::FindMembers(_)
+            )
+        );
         let effects = self.app.dispatch(action);
         self.execute(effects);
-        if composing {
+        if channel_setting {
+            self.show_channel_settings(window);
+        } else if composing {
             self.show_composer(window);
         } else if profiling {
             self.show_profile_editor(window);
+        } else if setting {
+            self.show_server_settings(window);
+            self.show_mfa(window);
         } else {
             self.refresh(window);
         }

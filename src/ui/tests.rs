@@ -3775,7 +3775,7 @@ fn channel_menus_and_their_dialog_make_change_and_delete_channels() {
     let prompt = window.get_channel_prompt();
     assert_eq!(prompt.title, "Create channel");
     assert_eq!(prompt.detail, "In Test");
-    assert!(prompt.kinds && prompt.named && !prompt.settings && !prompt.danger);
+    assert!(prompt.kinds && prompt.named && !prompt.danger);
     window.set_channel_name("Plans".into());
     window.set_channel_kind(1);
     window.invoke_save_channel();
@@ -3793,45 +3793,15 @@ fn channel_menus_and_their_dialog_make_change_and_delete_channels() {
         adapter.app.state.channel_dialog = Some(dialog);
         adapter.refresh(&window);
     };
-    let edit = ChannelDialog {
-        ask: ChannelAsk::Edit("discord:10:11".into()),
-        server: "discord:10".into(),
-        server_name: "Test".into(),
-        name: "general".into(),
-        kind: ChannelKind::Text,
-        settings: None,
-        saving: false,
-        error: None,
-    };
-    show(edit.clone());
-    let prompt = window.get_channel_prompt();
-    assert!(prompt.loading && prompt.settings);
-    assert_eq!(prompt.confirm, "Save changes");
-    // Its fields fill once Discord sent its settings.
-    show(ChannelDialog {
-        settings: Some(ChannelSettings {
-            name: "general".into(),
-            topic: "Say hi".into(),
-            slowmode: 300,
-            nsfw: true,
-        }),
-        ..edit.clone()
-    });
-    assert!(!window.get_channel_prompt().loading);
-    assert_eq!(window.get_channel_topic(), "Say hi");
-    assert_eq!(window.get_channel_slowmode(), 7);
-    assert!(window.get_channel_nsfw());
-    // What's written there stays while the dialog is open.
-    window.set_channel_topic("Say hello".into());
-    adapter.borrow_mut().refresh(&window);
-    assert_eq!(window.get_channel_topic(), "Say hello");
-
     show(ChannelDialog {
         ask: ChannelAsk::Delete("discord:10:4".into()),
+        server: "discord:10".into(),
+        server_name: "Test".into(),
         name: "Talk".into(),
         kind: ChannelKind::Category,
         settings: Some(ChannelSettings::default()),
-        ..edit
+        saving: false,
+        error: None,
     });
     let prompt = window.get_channel_prompt();
     assert_eq!(prompt.title, "Delete category");
@@ -3840,6 +3810,104 @@ fn channel_menus_and_their_dialog_make_change_and_delete_channels() {
         "Are you sure you want to delete Talk? This cannot be undone."
     );
     assert!(prompt.danger && !prompt.named);
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn channel_settings_cover_the_window_with_overview_and_permissions() {
+    use slint::Model;
+    use yapfast_core::yapfast_discord::ready::permission;
+    let (window, adapter, _directory) =
+        discord_server_window_granting(permission::MANAGE_CHANNELS | permission::MANAGE_ROLES);
+    window.invoke_prepare_menu("discord:10:11".into(), false);
+    window.invoke_choose_menu("discord:10:11".into(), false, "edit-channel".into());
+    assert!(window.get_channel_settings_open() && !window.get_channel_open());
+    let prompt = window.get_channel_settings_prompt();
+    assert!(prompt.loading && prompt.section == 0);
+    let rows: Vec<String> = prompt.rows.iter().map(|row| row.text.to_string()).collect();
+    assert_eq!(
+        rows,
+        ["#GENERAL", "Overview", "Permissions", "", "Delete Channel"]
+    );
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ChannelLoaded {
+            room: "discord:10:11".into(),
+            result: Ok(ChannelSettings {
+                name: "general".into(),
+                topic: "Say hi".into(),
+                slowmode: 300,
+                nsfw: true,
+            }),
+        });
+        adapter.refresh(&window);
+    }
+    let prompt = window.get_channel_settings_prompt();
+    assert!(prompt.loaded && prompt.nsfw && !prompt.changed);
+    assert_eq!(prompt.slowmode, 7);
+    assert_eq!(window.get_channel_settings_topic(), "Say hi");
+
+    // Typing shows the bar, and another page waits for it.
+    window.set_channel_settings_topic("Say hello".into());
+    window.invoke_channel_settings_input(1, "Say hello".into(), 0);
+    assert!(window.get_channel_settings_prompt().changed);
+    window.invoke_channel_settings_input(10, "".into(), 1);
+    assert_eq!(window.get_channel_settings_prompt().nudge, 1);
+    window.invoke_channel_settings_input(30, "".into(), 0);
+    assert_eq!(window.get_channel_settings_topic(), "Say hi");
+
+    // Permissions: @everyone's, three ways each, locked where she can't.
+    window.invoke_channel_settings_input(10, "".into(), 1);
+    let prompt = window.get_channel_settings_prompt();
+    assert_eq!(prompt.section, 1);
+    assert_eq!(prompt.title, "Channel Permissions");
+    let names: Vec<String> = prompt
+        .overwrites
+        .iter()
+        .map(|row| row.name.to_string())
+        .collect();
+    assert_eq!(names, ["@everyone"]);
+    let row = |bit: u64| {
+        window
+            .get_channel_settings_prompt()
+            .permissions
+            .iter()
+            .find(|row| !row.heading && 1u64 << row.bit == bit)
+            .unwrap()
+    };
+    assert_eq!(
+        window
+            .get_channel_settings_prompt()
+            .permissions
+            .row_data(0)
+            .unwrap()
+            .title,
+        "GENERAL CHANNEL PERMISSIONS"
+    );
+    assert_eq!(
+        (
+            row(permission::VIEW_CHANNEL).state,
+            row(permission::VIEW_CHANNEL).lock_text.as_str()
+        ),
+        (1, "")
+    );
+    assert_eq!(
+        row(permission::MANAGE_WEBHOOKS).lock_text,
+        "You cannot modify this permission because none of your roles have it."
+    );
+    window.invoke_channel_settings_input(14, "".into(), 11 * 3 + 2);
+    assert_eq!(row(permission::SEND_MESSAGES).state, 2);
+    assert!(window.get_channel_settings_prompt().changed);
+    window.invoke_channel_settings_input(30, "".into(), 0);
+    window.invoke_channel_settings_input(32, "".into(), 0);
+    assert!(!window.get_channel_settings_open());
+
+    // Delete Channel, last in the sidebar, closes them and asks.
+    window.invoke_prepare_menu("discord:10:11".into(), false);
+    window.invoke_choose_menu("discord:10:11".into(), false, "edit-channel".into());
+    window.invoke_channel_settings_input(10, "".into(), 99);
+    assert!(!window.get_channel_settings_open() && window.get_channel_open());
+    assert_eq!(window.get_channel_prompt().title, "Delete channel");
 }
 
 #[test]
@@ -3930,6 +3998,884 @@ fn edit_server_profile_opens_the_per_server_profile_editor() {
     window.invoke_close_profile_editor();
     assert!(!window.get_profile_editor_open());
     assert_eq!(window.get_profile_editor_prompt().preview.name, "");
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn server_settings_open_from_the_menu_and_hold_their_changes_until_saved() {
+    use slint::Model;
+    use yapfast_core::{
+        chat::{ServerProfile, ServerSettingsPage, SettingsSection},
+        yapfast_discord::ready::permission,
+    };
+    let (window, adapter, _directory) = discord_server_window_granting(permission::MANAGE_GUILD);
+    let texts = |window: &YapfastWindow| -> Vec<String> {
+        window
+            .get_menu_rows()
+            .iter()
+            .map(|row| row.text.to_string())
+            .collect()
+    };
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    assert!(
+        texts(&window).contains(&"Server settings".to_owned()),
+        "{:?}",
+        texts(&window)
+    );
+    window.invoke_choose_menu("header:discord:10".into(), false, "server-settings".into());
+    assert!(window.get_server_settings_open());
+    let prompt = window.get_server_settings_prompt();
+    assert!(prompt.loading && !prompt.loaded);
+    let rows: Vec<(bool, String)> = prompt
+        .rows
+        .iter()
+        .map(|row| (row.heading, row.text.to_string()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (true, "TEST".into()),
+            (false, "Server Profile".into()),
+            (false, "Engagement".into()),
+            (false, "Boost Perks".into()),
+            (true, "PEOPLE".into()),
+            (false, "Members".into()),
+            (false, "Invites".into()),
+            (true, "MODERATION".into()),
+            (false, "Safety Setup".into())
+        ]
+    );
+
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section: SettingsSection::Profile,
+            result: Ok(ServerSettingsPage::Profile(ServerProfile {
+                name: "Test".into(),
+                description: "Hi".into(),
+                icon: None,
+            })),
+        });
+        adapter.refresh(&window);
+    }
+    let prompt = window.get_server_settings_prompt();
+    assert!(prompt.loaded && !prompt.changed && !prompt.profile.has_icon);
+    assert_eq!(window.get_server_settings_name(), "Test");
+    assert_eq!(window.get_server_settings_description(), "Hi");
+    assert_eq!(prompt.profile.description_left, 298);
+
+    // Typing shows the bar; closing then shakes it instead.
+    window.set_server_settings_name("T".into());
+    window.invoke_write_server_setting(0, "T".into());
+    let prompt = window.get_server_settings_prompt();
+    assert!(prompt.changed && !prompt.may_save);
+    assert_eq!(
+        prompt.problem,
+        "The server name must be between 2 and 100 characters."
+    );
+    window.invoke_close_server_settings();
+    assert!(window.get_server_settings_open());
+    assert_eq!(window.get_server_settings_prompt().nudge, 1);
+
+    // Reset puts Discord's back, and closing closes.
+    window.invoke_undo_server_settings();
+    assert_eq!(window.get_server_settings_name(), "Test");
+    assert!(!window.get_server_settings_prompt().changed);
+    window.invoke_close_server_settings();
+    assert!(!window.get_server_settings_open());
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn engagement_and_boost_perks_show_their_choices_and_locks() {
+    use slint::Model;
+    use yapfast_core::{
+        chat::{GuildSettings, ServerSettingsPage, SettingsSection},
+        yapfast_discord::ready::permission,
+    };
+    let (window, adapter, _directory) = discord_server_window_granting(permission::MANAGE_GUILD);
+    let names = |list: ModelRc<SharedString>| -> Vec<String> {
+        list.iter().map(|name| name.to_string()).collect()
+    };
+    let load = |section: SettingsSection| {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section,
+            result: Ok(ServerSettingsPage::Guild(GuildSettings {
+                system_channel: Some("11".into()),
+                // Welcome messages left out.
+                system_flags: 1,
+                default_notifications: 1,
+                afk_timeout: 300,
+                premium_tier: 1,
+                ..Default::default()
+            })),
+        });
+        adapter.refresh(&window);
+    };
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    window.invoke_choose_menu("header:discord:10".into(), false, "server-settings".into());
+    window.invoke_server_settings_section(1);
+    load(SettingsSection::Engagement);
+    let engagement = window.get_server_settings_prompt().engagement;
+    assert_eq!(
+        names(engagement.system_channels),
+        ["No System Messages", "general"]
+    );
+    assert_eq!(
+        names(engagement.afk_channels),
+        ["No Inactive Channel", "Lounge"]
+    );
+    assert_eq!(
+        (
+            engagement.system_channel,
+            engagement.afk_channel,
+            engagement.afk_timeout,
+            engagement.notifications
+        ),
+        (1, 0, 1, 1)
+    );
+    assert!(!engagement.welcome && engagement.boosted && engagement.setup_tips);
+
+    // An inactive channel, then its timeout, and welcome messages back on.
+    window.invoke_choose_server_setting(2, 1);
+    window.invoke_choose_server_setting(3, 3);
+    window.invoke_toggle_server_setting(0);
+    let prompt = window.get_server_settings_prompt();
+    assert!(prompt.changed && prompt.may_save);
+    assert_eq!(
+        (prompt.engagement.afk_channel, prompt.engagement.afk_timeout),
+        (1, 3)
+    );
+    assert!(prompt.engagement.welcome);
+    window.invoke_undo_server_settings();
+
+    // At level 1 the invite background is open, the banner locked.
+    window.invoke_server_settings_section(2);
+    load(SettingsSection::BoostPerks);
+    let boost = window.get_server_settings_prompt().boost;
+    assert_eq!(boost.level, "Level 1");
+    assert_eq!(boost.banner.locked, "Unlocks at Level 2");
+    assert_eq!(boost.splash.locked, "");
+    assert!(!boost.banner.shown && !boost.progress_bar);
+    window.invoke_toggle_server_setting(4);
+    assert!(window.get_server_settings_prompt().boost.progress_bar);
+}
+
+#[cfg(feature = "discord")]
+#[test]
+fn moderation_shows_safety_setup_and_bans_as_discords_pages_do() {
+    use slint::Model;
+    use yapfast_core::{
+        chat::{Ban, GuildSettings, RoleMember, ServerSettingsPage, SettingsSection},
+        yapfast_discord::ready::permission,
+    };
+    let (window, adapter, _directory) =
+        discord_server_window_granting(permission::BAN_MEMBERS | permission::MANAGE_GUILD);
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    window.invoke_choose_menu("header:discord:10".into(), false, "server-settings".into());
+    let rows: Vec<String> = window
+        .get_server_settings_prompt()
+        .rows
+        .iter()
+        .map(|row| row.text.to_string())
+        .collect();
+    assert_eq!(
+        rows[rows.len() - 3..],
+        ["MODERATION", "Safety Setup", "Bans"]
+    );
+
+    // Safety Setup: Discord's levels, and the 2FA switch only its owner moves.
+    window.invoke_server_settings_section(4);
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section: SettingsSection::Safety,
+            result: Ok(ServerSettingsPage::Guild(GuildSettings {
+                verification_level: 2,
+                features: vec!["COMMUNITY".into()],
+                ..Default::default()
+            })),
+        });
+        adapter.refresh(&window);
+    }
+    let prompt = window.get_server_settings_prompt();
+    assert!(prompt.immediate);
+    let safety = prompt.safety;
+    let levels: Vec<(String, bool)> = safety
+        .verification_options
+        .iter()
+        .map(|option| (option.title.to_string(), option.enabled))
+        .collect();
+    assert_eq!(
+        levels[0],
+        ("None".into(), false),
+        "not on a Community server"
+    );
+    assert_eq!(levels[4], ("Highest".into(), true));
+    assert_eq!(safety.verification, 2);
+    assert_eq!(
+        safety.mfa_lock.as_str(),
+        "This setting can only be changed by a server owner with 2FA enabled on their account."
+    );
+    // Choosing one goes to Discord at once, without the bar.
+    window.invoke_choose_server_setting(10, 4);
+    let prompt = window.get_server_settings_prompt();
+    assert!(prompt.saving && !prompt.changed);
+    assert_eq!(prompt.safety.verification, 4);
+    adapter.borrow_mut().app.apply(Event::ServerSettingsSaved {
+        server: "discord:10".into(),
+        result: Ok(ServerSettingsPage::Guild(GuildSettings {
+            verification_level: 4,
+            ..Default::default()
+        })),
+    });
+
+    // Bans: the list, and a ban's dialog.
+    window.invoke_server_settings_section(5);
+    {
+        let mut adapter = adapter.borrow_mut();
+        let ban = |id: &str, name: &str, username: Option<&str>, reason: Option<&str>| Ban {
+            user: RoleMember {
+                id: id.into(),
+                name: name.into(),
+                username: username.map(str::to_owned),
+                avatar: String::new(),
+            },
+            reason: reason.map(str::to_owned),
+        };
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section: SettingsSection::Bans,
+            result: Ok(ServerSettingsPage::Bans(vec![
+                ban("5", "Mallory", Some("mallory"), Some("spam")),
+                ban("6", "trent", None, None),
+            ])),
+        });
+        adapter.refresh(&window);
+    }
+    let bans = window.get_server_settings_prompt().bans;
+    let names: Vec<(String, String)> = bans
+        .rows
+        .iter()
+        .map(|row| (row.name.to_string(), row.username.to_string()))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("Mallory".into(), "mallory".into()),
+            ("trent".into(), String::new())
+        ]
+    );
+    assert_eq!(bans.pages, 1);
+    window.invoke_ban_input(3, "6".into(), 0);
+    let bans = window.get_server_settings_prompt().bans;
+    assert!(bans.open && bans.may_unban);
+    assert_eq!(bans.open_name.as_str(), "trent");
+    assert_eq!(bans.open_reason.as_str(), "No reason provided");
+    window.invoke_ban_input(4, "".into(), 0);
+    assert!(!window.get_server_settings_prompt().bans.open);
+
+    // A refresh with nothing new keeps the lists on screen: rows made
+    // again between a click's press and release would lose the click.
+    let shown = window.get_server_settings_prompt();
+    adapter.borrow_mut().refresh(&window);
+    let again = window.get_server_settings_prompt();
+    assert!(again.rows == shown.rows && again.bans.rows == shown.bans.rows);
+}
+
+#[cfg(feature = "discord")]
+#[test]
+fn audit_log_shows_rows_that_open_their_numbered_lines() {
+    use slint::Model;
+    use yapfast_core::{
+        chat::{AuditEntry, AuditLog, AuditUser, ServerSettingsPage, SettingsSection},
+        yapfast_discord::ready::permission,
+    };
+    let (window, adapter, _directory) = discord_server_window_granting(permission::VIEW_AUDIT_LOG);
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    window.invoke_choose_menu("header:discord:10".into(), false, "server-settings".into());
+    let rows: Vec<String> = window
+        .get_server_settings_prompt()
+        .rows
+        .iter()
+        .map(|row| row.text.to_string())
+        .collect();
+    assert_eq!(rows, ["MODERATION", "Audit Log", "Bans"]);
+    // A kick an hour ago, with its reason, and an unban without lines.
+    let now = yapfast_core::clock::now_ms();
+    let id = |ago_ms: u64| (((now - ago_ms) - 1_420_070_400_000) << 22).to_string();
+    let entry = |id: String, action: u16, reason: Option<&str>| AuditEntry {
+        id,
+        action,
+        target: Some("5".into()),
+        user: Some("1".into()),
+        reason: reason.map(str::to_owned),
+        ..Default::default()
+    };
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section: SettingsSection::AuditLog,
+            result: Ok(ServerSettingsPage::AuditLog(AuditLog {
+                entries: vec![
+                    entry(id(60_000), 20, Some("spam")),
+                    entry(id(120_000), 23, None),
+                ],
+                users: [("1", "alice"), ("5", "mallory")]
+                    .into_iter()
+                    .map(|(id, name)| {
+                        let user = AuditUser {
+                            name: name.into(),
+                            avatar: String::new(),
+                        };
+                        (id.to_owned(), user)
+                    })
+                    .collect(),
+                names: Default::default(),
+            })),
+        });
+        adapter.refresh(&window);
+    }
+    let prompt = window.get_server_settings_prompt();
+    assert!(prompt.immediate && prompt.section == 6);
+    let log = prompt.audit_log;
+    let rows: Vec<(bool, i32, String)> = log
+        .rows
+        .iter()
+        .map(|row| (row.expandable, row.kind, row.initial.to_string()))
+        .collect();
+    assert_eq!(rows, [(true, 2, "A".into()), (false, 0, "A".into())]);
+    // A minute ago: yesterday's in the first minute after midnight.
+    let time = log.rows.row_data(0).unwrap().time;
+    assert!(time.starts_with("Today at ") || time.starts_with("Yesterday at "));
+    assert_eq!(log.users.iter().collect::<Vec<_>>(), ["All Users", "alice"]);
+    assert_eq!(log.actions.row_count(), 69);
+    assert_eq!(log.lines.row_count(), 0);
+
+    // The arrow opens a row's lines, numbered.
+    window.invoke_audit_log_input(3, 0);
+    let log = window.get_server_settings_prompt().audit_log;
+    assert_eq!(log.open, 0);
+    let numbers: Vec<String> = log.lines.iter().map(|line| line.number.into()).collect();
+    assert_eq!(numbers, ["01"]);
+
+    // A refresh with nothing new keeps the lists.
+    let shown = window.get_server_settings_prompt().audit_log;
+    adapter.borrow_mut().refresh(&window);
+    let again = window.get_server_settings_prompt().audit_log;
+    assert!(
+        again.rows == shown.rows && again.lines == shown.lines && again.actions == shown.actions
+    );
+
+    // Filtering by Kick Member asks Discord from the newest.
+    window.invoke_audit_log_input(1, 9);
+    let log = window.get_server_settings_prompt().audit_log;
+    assert!(log.fetching && log.rows.row_count() == 0);
+    assert_eq!(log.action, 9);
+}
+
+#[cfg(feature = "discord")]
+#[test]
+fn members_and_invites_list_as_discords_pages_do() {
+    use slint::Model;
+    use yapfast_core::{
+        chat::{
+            GuildSettings, JoinMethod, ListedMember, RoleMember, ServerInvite, ServerSettingsPage,
+            SettingsSection,
+        },
+        yapfast_discord::ready::permission,
+    };
+    let (window, adapter, _directory) = discord_server_window_changed(
+        permission::KICK_MEMBERS | permission::MANAGE_GUILD | permission::CREATE_INSTANT_INVITE,
+        |server| {
+            server.put_role(
+                &serde_json::json!({"id": "20", "name": "Mods", "position": 2,
+                                                "color": 0x3498db, "permissions": "0"}),
+            );
+            server.put_role(
+                &serde_json::json!({"id": "30", "name": "Helpers", "position": 1,
+                                                "permissions": "0"}),
+            );
+        },
+    );
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    window.invoke_choose_menu("header:discord:10".into(), false, "server-settings".into());
+    let rows: Vec<String> = window
+        .get_server_settings_prompt()
+        .rows
+        .iter()
+        .map(|row| row.text.to_string())
+        .collect();
+    let people = rows.iter().position(|row| row == "PEOPLE").unwrap();
+    assert_eq!(
+        rows[people..people + 4],
+        ["PEOPLE", "Members", "Invites", "MODERATION"]
+    );
+
+    // Members: a moderator joined three days ago, timed out, and someone
+    // whose join Discord doesn't know.
+    window.invoke_server_settings_section(7);
+    let now = yapfast_core::clock::now_ms();
+    let member = |id: &str, name: &str, roles: &[&str], joined_by| ListedMember {
+        person: RoleMember {
+            id: id.into(),
+            name: name.into(),
+            username: Some(name.to_lowercase()),
+            avatar: String::new(),
+        },
+        roles: roles.iter().map(|role| (*role).to_owned()).collect(),
+        joined: now - 3 * 86_400_000,
+        timed_out_until: 0,
+        unusual_dms: false,
+        spammer: false,
+        quarantined: false,
+        joined_by,
+        bot: false,
+    };
+    let mut mod_ = member(
+        "1400000000000000005",
+        "Mallory",
+        &["30", "20"],
+        JoinMethod::Invite("abc".into()),
+    );
+    mod_.timed_out_until = now + 3_660_000;
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section: SettingsSection::Members,
+            result: Ok(ServerSettingsPage::Members {
+                members: vec![mod_, member("6", "trent", &[], JoinMethod::Unknown)],
+                total: Some(2),
+            }),
+        });
+        adapter.refresh(&window);
+    }
+    let prompt = window.get_server_settings_prompt();
+    assert!(prompt.immediate && prompt.section == 7);
+    let members = prompt.members;
+    assert!(!members.searched && members.join_method);
+    assert_eq!((members.count.as_str(), members.total), ("2", 2));
+    let first = members.rows.row_data(0).unwrap();
+    assert_eq!(
+        (first.name.as_str(), first.username.as_str()),
+        ("Mallory", "mallory")
+    );
+    assert_eq!(first.name_color, server_settings::role_color(0x3498db));
+    assert_eq!(
+        (first.role.as_str(), first.more_roles.as_str()),
+        ("Mods", "+1")
+    );
+    assert_eq!(
+        (first.since.as_str(), first.join.as_str()),
+        ("3 days ago", "abc")
+    );
+    // Its id's time, in 2025, however long ago that is now.
+    assert!(first.age.ends_with(" ago") && !first.age.contains("day"));
+    assert!(first.timed_out.starts_with("Timed out for 1h 1m"));
+    let second = members.rows.row_data(1).unwrap();
+    assert!(second.join_unknown && second.role.is_empty());
+
+    // An order starts again, as Search Results.
+    window.invoke_members_input(1, "".into(), 2);
+    let members = window.get_server_settings_prompt().members;
+    assert!(members.searched && members.fetching && members.rows.row_count() == 0);
+    assert_eq!((members.sort, members.count.as_str()), (2, "..."));
+
+    // Invites: by inviter, counting down, and Security Actions.
+    window.invoke_server_settings_section(8);
+    let invite = |code: &str, inviter: &str, max_uses, expires| ServerInvite {
+        code: code.into(),
+        inviter: Some(RoleMember {
+            id: "2".into(),
+            name: inviter.to_uppercase(),
+            username: Some(inviter.into()),
+            avatar: String::new(),
+        }),
+        channel: "#general".into(),
+        uses: 3,
+        max_uses,
+        expires,
+        roles: vec!["20".into()],
+        bypass: false,
+    };
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section: SettingsSection::Invites,
+            result: Ok(ServerSettingsPage::Invites {
+                invites: vec![
+                    invite("zzz", "carol", 10, Some(now / 1000 + 90_000)),
+                    invite("bob1", "bob", 0, None),
+                ],
+                settings: GuildSettings::default(),
+            }),
+        });
+        adapter.refresh(&window);
+    }
+    let invites = window.get_server_settings_prompt().invites;
+    assert!(!invites.paused && invites.may_create && !invites.security);
+    let rows: Vec<(String, String, String, i32)> = invites
+        .rows
+        .iter()
+        .map(|row| {
+            (
+                row.inviter.to_string(),
+                row.uses.to_string(),
+                row.role.to_string(),
+                row.expires_in,
+            )
+        })
+        .collect();
+    assert_eq!(rows[0], ("bob".into(), "3".into(), "Mods".into(), -1));
+    assert_eq!(rows[1].1, "3/10");
+    assert!((89_990..=90_000).contains(&rows[1].3));
+    // A refresh keeps the rows, changed in place, and gives the second
+    // their countdowns count from again.
+    let shown = window.get_server_settings_prompt().invites;
+    adapter.borrow_mut().refresh(&window);
+    let again = window.get_server_settings_prompt().invites;
+    assert!(again.rows == shown.rows, "the same rows");
+    assert!(again.counted >= shown.counted && again.counted > 0);
+    window.invoke_invites_input(2, "".into(), 0);
+    let invites = window.get_server_settings_prompt().invites;
+    assert!(invites.security && !invites.may_save);
+    assert_eq!(invites.hours, 1, "two hours, as Discord's");
+    window.invoke_invites_input(4, "".into(), 0);
+    let invites = window.get_server_settings_prompt().invites;
+    assert!(invites.pause_invites && invites.may_save);
+
+    // A refresh with nothing new keeps the lists.
+    let shown = window.get_server_settings_prompt();
+    adapter.borrow_mut().refresh(&window);
+    let again = window.get_server_settings_prompt();
+    assert!(again.invites.rows == shown.invites.rows);
+    window.invoke_invites_input(7, "".into(), 0);
+    assert!(!window.get_server_settings_prompt().invites.security);
+}
+
+#[cfg(feature = "discord")]
+#[test]
+fn delete_server_ends_the_owners_sidebar_and_asks_for_the_name() {
+    use slint::Model;
+    let (window, _adapter, _directory) = discord_server_window_changed(0, |server| {
+        server.owner_id = Some("1".into());
+    });
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    window.invoke_choose_menu("header:discord:10".into(), false, "server-settings".into());
+    let rows = window.get_server_settings_prompt().rows;
+    let count = rows.row_count();
+    let (line, last) = (
+        rows.row_data(count - 2).unwrap(),
+        rows.row_data(count - 1).unwrap(),
+    );
+    assert!(line.heading && line.text.is_empty());
+    assert!(last.danger && last.text == "Delete Server");
+
+    window.invoke_server_settings_section(last.id);
+    let ownership = window.get_server_settings_prompt().ownership;
+    assert_eq!(
+        (ownership.kind, ownership.title.as_str()),
+        (1, "Delete 'Test'")
+    );
+    assert!(ownership.by_name, "without 2FA");
+    window.invoke_ownership_input(0, "nope".into());
+    window.invoke_ownership_input(1, "".into());
+    assert!(window.get_server_settings_prompt().ownership.wrong);
+    window.invoke_ownership_input(2, "".into());
+    assert_eq!(window.get_server_settings_prompt().ownership.kind, 0);
+}
+
+#[cfg(feature = "discord")]
+#[test]
+fn emoji_and_stickers_show_as_discords_pages_do() {
+    use slint::Model;
+    use yapfast_core::{
+        chat::{
+            GuildSettings, RoleMember, ServerEmoji, ServerSettingsPage, ServerSticker,
+            SettingsSection, StickerForm,
+        },
+        yapfast_discord::ready::permission,
+    };
+    let (window, adapter, _directory) =
+        discord_server_window_changed(permission::CREATE_GUILD_EXPRESSIONS, |_| {});
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    window.invoke_choose_menu("header:discord:10".into(), false, "server-settings".into());
+    let rows: Vec<String> = window
+        .get_server_settings_prompt()
+        .rows
+        .iter()
+        .map(|row| row.text.to_string())
+        .collect();
+    let at = rows.iter().position(|row| row == "EXPRESSION").unwrap();
+    assert_eq!(rows[at..at + 3], ["EXPRESSION", "Emoji", "Stickers"]);
+
+    let person = |id: &str| RoleMember {
+        id: id.into(),
+        name: format!("user{id}"),
+        username: None,
+        avatar: String::new(),
+    };
+    let load = |section, page| {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section,
+            result: Ok(page),
+        });
+        adapter.refresh(&window);
+    };
+
+    // Emoji: newest first; only her own may change.
+    window.invoke_server_settings_section(9);
+    let emoji = |id: &str, by: &str| ServerEmoji {
+        id: id.into(),
+        name: format!("emoji{id}"),
+        animated: false,
+        available: true,
+        user: Some(person(by)),
+        picture: format!("https://cdn/emojis/{id}.png"),
+    };
+    load(
+        SettingsSection::Emoji,
+        ServerSettingsPage::Emoji {
+            emojis: vec![emoji("5", "2"), emoji("6", "1")],
+            settings: GuildSettings::default(),
+        },
+    );
+    let page = window.get_server_settings_prompt().emoji;
+    assert!(page.may_upload && !page.uploading);
+    let shown: Vec<_> = page
+        .rows
+        .iter()
+        .map(|row| {
+            (
+                row.heading.to_string(),
+                row.name.to_string(),
+                row.may_change,
+            )
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("Emoji".into(), String::new(), false),
+            (String::new(), "emoji6".into(), true),
+            (String::new(), "emoji5".into(), false),
+        ]
+    );
+    assert_eq!(page.rows.row_data(0).unwrap().slots, "48 slots available");
+    window.invoke_emoji_input(1, "6".into(), "".into());
+    assert_eq!(
+        window.get_server_settings_prompt().emoji.rows.row_count(),
+        2
+    );
+
+    // Stickers: Discord's cards, and the form.
+    window.invoke_server_settings_section(10);
+    let sticker = |id: &str| ServerSticker {
+        id: id.into(),
+        form: StickerForm {
+            name: format!("sticker{id}"),
+            tags: "👋".into(),
+            description: String::new(),
+        },
+        format: 1,
+        available: true,
+        user_id: Some("1".into()),
+        user: Some(person("1")),
+        picture: Some(format!("https://cdn/stickers/{id}.png")),
+    };
+    load(
+        SettingsSection::Stickers,
+        ServerSettingsPage::Stickers {
+            stickers: vec![sticker("7"), sticker("8"), sticker("9")],
+            settings: GuildSettings::default(),
+        },
+    );
+    let page = window.get_server_settings_prompt().stickers;
+    let cards: Vec<_> = page
+        .cards
+        .iter()
+        .map(|card| {
+            (
+                card.title.to_string(),
+                card.status.to_string(),
+                card.unlocked,
+                card.next,
+            )
+        })
+        .collect();
+    assert_eq!(
+        cards[..2],
+        [
+            (
+                "Free Slots".into(),
+                "2 of 5 slots available".into(),
+                true,
+                true
+            ),
+            ("Level 1".into(), "2 Boosts".into(), false, false),
+        ]
+    );
+    assert_eq!(page.cards.row_data(0).unwrap().tiles.row_count(), 3);
+    window.invoke_stickers_input(0, "".into());
+    window.invoke_stickers_input(2, "wave".into());
+    window.invoke_stickers_input(3, "👋".into());
+    let page = window.get_server_settings_prompt().stickers;
+    assert!(page.form && !page.editing && !page.may_save, "no file yet");
+    assert_eq!(page.name, "wave");
+    window.invoke_stickers_input(6, "".into());
+    assert!(!window.get_server_settings_prompt().stickers.form);
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn roles_lock_what_ranks_above_her_and_the_permissions_she_lacks() {
+    use slint::Model;
+    use yapfast_core::{
+        chat::{RoleDetail, ServerRoles, ServerSettingsPage, SettingsSection},
+        yapfast_discord::ready::permission,
+    };
+    // She holds Staff, which may kick.
+    let (window, adapter, _directory) =
+        discord_server_window_changed(permission::MANAGE_ROLES, |server| {
+            server.my_roles = vec!["20".into()];
+            Arc::make_mut(&mut server.role_positions).insert("20".into(), 2);
+            Arc::make_mut(&mut server.roles).insert("20".into(), permission::KICK_MEMBERS);
+        });
+    let role = |id: &str, name: &str, position: i64| RoleDetail {
+        id: id.into(),
+        name: name.into(),
+        position,
+        ..Default::default()
+    };
+    window.invoke_prepare_menu("header:discord:10".into(), false);
+    window.invoke_choose_menu("header:discord:10".into(), false, "server-settings".into());
+    let rows: Vec<(bool, String)> = window
+        .get_server_settings_prompt()
+        .rows
+        .iter()
+        .map(|row| (row.heading, row.text.to_string()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (true, "PEOPLE".into()),
+            (false, "Members".into()),
+            (false, "Roles".into())
+        ]
+    );
+    window.invoke_server_settings_section(3);
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::ServerSettingsLoaded {
+            server: "discord:10".into(),
+            section: SettingsSection::Roles,
+            result: Ok(ServerSettingsPage::Roles(ServerRoles {
+                roles: vec![
+                    role("40", "Leads", 3),
+                    role("20", "Staff", 2),
+                    role("30", "Crew", 1),
+                    role("10", "@everyone", 0),
+                ],
+                ..Default::default()
+            })),
+        });
+        adapter.refresh(&window);
+    }
+    let roles = window.get_server_settings_prompt().roles;
+    let listed: Vec<(String, bool)> = roles
+        .rows
+        .iter()
+        .map(|row| (row.name.to_string(), row.locked))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("Leads".into(), true),
+            ("Staff".into(), true),
+            ("Crew".into(), false)
+        ]
+    );
+    assert_eq!(
+        roles.rows.row_data(1).unwrap().lock_text,
+        "Role is locked because it is your highest ranked role. Please ask a higher rank or Server Owner for help."
+    );
+    assert_eq!(roles.first_movable, 2);
+
+    // Crew's permissions: Kick Members is hers to give, Administrator not.
+    window.invoke_role_input(10, "30".into(), 0);
+    window.invoke_role_input(11, "".into(), 1);
+    let roles = window.get_server_settings_prompt().roles;
+    assert!(roles.open && !roles.locked && roles.tab == 1);
+    let switch = |bit: u64| {
+        window
+            .get_server_settings_prompt()
+            .roles
+            .permissions
+            .iter()
+            .find(|row| !row.heading && 1u64 << row.bit == bit)
+            .unwrap()
+    };
+    assert_eq!(
+        switch(permission::ADMINISTRATOR).lock_text,
+        "You cannot modify this permission because none of your roles have it."
+    );
+    assert_eq!(switch(permission::KICK_MEMBERS).lock_text, "");
+    window.invoke_role_input(14, "".into(), 1);
+    assert!(switch(permission::KICK_MEMBERS).on);
+    assert!(window.get_server_settings_prompt().changed);
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn the_two_factor_prompt_offers_discords_methods() {
+    use slint::Model;
+    use yapfast_core::chat::MfaMethod;
+    let (window, adapter, _directory) = discord_server_window_granting(0);
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.apply(Event::MfaRequired {
+            id: 3,
+            methods: vec![MfaMethod::App, MfaMethod::Backup],
+        });
+        adapter.refresh(&window);
+    }
+    assert!(window.get_mfa_open());
+    let prompt = window.get_mfa_prompt();
+    assert!(!prompt.listing && !prompt.ready && !prompt.password);
+    assert_eq!(prompt.field, "6-digit code");
+    assert_eq!(prompt.choices.row_count(), 2);
+    window.set_mfa_code("123456".into());
+    window.invoke_write_mfa("123456".into());
+    assert!(window.get_mfa_prompt().ready);
+
+    // "Verify with something else" lists them.
+    window.invoke_choose_mfa(-1);
+    let prompt = window.get_mfa_prompt();
+    assert!(prompt.listing);
+    let texts: Vec<String> = prompt
+        .choices
+        .iter()
+        .map(|choice| choice.text.to_string())
+        .collect();
+    assert_eq!(texts, ["Use your authenticator app", "Use a backup code"]);
+    window.invoke_choose_mfa(3);
+    assert!(window.get_mfa_prompt().warning, "Discord's warning first");
+    window.invoke_confirm_mfa();
+    assert!(!window.get_mfa_prompt().warning);
+    assert_eq!(window.get_mfa_prompt().field, "Backup code");
+    assert_eq!(window.get_mfa_code(), "", "a new method starts empty");
+
+    window.invoke_cancel_mfa();
+    assert!(!window.get_mfa_open());
 }
 
 #[test]

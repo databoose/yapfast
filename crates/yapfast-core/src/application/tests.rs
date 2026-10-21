@@ -2873,6 +2873,8 @@ fn discord_mentions_search_the_server_and_name_roles() {
             name: "Alice".into(),
             avatar: String::new(),
             premium_type: 2,
+            mfa_enabled: false,
+            has_email: true,
         }),
         servers: vec![Arc::new(Server {
             id: "10".into(),
@@ -5533,6 +5535,8 @@ fn server_channels_pin_to_the_top_as_discords_client_pins_them() {
             CopyLink,
             ChannelMute,
             ChannelNotifications,
+            // Her role may manage its permissions.
+            EditChannel,
             CopyId
         ],
         "pinning comes before the link, and notifications after"
@@ -5618,6 +5622,8 @@ fn a_discord_servers_menu_and_header_offer_its_notifications() {
             MuteServer,
             ServerNotifications,
             HideMuted,
+            // Her role manages roles.
+            ServerSettings,
             EditServerProfile,
             LeaveServer,
             CopyLink,
@@ -5627,6 +5633,7 @@ fn a_discord_servers_menu_and_header_offer_its_notifications() {
     assert_eq!(
         app.header_choices("discord:10"),
         [
+            ServerSettings,
             ServerNotifications,
             EditServerProfile,
             HideMuted,
@@ -5646,6 +5653,8 @@ fn a_discord_servers_menu_and_header_offer_its_notifications() {
             CopyLink,
             ChannelMute,
             ChannelNotifications,
+            // Her role may manage its permissions.
+            EditChannel,
             CopyId
         ],
         "a channel's menu is a conversation's, with pinning it, and its \
@@ -5688,7 +5697,13 @@ fn a_discord_category_has_a_menu_that_marks_its_channels_read() {
     // #memes mentions her; the header's notification choices sit between.
     assert_eq!(
         app.menu_choices("discord:10:4"),
-        [MarkRead, ChannelMute, ChannelNotifications, CopyId]
+        [
+            MarkRead,
+            ChannelMute,
+            ChannelNotifications,
+            EditChannel,
+            CopyId
+        ]
     );
     assert!(matches!(
         app.dispatch(Action::MarkRead("discord:10:4".into())).as_slice(),
@@ -5701,7 +5716,7 @@ fn a_discord_category_has_a_menu_that_marks_its_channels_read() {
     });
     assert_eq!(
         app.menu_choices("discord:10:4"),
-        [ChannelMute, ChannelNotifications, CopyId]
+        [ChannelMute, ChannelNotifications, EditChannel, CopyId]
     );
     assert!(
         app.dispatch(Action::MarkRead("discord:10:4".into()))
@@ -5742,6 +5757,8 @@ fn discord_invites_go_to_a_channel_this_account_may_invite_to() {
             CopyLink,
             ChannelMute,
             ChannelNotifications,
+            // Her role may manage its permissions.
+            EditChannel,
             CopyId
         ],
         "inviting to a channel comes before pinning it and its link"
@@ -5867,12 +5884,13 @@ fn discord_channels_and_categories_are_made_changed_and_deleted_from_their_menus
         );
     });
     assert_eq!(
-        app.menu_choices("discord:10")[5..],
+        app.menu_choices("discord:10")[6..],
         [CreateChannel, CreateCategory, LeaveServer, CopyLink, CopyId]
     );
     assert_eq!(
         app.header_choices("discord:10"),
         [
+            ServerSettings,
             CreateChannel,
             CreateCategory,
             ServerNotifications,
@@ -5998,18 +6016,16 @@ fn discord_channels_and_categories_are_made_changed_and_deleted_from_their_menus
     );
     app.dispatch(Action::CloseChannelDialog);
 
-    // A text channel's settings load first.
+    // A text channel's settings open over the window, loading Overview
+    // first.
     let general = "discord:10:11".to_owned();
     assert!(matches!(
-        app.dispatch(Action::AskChannel(ChannelAsk::Edit(general.clone()))).as_slice(),
+        app.dispatch(Action::OpenChannelSettings(general.clone())).as_slice(),
         [Effect::Backend(Command::Discord(DiscordCommand::ChannelSettings { room }))] if *room == general
     ));
+    let input = |app: &mut Application, input| app.dispatch(Action::ChannelSettings(input));
     assert!(
-        app.dispatch(Action::SaveChannel {
-            kind: ChannelKind::Text,
-            settings: named("early")
-        })
-        .is_empty(),
+        input(&mut app, ChannelInput::Save).is_empty(),
         "not before they're here"
     );
     let loaded = ChannelSettings {
@@ -6022,54 +6038,42 @@ fn discord_channels_and_categories_are_made_changed_and_deleted_from_their_menus
         room: "discord:10:12".into(),
         result: Ok(ChannelSettings::default()),
     });
-    assert!(
-        app.state
-            .channel_dialog
-            .as_ref()
-            .unwrap()
-            .settings
-            .is_none(),
-        "another channel's"
-    );
+    let screen = |app: &Application| app.state.channel_settings.clone().unwrap();
+    assert!(screen(&app).overview.is_none(), "another channel's");
     app.apply(Event::ChannelLoaded {
         room: general.clone(),
         result: Ok(loaded.clone()),
     });
-    assert_eq!(
-        app.state.channel_dialog.as_ref().unwrap().settings,
-        Some(loaded.clone())
-    );
+    assert_eq!(screen(&app).overview.unwrap().1, loaded);
+    input(&mut app, ChannelInput::Slowmode(7));
+    assert!(!screen(&app).changed(), "only Discord's slowmodes");
+    input(&mut app, ChannelInput::Slowmode(30));
+    input(&mut app, ChannelInput::Name("General Chat".into()));
+    assert!(screen(&app).changed());
     assert!(
-        app.dispatch(Action::SaveChannel {
-            kind: ChannelKind::Text,
-            settings: ChannelSettings {
-                slowmode: 7,
-                ..loaded.clone()
-            }
-        })
-        .is_empty(),
-        "only Discord's slowmodes"
+        input(&mut app, ChannelInput::Close).is_empty() && screen(&app).nudge == 1,
+        "closing waits for the bar"
     );
     assert!(matches!(
-        app.dispatch(Action::SaveChannel {
-            kind: ChannelKind::Voice,
-            settings: ChannelSettings { slowmode: 30, ..loaded.clone() }
-        }).as_slice(),
+        input(&mut app, ChannelInput::Save).as_slice(),
         [Effect::Backend(Command::Discord(DiscordCommand::EditChannel {
             room, kind: ChannelKind::Text, settings
         }))] if *room == general && settings.slowmode == 30 && settings.topic == "Say hi"
+            && settings.name == "general-chat"
     ));
     app.apply(Event::ChannelSaved(Ok(None)));
-    assert!(app.state.channel_dialog.is_none());
+    assert!(!screen(&app).saving && !screen(&app).changed());
+    input(&mut app, ChannelInput::Close);
+    assert!(app.state.channel_settings.is_none());
 
     // A voice channel and a category have only their names.
     assert!(
-        app.dispatch(Action::AskChannel(ChannelAsk::Edit("discord:10:4".into())))
+        app.dispatch(Action::OpenChannelSettings("discord:10:4".into()))
             .is_empty()
     );
-    let dialog = app.state.channel_dialog.clone().unwrap();
-    assert_eq!(dialog.kind, ChannelKind::Category);
-    assert_eq!(dialog.settings.unwrap().name, "Talk");
+    assert_eq!(screen(&app).kind, ChannelKind::Category);
+    assert_eq!(screen(&app).overview.unwrap().0.name, "Talk");
+    input(&mut app, ChannelInput::Close);
 
     app.dispatch(Action::AskChannel(ChannelAsk::Duplicate(general.clone())));
     assert_eq!(
@@ -6180,6 +6184,7 @@ fn a_server_profile_is_edited_as_discords_per_server_profile_editor_does() {
     assert_eq!(
         app.header_choices("discord:10"),
         [
+            ServerSettings,
             ServerNotifications,
             EditServerProfile,
             HideMuted,
@@ -6285,6 +6290,8 @@ fn a_server_profile_is_edited_as_discords_per_server_profile_editor_does() {
         name: "Alice".into(),
         avatar: "alice.png".into(),
         premium_type: 2,
+        mfa_enabled: false,
+        has_email: true,
     });
     app.apply(discord_event(snapshot));
     app.dispatch(Action::EditServerProfile("discord:10".into()));
@@ -6508,6 +6515,8 @@ fn the_main_profile_is_edited_as_discords_profile_editor_does() {
         name: "Alice".into(),
         avatar: "alice.png".into(),
         premium_type: 2,
+        mfa_enabled: false,
+        has_email: true,
     });
     app.apply(discord_event(snapshot));
     app.dispatch(Action::EditProfile);
@@ -8048,3 +8057,18 @@ fn going_idle_while_signed_out_tells_nobody() {
         ))]
     ));
 }
+
+#[cfg(feature = "discord")]
+mod audit_log;
+#[cfg(feature = "discord")]
+mod channel_settings;
+#[cfg(feature = "discord")]
+mod expressions;
+#[cfg(feature = "discord")]
+mod moderation;
+#[cfg(feature = "discord")]
+mod ownership;
+#[cfg(feature = "discord")]
+mod people;
+#[cfg(feature = "discord")]
+mod server_settings;

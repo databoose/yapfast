@@ -207,6 +207,9 @@ impl Adapter {
         self.show_channel_dialog(window);
         self.show_leave(window);
         self.show_profile_editor(window);
+        self.show_server_settings(window);
+        self.show_channel_settings(window);
+        self.show_mfa(window);
         self.show_dialogs(window);
         self.show_reactions(window);
         self.show_gifs(window);
@@ -1536,25 +1539,17 @@ impl Adapter {
         });
     }
 
-    /// The dialog that makes, changes, copies or deletes a Discord channel
-    /// or category.
+    /// The dialog that makes, copies or deletes a Discord channel or
+    /// category.
     fn show_channel_dialog(&self, window: &YapfastWindow) {
         let dialog = self.app.state.channel_dialog.as_ref();
-        // Its fields start from what Discord has, once that's here.
+        // Its fields start from the channel's, as it opens.
         if let Some(dialog) = dialog
-            && (!window.get_channel_open() || window.get_channel_prompt().loading)
+            && !window.get_channel_open()
         {
             let settings = dialog.settings.clone().unwrap_or_default();
             window.set_channel_name(settings.name.into());
-            window.set_channel_topic(settings.topic.into());
             window.set_channel_kind(i32::from(dialog.kind == ChannelKind::Voice));
-            window.set_channel_slowmode(
-                SLOWMODES
-                    .iter()
-                    .position(|known| *known == settings.slowmode)
-                    .map_or(0, |index| index as i32),
-            );
-            window.set_channel_nsfw(settings.nsfw);
         }
         window.set_channel_open(dialog.is_some());
         let Some(dialog) = dialog else {
@@ -1587,11 +1582,6 @@ impl Adapter {
                 ),
                 "Create channel".to_owned(),
             ),
-            ChannelAsk::Edit(_) => (
-                format!("Edit {thing}"),
-                String::new(),
-                "Save changes".to_owned(),
-            ),
             ChannelAsk::Delete(_) => (
                 format!("Delete {thing}"),
                 format!(
@@ -1602,7 +1592,6 @@ impl Adapter {
             ),
         };
         let deleting = matches!(dialog.ask, ChannelAsk::Delete(_));
-        let editing = matches!(dialog.ask, ChannelAsk::Edit(_));
         window.set_channel_prompt(ChannelPrompt {
             title: title.into(),
             detail: detail.into(),
@@ -1622,8 +1611,6 @@ impl Adapter {
                 "new-channel"
             }
             .into(),
-            settings: editing && dialog.kind == ChannelKind::Text,
-            loading: dialog.settings.is_none() && dialog.error.is_none(),
             saving: dialog.saving,
             error: dialog.error.as_deref().unwrap_or_default().into(),
         });

@@ -478,6 +478,8 @@ impl Application {
         }
         self.discord = Some(snapshot);
         let mut effects = self.list_discord();
+        effects.extend(self.follow_server_settings());
+        effects.extend(self.follow_channel_settings());
         effects.extend(self.mark_discord_read());
         effects.extend(self.mark_aside_read());
         // Posts that came to the forum on screen want their first messages.
@@ -499,6 +501,9 @@ impl Application {
         self.state.discord_blocked.clear();
         self.state.discord_ignored.clear();
         self.state.person_dialog = None;
+        self.state.server_settings = None;
+        self.state.channel_settings = None;
+        self.state.mfa.clear();
         self.state.friends.clear();
         self.state.friend_requests.clear();
         self.state.custom_status = None;

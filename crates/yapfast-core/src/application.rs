@@ -18,6 +18,7 @@ use crate::{
 
 mod aside;
 mod calls;
+mod channel_settings;
 mod compose;
 mod discord_account;
 mod forum;
@@ -27,6 +28,7 @@ mod header;
 mod join;
 mod members;
 mod messages;
+mod mfa;
 mod new_post;
 mod places;
 mod polls;
@@ -36,15 +38,21 @@ mod profiles;
 mod reactions;
 mod rooms;
 mod server;
+mod server_settings;
 mod session;
 mod threads;
 
+pub use channel_settings::{
+    ChannelInput, ChannelSection, ChannelSettingsScreen, OverwriteConfirm, OverwriteRules,
+    OverwriteState, Overwrites, channel_groups, channel_permission,
+};
 pub use forum::{ForumInfo, ForumPost, ForumPosts, ForumView};
 pub use gifs::{GifPicker, GifPicture, GifView};
 pub use join::JoinDialog;
 pub use members::{BAN_HISTORY, RoleChoice, TIMEOUT_TIMES};
 #[cfg(all(feature = "discord", any(test, feature = "test-fixtures")))]
 pub use members::{member_server, with_clubs};
+pub use mfa::MfaPrompt;
 pub use new_post::{NewPost, POST_TAGS, POST_TITLE_LIMIT};
 pub use places::{
     ChannelAsk, ChannelDialog, INVITE_AGES, INVITE_USES, InviteDialog, LeaveDialog, ListedCategory,
@@ -58,6 +66,20 @@ pub use profile_editor::{
 };
 pub use reactions::{ReactionTip, ReactionsWindow, TIP_PEOPLE};
 pub use rooms::{MUTE_TIMES, MenuChoice, network_id, network_link};
+pub use server_settings::{
+    ADD_MEMBERS_LIMIT, AFK_TIMEOUTS, AUDIT_ACTIONS, AUDIT_PAGE, AddMembers, AuditInput, AuditKind,
+    AuditLine, AuditLogPage, AuditRow, AuditSpan, AuditWords, BANS_BATCH, BANS_PER_PAGE, BOOSTED,
+    BanInput, BansPage, BoostPage, DEFAULT_ROLE_COLOR, DESCRIPTION_LIMIT, DeleteAsk,
+    EMOJI_NAME_LIMIT, EmojiInput, EmojiPage, EmojiUpload, EngagementPage, ExpressionRules,
+    FILTER_ALL, HIGHEST_VERIFICATION, InviteInput, InvitesPage, LEVEL_BOOSTS, MEMBER_PAGE_SIZES,
+    MEMBER_SORTS, MEMBERS_CHUNK, MemberInput, MembersPage, MfaRule, Ownership, OwnershipInput,
+    PAUSE_HOURS, Page as SettingsPage, PermissionGroup, PermissionInfo, PermissionLock,
+    ProfilePage, ROLE_COLORS, ROLE_NAME_LIMIT, ROLE_PERMISSIONS, RoleConfirm, RoleDraft, RoleInput,
+    RoleLock, RoleRules, RoleTab, RolesPage, SETUP_TIPS, STICKER_DESCRIPTION_LIMIT,
+    STICKER_NAME_LIMIT, SafetyChoice, SafetyPage, SecurityDraft, ServerSettings, SettingsChoice,
+    SettingsText, SettingsToggle, StickerCard, StickerDraft, StickerInput, StickersPage,
+    TransferAsk, WELCOME, WELCOME_STICKER, emoji_name,
+};
 pub use threads::{
     NewThread, THREAD_NAME_LIMIT, ThreadFrom, ThreadList, ThreadSearch, ThreadSections,
     default_thread_name,
@@ -389,6 +411,14 @@ pub struct AppState {
     /// The editor of this account's Discord profile, its main one or one
     /// server's, while it's open; its pictures go when it closes.
     pub profile_editor: Option<ProfileEditor>,
+    /// A Discord server's settings, while they're open: the open page's,
+    /// and only while it is.
+    pub server_settings: Option<ServerSettings>,
+    /// A Discord channel's or category's settings, while they're open.
+    pub channel_settings: Option<ChannelSettingsScreen>,
+    /// Requests Discord holds back for two-factor authentication, the
+    /// first one's prompt showing.
+    pub mfa: Vec<MfaPrompt>,
     /// The same friends by name, as the friends list shows them.
     pub friends: Vec<chat::Friend>,
     pub friend_requests: Vec<chat::FriendRequest>,
@@ -1428,9 +1458,13 @@ pub enum Action {
         kind: chat::ChannelKind,
     },
     /// Open a Discord channel's or category's dialog from its menu, which
-    /// changes, copies or deletes it; carry it out with what was written,
-    /// making one of `kind` where the dialog chooses; or close it.
+    /// copies or deletes it; carry it out with what was written, making one
+    /// of `kind` where the dialog chooses; or close it.
     AskChannel(ChannelAsk),
+    /// Open a Discord channel's or category's settings, by its room id;
+    /// what they were given.
+    OpenChannelSettings(String),
+    ChannelSettings(ChannelInput),
     SaveChannel {
         kind: chat::ChannelKind,
         settings: chat::ChannelSettings,
@@ -1462,6 +1496,51 @@ pub enum Action {
     SaveProfile,
     UnlockNitro,
     CloseProfileEditor,
+    /// Open a Discord server's settings, by its server id or one of its
+    /// channels' room ids; go to another page; change a text of the page,
+    /// read a picture chosen for the server or remove one; undo or save
+    /// what changed, as the bar's Reset and Save Changes do; or close
+    /// them. Leaving a page with unsaved changes shakes the bar instead.
+    OpenServerSettings(String),
+    ServerSettingsSection(chat::SettingsSection),
+    WriteServerSetting {
+        field: SettingsText,
+        text: String,
+    },
+    ToggleServerSetting(SettingsToggle),
+    ChooseServerSetting(SettingsChoice),
+    PickServerPicture {
+        kind: chat::ServerPicture,
+        path: PathBuf,
+    },
+    RemoveServerPicture(chat::ServerPicture),
+    UndoServerSettings,
+    SaveServerSettings,
+    CloseServerSettings,
+    /// Something done on Roles in a server's settings.
+    Roles(RoleInput),
+    /// Something done on Emoji in a server's settings.
+    Emoji(EmojiInput),
+    /// Something done on Stickers in a server's settings.
+    Stickers(StickerInput),
+    /// Something done on Members in a server's settings.
+    Members(MemberInput),
+    /// Something done in Delete Server's or Transfer Ownership's dialog.
+    Ownership(OwnershipInput),
+    /// Something done on Invites in a server's settings.
+    Invites(InviteInput),
+    /// Something done on Bans in a server's settings.
+    Bans(BanInput),
+    /// Something done on Audit Log in a server's settings.
+    AuditLog(AuditInput),
+    /// Answer the two-factor prompt: use another method, or with none
+    /// list them; write the code; have Discord text it again; confirm; or
+    /// cancel, which fails the request waiting on it.
+    ChooseMfa(Option<chat::MfaMethod>),
+    WriteMfa(String),
+    ResendMfa,
+    ConfirmMfa,
+    CancelMfa,
     /// Change how the Discord account stands with someone. Unfriending and
     /// blocking ask first, through [`Action::AskPerson`].
     ChangeRelationship {
@@ -1757,6 +1836,111 @@ fn pictures_on_screen<'a>(
                 .filter(|_| state.dm_screen == Some(DmScreen::Friends))
                 .filter_map(|friend| friend.avatar.as_deref()),
         )
+        .chain(state.server_settings.iter().flat_map(|settings| {
+            let (first, second) = match &settings.page {
+                Some(server_settings::Page::Profile(page)) => (page.original.icon.as_deref(), None),
+                Some(server_settings::Page::BoostPerks(page)) => (
+                    page.original.banner.as_deref(),
+                    page.original.splash.as_deref(),
+                ),
+                Some(
+                    server_settings::Page::Engagement(_)
+                    | server_settings::Page::Emoji(_)
+                    | server_settings::Page::Stickers(_)
+                    | server_settings::Page::Members(_)
+                    | server_settings::Page::Roles(_)
+                    | server_settings::Page::Invites(_)
+                    | server_settings::Page::Safety(_)
+                    | server_settings::Page::AuditLog(_)
+                    | server_settings::Page::Bans(_),
+                )
+                | None => (None, None),
+            };
+            // The page of Bans shown.
+            let banned = match &settings.page {
+                Some(server_settings::Page::Bans(page)) => page.on_page(),
+                _ => vec![],
+            }
+            .into_iter()
+            .map(|ban| ban.user.avatar.as_str());
+            // The page of Members shown, and Invites' inviters.
+            let listed = match &settings.page {
+                Some(server_settings::Page::Members(page)) => page.on_page(),
+                _ => &[],
+            }
+            .iter()
+            .map(|member| member.person.avatar.as_str());
+            let inviters = match &settings.page {
+                Some(server_settings::Page::Invites(page)) => page.invites.as_slice(),
+                _ => &[],
+            }
+            .iter()
+            .filter_map(|invite| invite.inviter.as_ref())
+            .map(|inviter| inviter.avatar.as_str());
+            // Audit Log's moderators, beside its rows and in its user
+            // filter.
+            let logged = match &settings.page {
+                Some(server_settings::Page::AuditLog(page)) => Some(page),
+                _ => None,
+            };
+            let moderators = logged
+                .into_iter()
+                .flat_map(|page| page.actors.iter().map(|(_, user)| user.avatar.as_str()))
+                .filter(|avatar| !avatar.is_empty());
+            // Emoji and their uploaders; stickers and theirs.
+            let emojis = match &settings.page {
+                Some(server_settings::Page::Emoji(page)) => page.emojis.as_slice(),
+                _ => &[],
+            }
+            .iter()
+            .flat_map(|emoji| {
+                let uploader = emoji.user.as_ref().map(|user| user.avatar.as_str());
+                [Some(emoji.picture.as_str()), uploader]
+            })
+            .flatten()
+            .filter(|url| !url.is_empty());
+            let stickers = match &settings.page {
+                Some(server_settings::Page::Stickers(page)) => page.stickers.as_slice(),
+                _ => &[],
+            }
+            .iter()
+            .flat_map(|sticker| {
+                let uploader = sticker.user.as_ref().map(|user| user.avatar.as_str());
+                [sticker.picture.as_deref(), uploader]
+            })
+            .flatten()
+            .filter(|url| !url.is_empty());
+            // Roles' icons, the open role's members and Add Members' finds.
+            let roles = match &settings.page {
+                Some(server_settings::Page::Roles(page)) => Some(page),
+                _ => None,
+            };
+            let icons = roles
+                .into_iter()
+                .flat_map(|page| page.original.roles.iter())
+                .filter_map(|role| role.icon.as_deref());
+            let members = roles
+                .into_iter()
+                .flat_map(|page| page.shown_members())
+                .map(|member| member.avatar.as_str());
+            let found = roles
+                .into_iter()
+                .flat_map(|page| page.adding.iter())
+                .flat_map(|adding| adding.found.iter().chain(&adding.chosen))
+                .map(|member| member.avatar.as_str());
+            first
+                .into_iter()
+                .chain(second)
+                .chain(icons)
+                .chain(emojis)
+                .chain(stickers)
+                .chain(members)
+                .chain(found)
+                .chain(banned)
+                .chain(listed)
+                .chain(inviters)
+                .chain(moderators)
+        }))
         .chain(state.profile_editor.iter().flat_map(|editor| {
             // The profile's pictures and its fallback's, which show where
             // the profile's are reset.
@@ -2333,6 +2517,8 @@ impl Application {
             }
             Action::NewChannel { place, kind } => self.new_channel(place, kind),
             Action::AskChannel(ask) => self.ask_channel(ask),
+            Action::OpenChannelSettings(room) => self.open_channel_settings(room),
+            Action::ChannelSettings(input) => self.channel_input(input),
             Action::SaveChannel { kind, settings } => self.save_channel(kind, settings),
             Action::CloseChannelDialog => {
                 self.state.channel_dialog = None;
@@ -2365,6 +2551,47 @@ impl Application {
                 self.state.profile_editor = None;
                 vec![]
             }
+            Action::OpenServerSettings(place) => self.open_server_settings(place),
+            Action::ServerSettingsSection(section) => self.server_settings_section(section),
+            Action::WriteServerSetting { field, text } => {
+                self.write_server_setting(field, text);
+                vec![]
+            }
+            Action::ToggleServerSetting(toggle) => {
+                self.toggle_server_setting(toggle);
+                vec![]
+            }
+            Action::ChooseServerSetting(choice) => self.choose_server_setting(choice),
+            Action::PickServerPicture { kind, path } => self.pick_server_picture(kind, path),
+            Action::RemoveServerPicture(kind) => {
+                self.remove_server_picture(kind);
+                vec![]
+            }
+            Action::UndoServerSettings => {
+                self.undo_server_settings();
+                vec![]
+            }
+            Action::SaveServerSettings => self.save_server_settings(),
+            Action::Roles(input) => self.role_input(input),
+            Action::Emoji(input) => self.emoji_input(input),
+            Action::Stickers(input) => self.sticker_input(input),
+            Action::Members(input) => self.member_input(input),
+            Action::Ownership(input) => self.ownership_input(input),
+            Action::Invites(input) => self.invite_input(input),
+            Action::Bans(input) => self.ban_input(input),
+            Action::AuditLog(input) => self.audit_log_input(input),
+            Action::CloseServerSettings => {
+                self.close_server_settings();
+                vec![]
+            }
+            Action::ChooseMfa(method) => self.choose_mfa(method),
+            Action::WriteMfa(code) => {
+                self.write_mfa(code);
+                vec![]
+            }
+            Action::ResendMfa => self.resend_mfa(),
+            Action::ConfirmMfa => self.confirm_mfa(),
+            Action::CancelMfa => self.cancel_mfa(),
             Action::ChangeRelationship { user, change } => self.change_relationship(user, change),
             Action::AskPerson { user, ask } => self.ask_person(user, ask),
             Action::AnswerPerson(text) => self.answer_person(text),
@@ -2780,19 +3007,118 @@ impl Application {
                 }
             }
             Event::GroupChanged(result) => self.group_changed(result),
-            Event::InviteMade { room, result } => self.invite_made(room, result),
+            Event::InviteMade { room, result } => {
+                let made = result.is_ok();
+                self.invite_made(room.clone(), result);
+                if made {
+                    return self.invites_after(&room);
+                }
+            }
             Event::InviteSent { result, .. } => self.invite_sent(result),
             Event::InviteResolved { code, result } => return self.invite_resolved(code, result),
             Event::JoinCaptcha { code, page } => return self.join_captcha(code, page),
             Event::ServerJoined { code, result } => return self.server_joined(code, result),
-            Event::ChannelLoaded { room, result } => self.channel_loaded(room, result),
-            Event::ChannelSaved(result) => self.channel_saved(result),
+            Event::ChannelLoaded { room, result } => self.channel_settings_loaded(&room, result),
+            Event::ChannelSaved(result) => {
+                if !self.channel_settings_saved(&result) {
+                    self.channel_saved(result);
+                }
+            }
+            Event::OverwritesChanged { room, result } => self.overwrites_changed(room, result),
+            Event::OverwriteNames { room, members } => self.overwrite_names(room, members),
             Event::LeftServer { server, result } => self.left_server(server, result),
+            Event::ServerDeleted { server, result } => self.server_deleted(server, result),
+            Event::ServerTransferred { server, result } => self.server_transferred(server, result),
+            Event::ServerPincodeSent { server, result } => self.server_pincode_sent(server, result),
             Event::OwnProfile { server, result } => self.own_profile_loaded(server, result),
             Event::ProfilePicture { kind, path, result } => {
                 self.profile_picture_read(kind, path, result);
             }
             Event::ProfileSaved { server, result } => self.profile_saved(server, result),
+            Event::MfaRequired { id, methods } => return self.mfa_required(id, methods),
+            Event::MfaFinished { id, result } => return self.mfa_finished(id, result),
+            Event::MfaTexted { id, result } => self.mfa_texted(id, result),
+            Event::ServerSettingsLoaded {
+                server,
+                section,
+                result,
+            } => self.server_settings_loaded(server, section, result),
+            Event::ServerPicture { kind, path, result } => {
+                self.server_picture_read(kind, path, result);
+            }
+            Event::ServerSettingsChanged { server, settings } => {
+                self.server_settings_changed(server, *settings);
+            }
+            Event::ServerSettingsSaved { server, result } => {
+                self.server_settings_saved(server, result);
+            }
+            Event::ServerRoleChanged { server, role } => {
+                self.server_role_changed(server, Some(*role), None);
+            }
+            Event::ServerRoleDeleted { server, role } => {
+                self.server_role_changed(server, None, Some(role));
+            }
+            Event::BansLoaded {
+                server,
+                searched,
+                result,
+            } => self.bans_loaded(server, searched, result),
+            Event::Unbanned {
+                server,
+                user,
+                result,
+            } => self.unbanned(server, user, result),
+            Event::AuditLogLoaded {
+                server,
+                query,
+                result,
+            } => self.audit_log_loaded(server, query, result),
+            Event::MembersFound {
+                server,
+                query,
+                result,
+            } => return self.members_found(server, query, result),
+            Event::MembersIndexing { server, query } => self.members_indexing(server, query),
+            Event::InvitesLoaded { server, result } => self.invites_loaded(server, result),
+            Event::InviteRevoked {
+                server,
+                code,
+                result,
+            } => self.invite_revoked(server, code, result),
+            Event::ServerPaused { server, result } => self.server_paused(server, result),
+            Event::EmojisChanged {
+                server,
+                upload,
+                result,
+                emojis,
+            } => self.emojis_changed(server, upload, result, emojis),
+            Event::StickersChanged {
+                server,
+                form,
+                result,
+                stickers,
+            } => self.stickers_changed(server, form, result, stickers),
+            Event::ServerStickers { server, stickers } => self.server_stickers(server, stickers),
+            Event::ServerBan {
+                server,
+                ban,
+                banned,
+            } => self.server_ban(server, *ban, banned),
+            Event::RoleHolders {
+                server,
+                role,
+                result,
+                count,
+            } => self.role_holders(server, role, result, count),
+            Event::RoleCandidates {
+                server,
+                query,
+                members,
+            } => {
+                if !self.overwrite_candidates(&server, &query, &members) {
+                    self.role_candidates(server, query, members);
+                }
+            }
             Event::FriendAdded(outcome) => {
                 if let Some(dialog) = &mut self.state.add_friend {
                     dialog.sending = false;
@@ -2819,7 +3145,11 @@ impl Application {
             Event::PersonSaved(result) => {
                 if let Some(dialog) = &mut self.state.person_dialog {
                     match result {
-                        Ok(()) => self.state.person_dialog = None,
+                        // Members shows the change.
+                        Ok(()) => {
+                            self.state.person_dialog = None;
+                            return self.members_again();
+                        }
                         Err(error) => {
                             dialog.saving = false;
                             dialog.error = Some(error);

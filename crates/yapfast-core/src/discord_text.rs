@@ -37,12 +37,19 @@ use crate::{
 };
 
 mod account;
+mod audit_log;
 mod channels;
 mod commands;
+mod expressions;
 mod gifs;
 mod open_channel;
+mod overwrites;
 mod own_profile;
+mod ownership;
+mod people;
 mod render;
+mod roles;
+mod server_settings;
 
 pub use channels::Channels;
 pub use commands::{command, finished, live};

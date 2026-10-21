@@ -3,12 +3,12 @@ Original source: https://lucide.dev/ and https://github.com/lucide-icons/lucide.
 
 - hash, headphones, message-circle, message-square-text, messages-square, mic,
   mic-off, settings and volume-2 were carried forward from gpui-kit-assets 0.7.0.
-- ban, bell, bell-off, check, chevron-down, circle-plus, clipboard-paste, copy, copy-plus, download, eye, eye-off, file, folder-plus, headphone-off, history, inbox, lock, log-out, pencil,
+- ban, bell, bell-off, check, chevron-down, circle-plus, clipboard-paste, copy, copy-plus, crown, download, eye, eye-off, file, folder-plus, headphone-off, history, inbox, lock, log-out, pencil,
   phone, phone-off, pin, pin-off, refresh-cw, reply, screen-share, screen-share-off, send-horizontal,
   palette, scissors, smile-plus, square-pen, sticky-note, text-select, trash-2, triangle-alert, user, user-minus, user-pen, user-plus, users and x come unmodified from
   lucide-static 1.51.0.
 - at-sign, chevron-left, chevron-right, clock, ellipsis, forward, gavel, search,
-  shield, smile, user-x, video and video-off follow
+  shield, slash, smile, user-x, video and video-off follow
   lucide-static 1.51.0's paths in the same wrapper.
 - maximize, minimize, pause, play, signal-high, signal-low, signal-medium and
   volume-x follow Lucide's paths in the same wrapper.

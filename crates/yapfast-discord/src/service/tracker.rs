@@ -62,6 +62,10 @@ pub(super) struct Tracker {
     pub(super) session: Option<String>,
     /// This account's Nitro, as [`Account::premium_type`].
     premium: u8,
+    /// Whether this account has two-factor authentication on.
+    mfa: bool,
+    /// Whether it has an email address, as [`Account::has_email`].
+    email: bool,
     /// Changed through [`Self::server_mut`], which copies one a snapshot
     /// still shares.
     pub(super) servers: Vec<Arc<Server>>,
@@ -127,6 +131,8 @@ impl Tracker {
             me,
             session: ready["session_id"].as_str().map(str::to_owned),
             premium: premium_type(&ready["user"]),
+            mfa: ready["user"]["mfa_enabled"].as_bool().unwrap_or_default(),
+            email: ready["user"]["email"].is_string(),
             servers: ready::servers(ready).into_iter().map(Arc::new).collect(),
             published: HashMap::new(),
             names,
@@ -388,9 +394,16 @@ impl Tracker {
                 };
                 known.name = update.name;
                 known.icon = update.icon;
+                known.banner = update.banner;
+                // Every GUILD_UPDATE has its owner; a transfer changes it.
+                if update.owner_id.is_some() {
+                    known.owner_id = update.owner_id;
+                }
                 known.premium_tier = update.premium_tier;
+                known.mfa_level = update.mfa_level;
                 known.default_level = update.default_level;
                 known.forwarding_disabled = update.forwarding_disabled;
+                known.verified = update.verified;
                 self.sort_servers();
                 true
             }
@@ -407,8 +420,17 @@ impl Tracker {
                 };
                 let before = shown(self);
                 self.learn_user(data);
-                let changed = premium != self.premium || shown(self) != before;
+                let mfa = data["mfa_enabled"].as_bool().unwrap_or(self.mfa);
+                // Only this account's own USER_UPDATE has `email`, null
+                // for none.
+                let email = data.get("email").map_or(self.email, Value::is_string);
+                let changed = premium != self.premium
+                    || mfa != self.mfa
+                    || email != self.email
+                    || shown(self) != before;
                 self.premium = premium;
+                self.mfa = mfa;
+                self.email = email;
                 changed
             }
             // An outage, with `unavailable`, keeps the server as last known
@@ -1447,6 +1469,8 @@ impl Tracker {
                 name: name.to_owned(),
                 avatar: names.avatar(None, &self.me),
                 premium_type: self.premium,
+                mfa_enabled: self.mfa,
+                has_email: self.email,
             }),
             servers,
             folders: self.folders.clone(),

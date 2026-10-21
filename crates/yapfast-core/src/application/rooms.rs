@@ -57,6 +57,8 @@ pub enum MenuChoice {
     RemoveTimeout,
     Kick,
     Ban,
+    /// Give the server to them, from Members in its settings.
+    TransferOwnership,
     // A member's in a voice channel, as its menu there offers them.
     /// Mute someone for this account alone, as a box to tick.
     LocalMute,
@@ -105,6 +107,9 @@ pub enum MenuChoice {
     /// Change this account's nickname in a Discord server, through a
     /// member's nickname dialog.
     EditServerProfile,
+    /// Open a Discord server's settings, to the pages this account may
+    /// change.
+    ServerSettings,
 }
 
 /// How long [`MenuChoice::Mute`] mutes for, as Discord's client offers.

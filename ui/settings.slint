@@ -1,6 +1,6 @@
 import { ComboBox } from "std-widgets.slint";
 import { ScrollView } from "scrollview.slint";
-import { Theme, Middle, Label } from "theme.slint";
+import { Theme, Middle, Label, Tip } from "theme.slint";
 import { ActionButton, IconButton, Avatar, SensitivitySlider, VolumeSlider, TextField, StatusText } from "controls.slint";
 import { DiscordLinkPanel } from "discord.slint";
 import { ChannelRow } from "rail.slint";
@@ -22,10 +22,19 @@ export component SettingsSwitch inherits Rectangle {
     in property <string> description;
     in-out property <bool> checked;
     in property <bool> enabled: true;
+    /// Why it can't change, shown while the pointer is on the switch.
+    in property <string> locked-tip;
+    /// Its owner sets `checked`, from what a flip asks for: the switch only
+    /// says it was flipped, so a binding to it stays.
+    in property <bool> controlled;
     callback toggled(bool);
     height: column.preferred-height;
     function toggle() {
         if root.enabled {
+            if root.controlled {
+                root.toggled(!root.checked);
+                return;
+            }
             root.checked = !root.checked;
             root.toggled(root.checked);
         }
@@ -49,9 +58,31 @@ export component SettingsSwitch inherits Rectangle {
                     }
                 }
             }
-            Text {
-                text: root.text; color: root.enabled ? Theme.text : Theme.muted; font-size: 15px;
-                vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1;
+            HorizontalLayout {
+                spacing: 6px; alignment: start; horizontal-stretch: 1;
+                Text {
+                    text: root.text; color: root.enabled ? Theme.text : Theme.muted; font-size: 15px;
+                    vertical-alignment: center; wrap: word-wrap;
+                }
+                // Discord's lock after the title, with why on hover.
+                if !root.enabled && root.locked-tip != "": Middle {
+                    Image {
+                        width: 14px; height: 14px; source: @image-url("icons/lock.svg"); colorize: Theme.muted;
+                        accessible-role: image; accessible-label: root.locked-tip;
+                        TouchArea {
+                            changed has-hover => {
+                                if self.has-hover {
+                                    Tip.text = root.locked-tip;
+                                    Tip.side = 0;
+                                    Tip.x = self.absolute-position.x + self.width / 2;
+                                    Tip.y = self.absolute-position.y;
+                                } else if Tip.text == root.locked-tip {
+                                    Tip.text = "";
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         if root.description != "": Label { text: root.description; }
@@ -75,12 +106,30 @@ export component SettingsSwitch inherits Rectangle {
             clicked => { root.toggle(); }
         }
     }
+    // Outside the focus scope, which disabled takes no pointer.
+    if !root.enabled && root.locked-tip != "": TouchArea {
+        x: 0px; y: (row.height - 22px) / 2; width: 40px; height: 22px;
+        changed has-hover => {
+            if self.has-hover {
+                Tip.text = root.locked-tip;
+                Tip.side = 0;
+                Tip.x = self.absolute-position.x + self.width / 2;
+                Tip.y = self.absolute-position.y;
+            } else if Tip.text == root.locked-tip {
+                Tip.text = "";
+            }
+        }
+    }
 }
 
 export component Choices inherits Rectangle {
     in property <[string]> options;
     in property <string> label;
     in-out property <int> current;
+    /// `current` follows what Rust shows, and a click only reports the
+    /// choice: assigning it would drop the binding, and Reset or a live
+    /// update would no longer show.
+    in property <bool> controlled;
     callback chosen(int);
     height: 36px; max-width: 360px;
     border-radius: 8px; background: Theme.sunken;
@@ -94,7 +143,7 @@ export component Choices inherits Rectangle {
             animate background { duration: Theme.quick; }
             accessible-role: button;
             accessible-label: index == root.current ? option + ", chosen" : option;
-            accessible-action-default => { root.current = index; root.chosen(index); }
+            accessible-action-default => { if !root.controlled { root.current = index; } root.chosen(index); }
             Text {
                 text: option; font-size: 14px;
                 color: index == root.current ? Theme.text : Theme.secondary;
@@ -102,27 +151,95 @@ export component Choices inherits Rectangle {
             }
             choice := TouchArea {
                 mouse-cursor: MouseCursor.pointer;
-                clicked => { root.current = index; root.chosen(index); }
+                clicked => { if !root.controlled { root.current = index; } root.chosen(index); }
             }
         }
     }
 }
 
-// Settings cover the window: sections on the left, the chosen one, given as
-// children, on the right. Escape or the close button returns to the conversation.
-export component SettingsScreen inherits Rectangle {
-    /// The section showing: 0 account, 1 voice and video, 2 messages,
-    /// 3 notifications, 4 Discord, 5 sounds, 6 advanced, 7 appearance.
-    in-out property <int> settings-section;
-    in property <bool> discord-build;
-    in property <bool> preview;
+// A ComboBox showing `chosen`, which Rust keeps: a pick assigns
+// `current-index`, which drops a binding to it, so each change of `chosen` is
+// assigned again, as after Reset or a live update.
+export component Picker inherits ComboBox {
+    in property <int> chosen;
+    current-index: root.chosen;
+    changed chosen => { root.current-index = root.chosen; }
+}
+
+// Discord's bar once a draft differs from what Discord has: Reset puts it back,
+// and Save Changes sends it. Each time leaving is refused for the changes,
+// `nudge` goes up, and the bar shakes red, as Discord's does.
+export component UnsavedBar inherits Rectangle {
+    in property <bool> saving;
+    in property <bool> may-reset: true;
+    in property <bool> may-save: true;
+    in property <int> nudge;
+    in property <length> pad: 12px;
+    callback undo;
+    callback save;
+    /// Shakes left to go, and the red that lasts a little longer.
+    property <int> shakes;
+    property <bool> red;
+    changed nudge => { root.shakes = 6; root.red = true; }
+    Timer { interval: 60ms; running: root.shakes > 0; triggered => { root.shakes -= 1; } }
+    Timer { interval: 1200ms; running: root.red; triggered => { root.red = false; } }
+    height: 60px;
+    background: root.red ? Theme.danger : Theme.raised;
+    animate background { duration: Theme.quick; }
+    Rectangle { y: 0px; height: 1px; background: Theme.edge; }
+    bar := HorizontalLayout {
+        x: root.shakes == 0 ? 0px : Math.mod(root.shakes, 2) == 0 ? -6px : 6px;
+        animate x { duration: 50ms; }
+        width: root.width;
+        padding: 12px; padding-left: root.pad; spacing: 8px;
+        Middle {
+            Text {
+                text: "Careful — you have unsaved changes!"; font-size: 14px; font-weight: 600; overflow: elide;
+                color: root.red ? Theme.on-danger : Theme.text;
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        ActionButton {
+            text: "Reset"; ghost: true; enabled: root.may-reset && !root.saving;
+            clicked => { root.undo(); }
+        }
+        ActionButton {
+            text: root.saving ? "Saving..." : "Save Changes"; primary: true;
+            enabled: root.may-save && !root.saving;
+            clicked => { root.save(); }
+        }
+    }
+}
+
+/// A row of a settings sidebar: a group's heading, a line between groups
+/// for a heading without text, or a page, red for a dangerous one.
+export struct SettingsRow { heading: bool, text: string, icon: image, id: int, danger: bool }
+
+// Settings cover the window: sections on the left, under their groups'
+// headings, and the chosen one, given as children, on the right. Escape or the
+// close button returns to the conversation.
+export component SettingsFrame inherits Rectangle {
+    in property <[SettingsRow]> rows;
+    in property <int> selected;
+    in property <string> label: "Settings";
+    /// Room below the section, for a bar over its bottom.
+    in property <length> bottom: 56px;
+    /// The page fills the frame's height instead of scrolling in it, for
+    /// a page with a list view of its own, which makes only the rows in
+    /// sight.
+    in property <bool> fill;
+    /// Where the section's column starts and how wide it is, for such a bar.
+    out property <length> content-x: content.x;
+    out property <length> content-width: content.width;
+    callback chose(int);
     callback close;
-    callback refresh-devices;
+    /// Takes the keys back, for Escape, once what had them is gone.
+    public function focus-keys() { keys.focus(); }
     background: Theme.chat;
     accessible-role: groupbox;
-    accessible-label: "Settings";
+    accessible-label: root.label;
     TouchArea { }
-    FocusScope {
+    keys := FocusScope {
         init => { self.focus(); }
         key-pressed(event) => {
             if event.text == Key.Escape { root.close(); return accept; }
@@ -135,49 +252,33 @@ export component SettingsScreen inherits Rectangle {
                     alignment: end;
                     VerticalLayout {
                         width: 232px; padding: 16px; padding-top: 56px; spacing: 2px; alignment: start;
-                        HorizontalLayout { padding-left: 8px; padding-bottom: 6px; SettingsHeading { text: "SETTINGS"; } }
-                        ChannelRow {
-                            text: "My account"; icon: @image-url("icons/user.svg");
-                            selected: root.settings-section == 0; clicked => { root.settings-section = 0; }
-                        }
-                        ChannelRow {
-                            text: "Appearance"; icon: @image-url("icons/palette.svg");
-                            selected: root.settings-section == 7; clicked => { root.settings-section = 7; }
-                        }
-                        ChannelRow {
-                            text: "Voice & video"; icon: @image-url("icons/headphones.svg");
-                            selected: root.settings-section == 1; clicked => { root.settings-section = 1; root.refresh-devices(); }
-                        }
-                        ChannelRow {
-                            text: "Messages"; icon: @image-url("icons/message-circle.svg");
-                            selected: root.settings-section == 2; clicked => { root.settings-section = 2; }
-                        }
-                        ChannelRow {
-                            text: "Notifications"; icon: @image-url("icons/bell.svg");
-                            selected: root.settings-section == 3; clicked => { root.settings-section = 3; }
-                        }
-                        ChannelRow {
-                            text: "Sounds"; icon: @image-url("icons/volume-2.svg");
-                            selected: root.settings-section == 5; clicked => { root.settings-section = 5; }
-                        }
-                        if root.discord-build && !root.preview: ChannelRow {
-                            text: "Discord"; icon: @image-url("icons/discord.svg");
-                            selected: root.settings-section == 4; clicked => { root.settings-section = 4; }
-                        }
-                        ChannelRow {
-                            text: "Advanced"; icon: @image-url("icons/settings.svg");
-                            selected: root.settings-section == 6; clicked => { root.settings-section = 6; }
+                        for row[index] in root.rows: VerticalLayout {
+                            if row.heading && row.text != "": HorizontalLayout {
+                                padding-left: 8px; padding-bottom: 6px; padding-top: index == 0 ? 0px : 16px;
+                                SettingsHeading { text: row.text; overflow: elide; }
+                            }
+                            if row.heading && row.text == "": VerticalLayout {
+                                padding-left: 8px; padding-right: 8px; padding-top: 12px; padding-bottom: 12px;
+                                Rectangle { height: 1px; background: Theme.line; }
+                            }
+                            if !row.heading: ChannelRow {
+                                text: row.text; icon: row.icon; danger: row.danger;
+                                selected: root.selected == row.id; clicked => { root.chose(row.id); }
+                            }
                         }
                     }
                 }
             }
-            Rectangle {
+            content := Rectangle {
                 horizontal-stretch: 2; min-width: 440px;
-                ScrollView {
-                    HorizontalLayout {
-                        padding-left: 40px; padding-right: 96px; padding-top: 56px; padding-bottom: 56px;
+                scroll := ScrollView {
+                    content-height: root.fill ? self.visible-height : page.preferred-height;
+                    page := HorizontalLayout {
+                        height: root.fill ? scroll.visible-height : self.preferred-height;
+                        padding-left: 40px; padding-right: 96px; padding-top: 56px; padding-bottom: root.bottom;
                         VerticalLayout {
-                            max-width: 660px; horizontal-stretch: 1; spacing: 16px; alignment: start;
+                            max-width: 660px; horizontal-stretch: 1; spacing: 16px;
+                            alignment: root.fill ? LayoutAlignment.stretch : LayoutAlignment.start;
                             @children
                         }
                     }
@@ -187,7 +288,7 @@ export component SettingsScreen inherits Rectangle {
                     HorizontalLayout {
                         alignment: center;
                         IconButton {
-                            icon: @image-url("icons/x.svg"); label: "Close settings"; size: 36px; glyph: 18px; radius: 18px;
+                            icon: @image-url("icons/x.svg"); label: "Close " + root.label; size: 36px; glyph: 18px; radius: 18px;
                             fill: Theme.raised; clicked => { root.close(); }
                         }
                     }
@@ -198,8 +299,48 @@ export component SettingsScreen inherits Rectangle {
     }
 }
 
-// Settings: who's signed in, and ways to reconnect, edit the Discord profile,
-// set a custom status and sign out.
+// This device's settings, in a SettingsFrame.
+export component SettingsScreen inherits Rectangle {
+    /// The section showing: 0 account, 1 voice and video, 2 messages,
+    /// 3 notifications, 4 Discord, 5 sounds, 6 advanced, 7 appearance.
+    in-out property <int> settings-section;
+    in property <bool> discord-build;
+    in property <bool> preview;
+    callback close;
+    callback refresh-devices;
+    property <[SettingsRow]> with-discord: [
+        { heading: true, text: "SETTINGS" },
+        { text: "My account", icon: @image-url("icons/user.svg"), id: 0 },
+        { text: "Appearance", icon: @image-url("icons/palette.svg"), id: 7 },
+        { text: "Voice & video", icon: @image-url("icons/headphones.svg"), id: 1 },
+        { text: "Messages", icon: @image-url("icons/message-circle.svg"), id: 2 },
+        { text: "Notifications", icon: @image-url("icons/bell.svg"), id: 3 },
+        { text: "Sounds", icon: @image-url("icons/volume-2.svg"), id: 5 },
+        { text: "Discord", icon: @image-url("icons/discord.svg"), id: 4 },
+        { text: "Advanced", icon: @image-url("icons/settings.svg"), id: 6 },
+    ];
+    property <[SettingsRow]> without-discord: [
+        { heading: true, text: "SETTINGS" },
+        { text: "My account", icon: @image-url("icons/user.svg"), id: 0 },
+        { text: "Appearance", icon: @image-url("icons/palette.svg"), id: 7 },
+        { text: "Voice & video", icon: @image-url("icons/headphones.svg"), id: 1 },
+        { text: "Messages", icon: @image-url("icons/message-circle.svg"), id: 2 },
+        { text: "Notifications", icon: @image-url("icons/bell.svg"), id: 3 },
+        { text: "Sounds", icon: @image-url("icons/volume-2.svg"), id: 5 },
+        { text: "Advanced", icon: @image-url("icons/settings.svg"), id: 6 },
+    ];
+    SettingsFrame {
+        rows: root.discord-build && !root.preview ? root.with-discord : root.without-discord;
+        selected: root.settings-section;
+        chose(id) => {
+            root.settings-section = id;
+            if id == 1 { root.refresh-devices(); }
+        }
+        close => { root.close(); }
+        @children
+    }
+}
+
 export component AccountSettings inherits VerticalLayout {
     in property <string> account-name;
     in property <string> account-status;

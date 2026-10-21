@@ -19,10 +19,11 @@ use crate::{
     cache, forum, invite, limits,
     member_list::{ListedMember, Presence},
     message::{self, Message, Names, Page},
+    mfa,
     notifications::Change,
     profile::{self, Profile},
     ready::{self, PRIVATE, Server},
-    search,
+    search, server_settings,
     settings::{self, CustomStatus},
     stream::StreamServer,
 };
@@ -81,6 +82,15 @@ pub struct Account {
     /// Its Nitro: 0 none, 1 Nitro Classic, 2 Nitro, 3 Nitro Basic; see
     /// [`crate::api::upload_limit`].
     pub premium_type: u8,
+    /// It has two-factor authentication on, which a server owner needs to
+    /// change whether moderators do.
+    #[serde(default)]
+    pub mfa_enabled: bool,
+    /// It has an email address, to which Discord sends the code that gives
+    /// a server away when two-factor authentication is off; only whether,
+    /// not the address.
+    #[serde(default)]
+    pub has_email: bool,
 }
 
 /// A DM or group DM, as the DM list shows it.
@@ -401,6 +411,44 @@ pub enum Live {
     /// Discord moved a stream this account shares or watches to another
     /// server.
     StreamMoved(StreamServer),
+    /// Discord holds a request back until this account confirms with
+    /// two-factor authentication, by one of `methods`; the prompt is
+    /// answered by [`Discord::finish_mfa`] or [`Discord::cancel_mfa`] with
+    /// its id.
+    MfaRequired {
+        id: u64,
+        methods: Vec<mfa::Method>,
+    },
+    /// A server's settings changed, as GUILD_UPDATE gives them, for its
+    /// settings' pages while they're open.
+    ServerSettings {
+        guild: String,
+        settings: Box<server_settings::GuildSettings>,
+    },
+    /// A role was made or changed, as GUILD_ROLE_CREATE and
+    /// GUILD_ROLE_UPDATE give it, for Roles while it's open.
+    ServerRole {
+        guild: String,
+        role: Box<server_settings::Role>,
+    },
+    /// A role was deleted, by id.
+    ServerRoleDeleted {
+        guild: String,
+        role: String,
+    },
+    /// Someone was banned, as GUILD_BAN_ADD gives them, without a reason,
+    /// or unbanned, for Bans while it's open.
+    ServerBan {
+        guild: String,
+        ban: Box<server_settings::Ban>,
+        banned: bool,
+    },
+    /// A server's stickers, as GUILD_STICKERS_UPDATE gives them all, for
+    /// Stickers while it's open.
+    ServerStickers {
+        guild: String,
+        stickers: Vec<server_settings::GuildSticker>,
+    },
 }
 
 /// What a call needs to open the voice connection Discord assigned.
@@ -542,6 +590,9 @@ pub struct Discord {
     /// The addresses of the icons of applications activities showed, by
     /// id; none for one without an icon.
     application_icons: Arc<Mutex<HashMap<String, Option<String>>>>,
+    /// Requests held back for two-factor authentication, waiting for the
+    /// person; see [`Self::stepping_up`].
+    mfa: Arc<mfa::Prompts>,
 }
 
 /// Discord allows starting 10 new DMs with people in 10 minutes, and treats
@@ -619,6 +670,7 @@ impl Discord {
             listed_threads: Arc::default(),
             new_dms: Arc::new(Mutex::new(limits::Window::new(NEW_DMS, NEW_DM_SPAN))),
             application_icons: Arc::default(),
+            mfa: Arc::default(),
         })
     }
 
@@ -1126,6 +1178,70 @@ impl Discord {
         )
     }
 
+    /// Does `work`, and when Discord holds it back for two-factor
+    /// authentication, asks the person with [`Live::MfaRequired`] and does
+    /// it again once they confirm, as Discord's client does. Cancelling
+    /// fails it. `work` may send several requests; each carries the token.
+    pub async fn stepping_up<T, F, Work>(&self, mut work: Work) -> Result<T>
+    where
+        Work: FnMut() -> F,
+        F: std::future::Future<Output = Result<T>>,
+    {
+        let mut token = None;
+        loop {
+            let result = match token.take() {
+                Some(token) => mfa::with_token(token, work()).await,
+                None => work().await,
+            };
+            let error = match result {
+                Ok(done) => return Ok(done),
+                Err(error) => error,
+            };
+            let Some(required) = error.downcast_ref::<mfa::Required>() else {
+                return Err(error);
+            };
+            let (id, answered) = self.mfa.ask(required.ticket.clone());
+            let _ = self.live.send(Live::MfaRequired {
+                id,
+                methods: required.methods.clone(),
+            });
+            match answered.await {
+                Ok(mfa::Answer::Token(confirmed)) => token = Some(confirmed),
+                Ok(mfa::Answer::Cancelled) | Err(_) => {
+                    bail!("Two-factor authentication was cancelled.")
+                }
+            }
+        }
+    }
+
+    /// Confirms a prompt of [`Live::MfaRequired`] with a code, password or
+    /// backup code; the request waiting on it goes again. A confirmation
+    /// Discord refuses fails here and leaves the prompt open.
+    pub async fn finish_mfa(&self, id: u64, method: mfa::Method, data: &str) -> Result<()> {
+        let ticket = self
+            .mfa
+            .ticket(id)
+            .context("That confirmation is no longer waiting.")?;
+        let token = self.api.finish_mfa(&ticket, method, data).await?;
+        self.mfa.answer(id, mfa::Answer::Token(token));
+        Ok(())
+    }
+
+    /// Has Discord text a code for a prompt; the phone number it went to,
+    /// partly hidden, comes back.
+    pub async fn send_mfa_sms(&self, id: u64) -> Result<String> {
+        let ticket = self
+            .mfa
+            .ticket(id)
+            .context("That confirmation is no longer waiting.")?;
+        self.api.send_mfa_sms(&ticket).await
+    }
+
+    /// Gives up on a prompt; the request waiting on it fails.
+    pub fn cancel_mfa(&self, id: u64) {
+        self.mfa.answer(id, mfa::Answer::Cancelled);
+    }
+
     /// This account's own profile, for its editor, fetched afresh: in
     /// `guild`, or its main one.
     pub async fn own_profile(&self, guild: Option<&str>) -> Result<profile::OwnProfile> {
@@ -1158,6 +1274,317 @@ impl Discord {
         }
         self.forget_own_profile(Some(guild));
         Ok(())
+    }
+
+    /// A server's profile, for its settings' Server Profile page.
+    pub async fn guild_profile(&self, guild: &str) -> Result<server_settings::ServerProfile> {
+        let profile = self.api.server_profile(guild).await?;
+        Ok(server_settings::parse_profile(guild, &profile))
+    }
+
+    /// Changes a server's profile with `body`'s fields, as Server Profile's
+    /// Save Changes does, giving it as it now stands; GUILD_UPDATE follows.
+    pub async fn save_guild_profile(
+        &self,
+        guild: &str,
+        body: &Value,
+    ) -> Result<server_settings::ServerProfile> {
+        let profile = self.api.modify_server_profile(guild, body).await?;
+        Ok(server_settings::parse_profile(guild, &profile))
+    }
+
+    /// A server's settings, for its Engagement and Boost Perks pages.
+    pub async fn guild_settings(&self, guild: &str) -> Result<server_settings::GuildSettings> {
+        let settings = self.api.guild(guild).await?;
+        Ok(server_settings::parse_guild(&settings))
+    }
+
+    /// Changes a server's settings with `body`'s fields, giving them as
+    /// they now stand; GUILD_UPDATE follows.
+    pub async fn save_guild_settings(
+        &self,
+        guild: &str,
+        body: &Value,
+    ) -> Result<server_settings::GuildSettings> {
+        let settings = self.api.modify_guild(guild, body).await?;
+        Ok(server_settings::parse_guild(&settings))
+    }
+
+    /// Up to [`api::BANS_PAGE`] of a server's bans, after a user's id.
+    pub async fn bans(
+        &self,
+        guild: &str,
+        after: Option<&str>,
+    ) -> Result<Vec<server_settings::Ban>> {
+        let bans = self.api.bans(guild, after).await?;
+        Ok(parse_bans(&bans))
+    }
+
+    /// Bans' search: the first name in `query` and every user id in it,
+    /// split at commas, as Discord's client splits it.
+    pub async fn search_bans(&self, guild: &str, query: &str) -> Result<Vec<server_settings::Ban>> {
+        let (ids, names): (Vec<&str>, Vec<&str>) = query
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .partition(|part| {
+                (17..=19).contains(&part.len()) && part.bytes().all(|byte| byte.is_ascii_digit())
+            });
+        let ids: Vec<String> = ids.into_iter().map(str::to_owned).collect();
+        let bans = self
+            .api
+            .search_bans(guild, names.first().copied(), &ids)
+            .await?;
+        Ok(parse_bans(&bans))
+    }
+
+    /// A page of a server's audit log, as Discord sends it; see
+    /// [`Api::audit_log`].
+    pub async fn audit_log(
+        &self,
+        guild: &str,
+        before: Option<&str>,
+        user: Option<&str>,
+        action: Option<u16>,
+    ) -> Result<Value> {
+        self.api.audit_log(guild, before, user, action).await
+    }
+
+    /// A chunk of Members' search; see [`crate::api::Api::search_members`].
+    pub async fn members_search(
+        &self,
+        guild: &str,
+        body: &Value,
+    ) -> Result<crate::api::MembersSearch> {
+        self.api.search_members(guild, body).await
+    }
+
+    pub async fn guild_invites(&self, guild: &str) -> Result<Vec<server_settings::Invite>> {
+        let invites = self.api.guild_invites(guild).await?;
+        Ok(invites
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(server_settings::parse_invite)
+            .collect())
+    }
+
+    pub async fn revoke_invite(&self, code: &str) -> Result<()> {
+        self.api.revoke_invite(code).await
+    }
+
+    pub async fn guild_emojis(&self, guild: &str) -> Result<Vec<server_settings::GuildEmoji>> {
+        let emojis = self.api.guild_emojis(guild).await?;
+        Ok(emojis
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(server_settings::parse_emoji)
+            .collect())
+    }
+
+    /// Adds a custom emoji, `image` a data URI; gives back the emoji.
+    pub async fn create_emoji(
+        &self,
+        guild: &str,
+        name: &str,
+        image: &str,
+    ) -> Result<server_settings::GuildEmoji> {
+        let emoji = self.api.create_emoji(guild, name, image).await?;
+        server_settings::parse_emoji(&emoji).context("could not understand Discord's answer")
+    }
+
+    pub async fn rename_emoji(&self, guild: &str, emoji: &str, name: &str) -> Result<()> {
+        self.api.rename_emoji(guild, emoji, name).await.map(drop)
+    }
+
+    pub async fn delete_emoji(&self, guild: &str, emoji: &str) -> Result<()> {
+        self.api.delete_emoji(guild, emoji).await
+    }
+
+    pub async fn guild_stickers(&self, guild: &str) -> Result<Vec<server_settings::GuildSticker>> {
+        let stickers = self.api.guild_stickers(guild).await?;
+        Ok(stickers
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(server_settings::parse_sticker)
+            .collect())
+    }
+
+    /// Uploads a sticker: its name, related emoji and description, and the
+    /// file by its name, type and bytes.
+    pub async fn create_sticker(
+        &self,
+        guild: &str,
+        fields: [(&str, &str); 3],
+        file: (&str, &str, &[u8]),
+    ) -> Result<()> {
+        self.api.create_sticker(guild, fields, file).await.map(drop)
+    }
+
+    pub async fn edit_sticker(
+        &self,
+        guild: &str,
+        sticker: &str,
+        name: &str,
+        tags: &str,
+        description: &str,
+    ) -> Result<()> {
+        let body = serde_json::json!({"name": name, "tags": tags, "description": description});
+        self.api.edit_sticker(guild, sticker, &body).await.map(drop)
+    }
+
+    pub async fn delete_sticker(&self, guild: &str, sticker: &str) -> Result<()> {
+        self.api.delete_sticker(guild, sticker).await
+    }
+
+    /// Pauses invites and DMs for `hours`, or resumes them; gives back when
+    /// each pause ends, in Unix seconds.
+    pub async fn pause_server(
+        &self,
+        guild: &str,
+        invites: bool,
+        dms: bool,
+        hours: u8,
+    ) -> Result<(Option<u64>, Option<u64>)> {
+        let until = (invites || dms).then(|| {
+            let end = std::time::SystemTime::now()
+                + std::time::Duration::from_secs(u64::from(hours) * 3600);
+            chrono::DateTime::<chrono::Utc>::from(end)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        });
+        let body = serde_json::json!({
+            "invites_disabled_until": until.as_ref().filter(|_| invites),
+            "dms_disabled_until": until.as_ref().filter(|_| dms),
+            "lockdown_duration_hours": (invites || dms).then_some(hours),
+        });
+        let incidents = self.api.incident_actions(guild, &body).await?;
+        Ok(server_settings::parse_incidents(&incidents))
+    }
+
+    pub async fn unban(&self, guild: &str, user: &str) -> Result<()> {
+        self.api.unban(guild, user).await
+    }
+
+    /// Sets whether a server's moderators need two-factor authentication,
+    /// giving the server's settings as they then stand.
+    pub async fn set_mfa_level(
+        &self,
+        guild: &str,
+        level: u8,
+    ) -> Result<server_settings::GuildSettings> {
+        self.api.set_mfa_level(guild, level).await?;
+        self.guild_settings(guild).await
+    }
+
+    /// Deletes a server, as its owner.
+    pub async fn delete_guild(&self, guild: &str) -> Result<()> {
+        self.api.delete_guild(guild).await
+    }
+
+    /// Gives a server to another member, as its owner: with the code
+    /// Discord emailed, or none when two-factor authentication confirms
+    /// it.
+    pub async fn transfer_guild(&self, guild: &str, owner: &str, code: Option<&str>) -> Result<()> {
+        self.api.transfer_guild(guild, owner, code).await
+    }
+
+    /// Has Discord email this account the code that gives a server away.
+    pub async fn send_guild_pincode(&self, guild: &str) -> Result<()> {
+        self.api.send_guild_pincode(guild).await
+    }
+
+    /// What Roles shows: the server's roles in full and how many members
+    /// hold each.
+    pub async fn roles_page(&self, guild: &str) -> Result<server_settings::Roles> {
+        let (settings, counts) =
+            tokio::join!(self.api.guild(guild), self.api.role_member_counts(guild));
+        Ok(server_settings::parse_roles_page(&settings?, &counts?))
+    }
+
+    /// How many members hold each role, by role id.
+    pub async fn role_member_counts(&self, guild: &str) -> Result<HashMap<String, u64>> {
+        let counts = self.api.role_member_counts(guild).await?;
+        Ok(server_settings::parse_roles_page(&Value::Null, &counts).counts)
+    }
+
+    /// Moves roles to new positions, as `(id, position)`, then changes one
+    /// role with `body`'s fields, as Roles' Save Changes does, in that
+    /// order. GUILD_ROLE_UPDATE follows each.
+    pub async fn save_roles(
+        &self,
+        guild: &str,
+        positions: &[(String, i64)],
+        role: Option<(&str, &Value)>,
+    ) -> Result<()> {
+        if !positions.is_empty() {
+            let positions: Vec<Value> = positions
+                .iter()
+                .map(|(id, position)| serde_json::json!({"id": id, "position": position}))
+                .collect();
+            self.api.move_roles(guild, &Value::Array(positions)).await?;
+        }
+        if let Some((role, body)) = role {
+            self.api.modify_role(guild, role, body).await?;
+        }
+        Ok(())
+    }
+
+    /// Makes a role with `body`'s fields, giving its id; GUILD_ROLE_CREATE
+    /// follows.
+    pub async fn create_role(&self, guild: &str, body: &Value) -> Result<String> {
+        let role = self.api.create_role(guild, body).await?;
+        role["id"]
+            .as_str()
+            .map(str::to_owned)
+            .context("Discord gave no id for the role")
+    }
+
+    /// Deletes a role; GUILD_ROLE_DELETE follows.
+    pub async fn delete_role(&self, guild: &str, role: &str) -> Result<()> {
+        self.api.delete_role(guild, role).await
+    }
+
+    /// Up to 100 members holding a role, by id, whose names, avatars and
+    /// roles are known once this answers.
+    pub async fn role_members(&self, guild: &str, role: &str) -> Result<Vec<String>> {
+        let ids = self.api.role_member_ids(guild, role).await?;
+        let ids: Vec<String> = ids
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|id| Some(id.as_str()?.to_owned()))
+            .collect();
+        self.ask_members(guild, ids.iter().map(String::as_str))
+            .await;
+        Ok(ids)
+    }
+
+    /// Gives a role to these members at once.
+    pub async fn add_role_members(
+        &self,
+        guild: &str,
+        role: &str,
+        members: &[String],
+    ) -> Result<()> {
+        self.api
+            .add_role_members(guild, role, members)
+            .await
+            .map(drop)
+    }
+
+    /// Takes a role from a member, as Manage Members does: by setting the
+    /// member's other roles.
+    /// Their roles must be known, or the rest would go too.
+    pub async fn remove_role_member(&self, guild: &str, role: &str, user: &str) -> Result<()> {
+        self.ask_members(guild, std::iter::once(user)).await;
+        let held = self.roles(guild, user);
+        if !held.iter().any(|known| known == role) {
+            bail!("Yapfast doesn't know that member's roles yet. Try again.");
+        }
+        let kept: Vec<String> = held.iter().filter(|held| *held != role).cloned().collect();
+        self.api.set_member_roles(guild, user, &kept).await
     }
 
     /// Changes this account's main profile as Discord's client does:
@@ -1651,6 +2078,40 @@ impl Discord {
         self.api.delete_channel(channel).await
     }
 
+    /// Sets these overwrites on a channel or category, one request each,
+    /// one after another, as Channel Permissions saves them; the first
+    /// Discord refuses stops the rest.
+    pub async fn put_overwrites(
+        &self,
+        channel: &str,
+        overwrites: &[ready::Overwrite],
+    ) -> Result<()> {
+        for overwrite in overwrites {
+            self.api
+                .put_overwrite(channel, &overwrite.id, &overwrite_body(overwrite))
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Takes a role's or member's overwrite off a channel or category.
+    pub async fn delete_overwrite(&self, channel: &str, id: &str) -> Result<()> {
+        self.api.delete_overwrite(channel, id).await
+    }
+
+    /// Gives a channel exactly these overwrites, its category's, as Sync
+    /// Now does.
+    pub async fn sync_overwrites(
+        &self,
+        channel: &str,
+        overwrites: &[ready::Overwrite],
+    ) -> Result<()> {
+        let overwrites: Vec<Value> = overwrites.iter().map(overwrite_body).collect();
+        self.api
+            .edit_channel(channel, &json!({"permission_overwrites": overwrites}))
+            .await
+    }
+
     /// Learns of a thread of a server, by id, to open in place of the
     /// channel on screen, or `beside` it: snapshots list it while it's on
     /// screen, as Discord tells a user account only of the threads it
@@ -1814,6 +2275,13 @@ impl Discord {
                 (post.to_owned(), starter)
             })
             .collect()
+    }
+
+    /// Learns the names of these members of a server, asking the gateway
+    /// for those Yapfast doesn't know yet.
+    pub async fn learn_members(&self, guild: &str, users: &[String]) {
+        self.ask_members(guild, users.iter().map(String::as_str))
+            .await;
     }
 
     /// Asks Discord for the server profiles of those of `people` Yapfast
@@ -2288,4 +2756,24 @@ fn now_ms() -> u64 {
 /// Keeps the favourite GIFs on disk, off the async threads.
 pub async fn keep_favorite_gifs(favorites: Vec<crate::gifs::Favorite>) {
     let _ = tokio::task::spawn_blocking(move || cache::keep_favorite_gifs(&favorites)).await;
+}
+
+/// The bans in a list of them, skipping any without a user.
+fn parse_bans(bans: &Value) -> Vec<server_settings::Ban> {
+    bans.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(server_settings::parse_ban)
+        .collect()
+}
+
+/// An overwrite as Discord's client sends it: type 0 for a role and 1 for
+/// a member, and the bits as decimal strings.
+fn overwrite_body(overwrite: &ready::Overwrite) -> Value {
+    json!({
+        "id": overwrite.id,
+        "type": u8::from(overwrite.member),
+        "allow": overwrite.allow.to_string(),
+        "deny": overwrite.deny.to_string(),
+    })
 }

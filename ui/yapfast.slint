@@ -28,12 +28,17 @@ import { PersonRow, CallLink, CallLinkCard, LinkTouch, SignalIcon, VoiceDock, St
 import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
 import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, MessageContent, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, PresentBar, ImageViewer, VideoViewer, VideoPlayer, Polls } from "messages.slint";
-import { SettingsScreen, AccountSettings, AppearanceSettings, ThemeCard, ThemeColour, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, AdvancedSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
+import { SettingsRow, SettingsScreen, AccountSettings, AppearanceSettings, ThemeCard, ThemeColour, VoiceSettings, MessageSettings, NotificationSettings, SoundSettings, AdvancedSettings, DiscordLinkSettings, DiscordSettings } from "settings.slint";
 import { MemberRow, ProfileData, ProfileServerRow, MemberPanel, ProfileCard, ServerCard, RoleCard } from "people.slint";
 import { RequestRow, FriendRow, FriendsScreen, HeaderTab, RequestsScreen, AddFriendDialog } from "friends.slint";
 import { ContactRow, ForwardRow, ReactionPill, ReactorRow, StatusDialog, NewDmDialog, ForwardDialog, ReactionsDialog, StatusMenu, PersonPrompt, PersonDialog, LeavingDialog, PollAnswerDraft, PollDialog } from "dialogs.slint";
 import { InvitePrompt, InviteDialog, JoinPrompt, JoinDialog, ChannelPrompt, ChannelDialog, ProfileEditorPrompt, ProfileEditorDialog } from "server.slint";
 import { SignInScreen, VerifyBanner } from "sign-in.slint";
+import { BoostPicture, BoostPrompt, EngagementPrompt, ServerProfilePrompt, ServerSettingsPrompt, ServerSettingsScreen } from "server_settings.slint";
+import { PermissionRow, RoleMemberRow, RoleRow, RoleSwatch, RolesPrompt } from "roles.slint";
+import { BansPrompt, SafetyOption, SafetyPrompt } from "moderation.slint";
+import { ChannelSettingsPrompt, ChannelSettingsScreen, OverwriteRow, ThreeStateRow } from "channel_settings.slint";
+import { MfaChoice, MfaPrompt, MfaDialog } from "mfa.slint";
 import { FoundRow, PickRow, ThreadRow, HeaderSearch, PinsPopover, ThreadsPopover, AddPeoplePopover, SearchPanel, TopicPopover } from "header.slint";
 import { ThreadPanel, NewThreadPanel } from "thread.slint";
 import { PostTag, PostRow, PostTagChoice, ForumPanel } from "forum.slint";
@@ -152,15 +157,12 @@ export component YapfastWindow inherits Window {
     callback open-join-captcha;
     callback open-join-form;
     callback close-join;
-    // A dialog that makes, changes, copies or deletes a Discord channel or
-    // category, with what's written in it; see ChannelDialog.
+    // A dialog that makes, copies or deletes a Discord channel or category,
+    // with what's written in it; see ChannelDialog.
     in property <bool> channel-open;
     in property <ChannelPrompt> channel-prompt;
     in-out property <string> channel-name;
-    in-out property <string> channel-topic;
     in-out property <int> channel-kind;
-    in-out property <int> channel-slowmode;
-    in-out property <bool> channel-nsfw;
     callback save-channel;
     callback close-channel;
     // The editor of this account's Discord profile, its main one or a
@@ -180,6 +182,50 @@ export component YapfastWindow inherits Window {
     callback undo-profile;
     callback save-profile;
     callback close-profile-editor;
+    // A Discord server's settings; see ServerSettingsScreen.
+    in property <bool> server-settings-open;
+    in property <ServerSettingsPrompt> server-settings-prompt;
+    in-out property <string> server-settings-name;
+    in-out property <string> server-settings-description;
+    in-out property <string> server-settings-role-name;
+    callback server-settings-section(int);
+    /// Something done on Roles; see ServerSettingsScreen.
+    callback role-input(int, string, int);
+    /// Something done on Bans; see ServerSettingsScreen.
+    callback ban-input(int, string, int);
+    /// Something done on Audit Log; see ServerSettingsScreen.
+    callback audit-log-input(int, int);
+    callback members-input(int, string, int);
+    callback invites-input(int, string, int);
+    /// Something done on Emoji or Stickers; see ServerSettingsScreen.
+    callback emoji-input(int, string, string);
+    callback stickers-input(int, string);
+    callback ownership-input(int, string);
+    callback write-server-setting(int, string);
+    callback toggle-server-setting(int);
+    callback choose-server-setting(int, int);
+    callback pick-server-picture(int);
+    callback remove-server-picture(int);
+    callback undo-server-settings;
+    callback save-server-settings;
+    callback close-server-settings;
+    // A Discord channel's or category's settings, with its name, and what's
+    // written in Overview; see ChannelSettingsScreen.
+    in property <bool> channel-settings-open;
+    in property <ChannelSettingsPrompt> channel-settings-prompt;
+    in property <string> channel-settings-channel;
+    in-out property <string> channel-settings-name;
+    in-out property <string> channel-settings-topic;
+    callback channel-settings-input(int, string, int);
+    // Confirming a request Discord holds back; see MfaDialog.
+    in property <bool> mfa-open;
+    in property <MfaPrompt> mfa-prompt;
+    in-out property <string> mfa-code;
+    callback choose-mfa(int);
+    callback write-mfa(string);
+    callback resend-mfa;
+    callback confirm-mfa;
+    callback cancel-mfa;
     // Asks before leaving a Discord server, in a ChannelDialog.
     in property <bool> leave-open;
     in property <ChannelPrompt> leave-prompt;
@@ -3024,6 +3070,35 @@ export component YapfastWindow inherits Window {
             sync-discord-reads-toggled(sync) => { root.sync-discord-reads = sync; root.sync-discord-reads-toggled(sync); }
         }
     }
+    // A Discord server's settings cover the window too.
+    if root.server-settings-open: ServerSettingsScreen {
+        prompt: root.server-settings-prompt;
+        name <=> root.server-settings-name; description <=> root.server-settings-description;
+        role-name <=> root.server-settings-role-name;
+        choose(section) => { root.server-settings-section(section); }
+        role(what, text, number) => { root.role-input(what, text, number); }
+        ban(what, text, number) => { root.ban-input(what, text, number); }
+        audit-log(what, number) => { root.audit-log-input(what, number); }
+        member(what, text, number) => { root.members-input(what, text, number); }
+        invite(what, text, number) => { root.invites-input(what, text, number); }
+        emoji(what, id, name) => { root.emoji-input(what, id, name); }
+        sticker(what, text) => { root.stickers-input(what, text); }
+        ownership(what, text) => { root.ownership-input(what, text); }
+        member-menu(id, x, y) => { root.open-context-menu(id, true, x, y); }
+        write(field, text) => { root.write-server-setting(field, text); }
+        toggle(which) => { root.toggle-server-setting(which); }
+        pick-choice(list, index) => { root.choose-server-setting(list, index); }
+        pick-picture(kind) => { root.pick-server-picture(kind); }
+        remove-picture(kind) => { root.remove-server-picture(kind); }
+        undo => { root.undo-server-settings(); }
+        save => { root.save-server-settings(); }
+        close => { root.close-server-settings(); }
+    }
+    if root.channel-settings-open: ChannelSettingsScreen {
+        prompt: root.channel-settings-prompt; channel: root.channel-settings-channel;
+        name <=> root.channel-settings-name; topic <=> root.channel-settings-topic;
+        input(what, text, number) => { root.channel-settings-input(what, text, number); }
+    }
     // A server channel's topic in full, under the header's line of it.
     // Escape or a click outside closes it.
     if root.topic-open && root.has-topic: Rectangle {
@@ -3245,8 +3320,7 @@ export component YapfastWindow inherits Window {
         close => { root.close-join(); }
     }
     if root.channel-open: ChannelDialog {
-        prompt: root.channel-prompt; name <=> root.channel-name; topic <=> root.channel-topic;
-        kind <=> root.channel-kind; slowmode <=> root.channel-slowmode; nsfw <=> root.channel-nsfw;
+        prompt: root.channel-prompt; name <=> root.channel-name; kind <=> root.channel-kind;
         save => { root.save-channel(); }
         close => { root.close-channel(); }
     }
@@ -3444,6 +3518,15 @@ export component YapfastWindow inherits Window {
                 }
             }
         }
+    }
+    // Over everything, as the request it confirms may come from anywhere.
+    if root.mfa-open: MfaDialog {
+        prompt: root.mfa-prompt; code <=> root.mfa-code;
+        choose(method) => { root.choose-mfa(method); }
+        write(code) => { root.write-mfa(code); }
+        resend => { root.resend-mfa(); }
+        confirm => { root.confirm-mfa(); }
+        cancel => { root.cancel-mfa(); }
     }
     if Tip.text != "": Rectangle {
         property <length> w: tip-text.preferred-width + 20px;

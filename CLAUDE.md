@@ -6,8 +6,10 @@
   `cargo test --profile fast -p yapfast-core history`; incremental builds take
   seconds. Run `scripts/check --fast` once, before the last commit of a piece
   of work, not before each commit. It enters the dev shell itself and covers
-  Discord-only, Matrix-only and headless builds; it takes about 20 s after
-  an edit, and prints each step's time.
+  Discord-only, Matrix-only and headless builds; it takes about 40 s after
+  a Rust edit and 9 minutes after a `.slint` edit, and prints each step's
+  time. Its steps run one after another: each compile of the UI crate takes
+  6–8 GiB of memory, and running them together ran the machine out of it.
 - In a new worktree, run `scripts/warm-worktree` before building. It copies
   the main checkout's build, so the first check compiles only the crates in
   the repository, about 3.5 minutes.

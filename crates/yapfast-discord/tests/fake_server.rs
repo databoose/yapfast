@@ -2879,6 +2879,13 @@ async fn talks_to_the_fake_server() {
     finds_gifs_as_discords_client_does(&discord, server, &guild, &general).await;
     starts_threads_as_discords_client_does(&discord, server, &guild, &general).await;
     posts_in_a_forum_as_discords_client_does(&discord, server, &guild).await;
+    changes_server_settings_as_discords_client_does(&discord, server, &guild).await;
+    changes_roles_as_discords_client_does(&discord, server, &guild).await;
+    changes_channel_permissions_as_discords_client_does(&discord, server, &guild).await;
+    moderates_as_discords_client_does(&discord, server, &guild).await;
+    lists_members_and_invites_as_discords_client_does(&discord, server, &guild).await;
+    keeps_emoji_and_stickers_as_discords_client_does(&discord, server, &guild).await;
+    gives_up_the_server_as_discords_client_does(&discord, server, &guild).await;
 
     // Leaving "Server", which Bob owns, takes it out of her list; the fake
     // lets her back in, so the tests after these find it again.
@@ -2921,6 +2928,903 @@ async fn talks_to_the_fake_server() {
     // Signing out ends the session on Discord.
     discord.logout().await.unwrap();
     assert_eq!(self::control(server, "GET", "/_control/logouts", ""), "1");
+}
+
+/// Changing "Server"'s profile in its settings as Discord's client does,
+/// which Crew's Manage Server allows, and confirming with 2FA what Discord
+/// holds back; part of [`talks_to_the_fake_server`], whose session it
+/// shares. It puts "Server" and its members back after.
+async fn changes_server_settings_as_discords_client_does(
+    discord: &Discord,
+    server: &str,
+    guild: &str,
+) {
+    use serde_json::json;
+    use yapfast_discord::mfa::Method;
+    let profile = discord.guild_profile(guild).await.unwrap();
+    assert_eq!(
+        (profile.name.as_str(), profile.description.as_str()),
+        ("Server", "")
+    );
+    assert!(profile.icon.is_some());
+
+    // Discord's own words for a field it refuses.
+    let refused = discord
+        .save_guild_profile(guild, &json!({"name": "S"}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        "Name: Must be between 2 and 100 in length."
+    );
+    let saved = discord
+        .save_guild_profile(
+            guild,
+            &json!({"name": "Crew", "description": "Where we talk", "icon": null}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (saved.name.as_str(), saved.description.as_str(), saved.icon),
+        ("Crew", "Where we talk", None)
+    );
+    snapshot_where(discord, |snapshot| {
+        snapshot
+            .servers
+            .iter()
+            .any(|known| known.id == guild && known.name == "Crew" && known.icon.is_none())
+    })
+    .await;
+
+    // Once "Server" requires 2FA for moderation, a kick waits for her to
+    // confirm, and goes again with the token; a wrong code leaves the
+    // prompt open.
+    post_control(
+        server,
+        "/_control/mfa",
+        r#"{"methods": ["totp", "backup"]}"#,
+    );
+    let dave = "1400000000000000004";
+    let mut live = discord.live();
+    let required = |live: Live| match live {
+        Live::MfaRequired { id, methods } => Some((id, methods)),
+        _ => None,
+    };
+    let kick = tokio::spawn({
+        let (discord, guild) = (discord.clone(), guild.to_owned());
+        async move {
+            discord
+                .stepping_up(|| discord.kick(&guild, dave, "spam"))
+                .await
+        }
+    });
+    let (id, methods) = live_where(&mut live, required).await;
+    assert_eq!(methods, [Method::Totp, Method::Backup]);
+    let wrong = discord
+        .finish_mfa(id, Method::Totp, "000000")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        wrong.to_string(),
+        "That didn't work. Check it and try again."
+    );
+    discord
+        .finish_mfa(id, Method::Totp, "123456")
+        .await
+        .unwrap();
+    kick.await.unwrap().unwrap();
+
+    // Cancelling fails what waits.
+    let save = tokio::spawn({
+        let (discord, guild) = (discord.clone(), guild.to_owned());
+        async move {
+            let body = json!({"name": "Server"});
+            discord
+                .stepping_up(|| discord.save_guild_profile(&guild, &body))
+                .await
+        }
+    });
+    let (id, _) = live_where(&mut live, required).await;
+    discord.cancel_mfa(id);
+    assert_eq!(
+        save.await.unwrap().unwrap_err().to_string(),
+        "Two-factor authentication was cancelled."
+    );
+    let tried: serde_json::Value =
+        serde_json::from_str(&control(server, "GET", "/_control/mfa", "")).unwrap();
+    assert_eq!(
+        tried,
+        json!([{"mfa_type": "totp", "data": "000000"}, {"mfa_type": "totp", "data": "123456"}])
+    );
+    post_control(server, "/_control/mfa?off", "");
+
+    // Engagement: the fields Discord's page sends, each as GUILD_UPDATE
+    // brings it back.
+    let settings = discord.guild_settings(guild).await.unwrap();
+    assert_eq!(
+        (
+            settings.system_channel.as_deref(),
+            settings.afk_timeout,
+            settings.premium_tier
+        ),
+        (Some("1400000000000000102"), 300, 0)
+    );
+    let lounge = "1400000000000000103";
+    let saved = discord
+        .save_guild_settings(
+            guild,
+            &json!({"system_channel_flags": 5, "default_message_notifications": 0,
+                "afk_channel_id": lounge, "afk_timeout": 900}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            saved.system_flags,
+            saved.default_notifications,
+            saved.afk_channel.as_deref(),
+            saved.afk_timeout
+        ),
+        (5, 0, Some(lounge), 900)
+    );
+    live_where(&mut live, |live| match live {
+        Live::ServerSettings {
+            guild: changed,
+            settings,
+        } if changed == guild && settings.afk_timeout == 900 => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // Boost Perks: a banner waits for level 2.
+    let dot = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    assert!(
+        discord
+            .save_guild_settings(guild, &json!({"banner": dot}))
+            .await
+            .is_err()
+    );
+    post_control(server, "/_control/guild", r#"{"premium_tier": 2}"#);
+    let saved = discord
+        .save_guild_settings(
+            guild,
+            &json!({"banner": dot, "premium_progress_bar_enabled": true}),
+        )
+        .await
+        .unwrap();
+    let banner = saved.banner.expect("a banner at level 2");
+    assert!(banner.contains(&format!("/banners/{guild}/")));
+    assert!(saved.progress_bar);
+    snapshot_where(discord, |snapshot| {
+        snapshot
+            .servers
+            .iter()
+            .any(|known| known.id == guild && known.banner.is_some())
+    })
+    .await;
+
+    post_control(server, "/_control/guild-reset", "");
+    post_control(server, "/_control/members-reset", "");
+    snapshot_where(discord, |snapshot| {
+        snapshot
+            .servers
+            .iter()
+            .any(|known| known.id == guild && known.name == "Server")
+    })
+    .await;
+}
+
+/// Making, changing, moving and deleting a role in "Server"'s Roles as
+/// Discord's client does, below Staff, her highest; part of
+/// [`talks_to_the_fake_server`], whose session it shares. It puts the roles
+/// and members back after.
+async fn changes_roles_as_discords_client_does(discord: &Discord, server: &str, guild: &str) {
+    use serde_json::json;
+    let (staff, leads, crew, bots, mods) = (
+        "1400000000000000114",
+        "1400000000000000113",
+        "1400000000000000112",
+        "1400000000000000111",
+        "1400000000000000110",
+    );
+    let (alice, dave) = ("1400000000000000001", "1400000000000000004");
+    let names = |roles: &[yapfast_discord::server_settings::Role]| -> Vec<String> {
+        roles.iter().map(|role| role.name.clone()).collect()
+    };
+    let page = discord.roles_page(guild).await.unwrap();
+    assert_eq!(
+        names(&page.roles),
+        ["Leads", "Staff", "Crew", "Bots", "Mods", "@everyone"]
+    );
+    assert_eq!(page.counts.get(staff), Some(&1));
+
+    // A new role starts at the bottom, above @everyone.
+    let mut live = discord.live();
+    let body = json!({"name": "new role", "color": 0,
+        "colors": {"primary_color": 0, "secondary_color": null, "tertiary_color": null},
+        "permissions": "0"});
+    let made = discord.create_role(guild, &body).await.unwrap();
+    live_where(&mut live, |live| match live {
+        Live::ServerRole { role, .. } if role.id == made => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // Saving moves it first, then changes it whole, permissions as a
+    // decimal string; a permission she doesn't hold is refused.
+    let positions = [
+        (made.clone(), 3),
+        (bots.to_owned(), 2),
+        (mods.to_owned(), 1),
+    ];
+    let role = json!({"name": "Helpers", "permissions": "1024", "color": 3447003,
+        "colors": {"primary_color": 3447003, "secondary_color": null, "tertiary_color": null},
+        "hoist": true, "mentionable": false, "unicode_emoji": null});
+    discord
+        .save_roles(guild, &positions, Some((&made, &role)))
+        .await
+        .unwrap();
+    let page = discord.roles_page(guild).await.unwrap();
+    assert_eq!(
+        names(&page.roles),
+        [
+            "Leads",
+            "Staff",
+            "Crew",
+            "Helpers",
+            "Bots",
+            "Mods",
+            "@everyone"
+        ]
+    );
+    let helpers = page.roles.iter().find(|known| known.id == made).unwrap();
+    assert_eq!(
+        (helpers.permissions, helpers.color, helpers.hoist),
+        (1024, 3447003, true)
+    );
+    let admin = json!({"permissions": "8"});
+    assert!(
+        discord
+            .save_roles(guild, &[], Some((&made, &admin)))
+            .await
+            .is_err()
+    );
+    // Leads, above her, stays put; listing it where it is goes.
+    assert!(
+        discord
+            .save_roles(guild, &[(leads.to_owned(), 1)], None)
+            .await
+            .is_err()
+    );
+    discord
+        .save_roles(guild, &[(leads.to_owned(), 6), (crew.to_owned(), 4)], None)
+        .await
+        .unwrap();
+
+    // Members: Staff's are hers to see, Helpers' to change.
+    assert_eq!(discord.role_members(guild, staff).await.unwrap(), [alice]);
+    discord
+        .add_role_members(guild, &made, &[dave.to_owned()])
+        .await
+        .unwrap();
+    assert_eq!(discord.role_members(guild, &made).await.unwrap(), [dave]);
+    assert_eq!(
+        discord.role_member_counts(guild).await.unwrap().get(&made),
+        Some(&1)
+    );
+    discord
+        .remove_role_member(guild, &made, dave)
+        .await
+        .unwrap();
+    assert!(discord.role_members(guild, &made).await.unwrap().is_empty());
+
+    discord.delete_role(guild, &made).await.unwrap();
+    live_where(&mut live, |live| match live {
+        Live::ServerRoleDeleted { role, .. } if role == made => Some(()),
+        _ => None,
+    })
+    .await;
+    post_control(server, "/_control/roles-reset", "");
+    post_control(server, "/_control/members-reset", "");
+}
+
+/// Changing #general's overwrites as Channel Permissions does: one at a
+/// time, taking one off, and syncing with the category; part of
+/// [`talks_to_the_fake_server`], whose session it shares. It puts the
+/// channels' overwrites back after.
+async fn changes_channel_permissions_as_discords_client_does(
+    discord: &Discord,
+    server: &str,
+    guild: &str,
+) {
+    use yapfast_discord::ready::{Overwrite, permission};
+    let (general, crew) = ("1400000000000000102", "1400000000000000112");
+    let overwrites = |known: &yapfast_discord::service::Snapshot| -> Option<Vec<Overwrite>> {
+        let server = known.servers.iter().find(|server| server.id == guild)?;
+        Some(server.channel(general)?.overwrites.to_vec())
+    };
+    let allowed = Overwrite {
+        id: crew.into(),
+        member: false,
+        allow: permission::VIEW_CHANNEL,
+        deny: permission::SEND_MESSAGES,
+    };
+    discord
+        .put_overwrites(general, std::slice::from_ref(&allowed))
+        .await
+        .unwrap();
+    snapshot_where(discord, |known| {
+        overwrites(known) == Some(vec![allowed.clone()])
+    })
+    .await;
+
+    // Only what she holds herself, as Discord checks.
+    let webhooks = Overwrite {
+        allow: permission::MANAGE_WEBHOOKS,
+        ..allowed.clone()
+    };
+    assert!(discord.put_overwrites(general, &[webhooks]).await.is_err());
+
+    discord.delete_overwrite(general, crew).await.unwrap();
+    snapshot_where(discord, |known| overwrites(known) == Some(vec![])).await;
+    let everyone = Overwrite {
+        id: guild.into(),
+        member: false,
+        allow: 0,
+        deny: 0,
+    };
+    discord
+        .sync_overwrites(general, std::slice::from_ref(&everyone))
+        .await
+        .unwrap();
+    snapshot_where(discord, |known| {
+        overwrites(known) == Some(vec![everyone.clone()])
+    })
+    .await;
+
+    // An empty body takes every channel's overwrites off.
+    post_control(server, "/_control/hide-from-bots", "");
+    snapshot_where(discord, |known| overwrites(known) == Some(vec![])).await;
+}
+
+/// Safety Setup and Bans in Server Settings, as Discord's client uses
+/// them; part of [`talks_to_the_fake_server`], whose session it shares.
+async fn moderates_as_discords_client_does(discord: &Discord, server: &str, guild: &str) {
+    use serde_json::json;
+    use yapfast_discord::mfa::Method;
+    // Safety Setup's levels, saved with the guild's PATCH.
+    let settings = discord
+        .save_guild_settings(
+            guild,
+            &json!({"verification_level": 3, "explicit_content_filter": 1}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            settings.verification_level,
+            settings.explicit_content_filter
+        ),
+        (3, 1)
+    );
+    post_control(server, "/_control/guild", r#"{"features": ["COMMUNITY"]}"#);
+    assert!(
+        discord
+            .save_guild_settings(guild, &json!({"verification_level": 0}))
+            .await
+            .is_err(),
+        "a Community server can't have none"
+    );
+
+    // Only the owner, with 2FA on, has moderators need it, and confirms.
+    assert!(discord.set_mfa_level(guild, 1).await.is_err());
+    post_control(
+        server,
+        "/_control/guild",
+        r#"{"owner": "1400000000000000001", "alice_mfa": true, "features": []}"#,
+    );
+    snapshot_where(discord, |snapshot| {
+        snapshot
+            .account
+            .as_ref()
+            .is_some_and(|account| account.mfa_enabled)
+    })
+    .await;
+    let mut live = discord.live();
+    let set = tokio::spawn({
+        let (discord, guild) = (discord.clone(), guild.to_owned());
+        async move {
+            discord
+                .stepping_up(|| discord.set_mfa_level(&guild, 1))
+                .await
+        }
+    });
+    let id = live_where(&mut live, |live| match live {
+        Live::MfaRequired { id, .. } => Some(id),
+        _ => None,
+    })
+    .await;
+    discord
+        .finish_mfa(id, Method::Totp, "123456")
+        .await
+        .unwrap();
+    assert_eq!(set.await.unwrap().unwrap().mfa_level, 1);
+    post_control(server, "/_control/guild-reset", "");
+    snapshot_where(discord, |snapshot| {
+        snapshot
+            .account
+            .as_ref()
+            .is_some_and(|account| !account.mfa_enabled)
+    })
+    .await;
+
+    // Bans, a page at a time by id, and Discord's search by name or id.
+    let (mallory, trent) = ("1400000000000000901", "1400000000000000902");
+    let bans = discord.bans(guild, None).await.unwrap();
+    let listed: Vec<(&str, &str, Option<&str>)> = bans
+        .iter()
+        .map(|ban| {
+            (
+                ban.user.id.as_str(),
+                ban.user.username.as_str(),
+                ban.reason.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            (mallory, "mallory", Some("Spamming invites in #general")),
+            (trent, "trent_42", None)
+        ]
+    );
+    let after = discord.bans(guild, Some(mallory)).await.unwrap();
+    assert_eq!(after.len(), 1);
+    let found = discord.search_bans(guild, "MAL").await.unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].user.global_name.as_deref(), Some("Mallory"));
+    let found = discord
+        .search_bans(guild, &format!("nobody, {trent}"))
+        .await
+        .unwrap();
+    assert_eq!(found[0].user.id, trent);
+
+    // Revoke Ban, which GUILD_BAN_REMOVE follows.
+    discord.unban(guild, mallory).await.unwrap();
+    live_where(&mut live, |live| match live {
+        Live::ServerBan {
+            ban, banned: false, ..
+        } if ban.user.id == mallory => Some(()),
+        _ => None,
+    })
+    .await;
+    assert!(
+        discord.unban(guild, mallory).await.is_err(),
+        "no longer banned"
+    );
+
+    // Audit Log, newest first: the unban, then the 2FA requirement and
+    // the levels set above.
+    let actions = |log: &serde_json::Value| -> Vec<u64> {
+        log["audit_log_entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["action_type"].as_u64().unwrap())
+            .collect()
+    };
+    let log = discord.audit_log(guild, None, None, None).await.unwrap();
+    let newest = &log["audit_log_entries"][0];
+    assert_eq!(
+        (newest["action_type"].as_u64(), newest["target_id"].as_str()),
+        (Some(23), Some(mallory))
+    );
+    assert_eq!(newest["user_id"], "1400000000000000001");
+    assert_eq!(actions(&log)[1..3], [1, 1]);
+    assert_eq!(
+        log["audit_log_entries"][1]["changes"][0]["key"],
+        "mfa_level"
+    );
+    // By Bob, and by action.
+    let bob = "1400000000000000002";
+    let by_bob = discord
+        .audit_log(guild, None, Some(bob), None)
+        .await
+        .unwrap();
+    assert_eq!(actions(&by_bob), [24, 24, 22, 22, 13, 1]);
+    assert!(
+        by_bob["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|user| user["id"] == bob && user["username"] == "bob")
+    );
+    let bans = discord
+        .audit_log(guild, None, None, Some(22))
+        .await
+        .unwrap();
+    assert!(actions(&bans).iter().all(|action| *action == 22));
+    // Fifty at a time, from before the last.
+    post_control(server, "/_control/audit-entries", r#"{"count": 60}"#);
+    let first = discord
+        .audit_log(guild, None, Some(bob), None)
+        .await
+        .unwrap();
+    assert_eq!(actions(&first).len(), 50);
+    let last = first["audit_log_entries"][49]["id"].as_str().unwrap();
+    let next = discord
+        .audit_log(guild, Some(last), Some(bob), None)
+        .await
+        .unwrap();
+    assert_eq!(actions(&next).len(), 16);
+    post_control(server, "/_control/audit-reset", "");
+    post_control(server, "/_control/members-reset", "");
+}
+
+/// Members and Invites in Server Settings, as Discord's client asks for
+/// them; part of [`talks_to_the_fake_server`], whose session it shares.
+async fn lists_members_and_invites_as_discords_client_does(
+    discord: &Discord,
+    server: &str,
+    guild: &str,
+) {
+    use serde_json::json;
+    use yapfast_discord::api::MembersSearch;
+    let search = |body: serde_json::Value| async move {
+        match discord.members_search(guild, &body).await.unwrap() {
+            MembersSearch::Found(found) => {
+                yapfast_discord::server_settings::parse_members_search(&found)
+            }
+            MembersSearch::Indexing(wait) => panic!("indexing for {wait} s"),
+        }
+    };
+    let names = |found: &[yapfast_discord::server_settings::FoundMember]| {
+        found
+            .iter()
+            .map(|member| member.user.username.clone())
+            .collect::<Vec<_>>()
+    };
+    // Newest first, with how each joined.
+    let (found, total) = search(json!({"or_query": {}, "and_query": {}, "limit": 250})).await;
+    assert_eq!(names(&found), ["dave", "carol", "alice", "bob"]);
+    assert_eq!(total, Some(4));
+    assert_eq!(
+        (found[1].join_source, found[1].invite_code.as_deref()),
+        (5, Some("carol1"))
+    );
+    assert!(found[1].unusual_dms_until > 0 && found[0].unusual_dms_until == 0);
+    // By name or id, and in another order.
+    let carol = found[1].user.id.clone();
+    let (found, _) = search(json!({"or_query": {}, "and_query": {
+        "usernames": {"or_query": ["BO"]}, "user_id": {"or_query": [carol]}}, "limit": 250}))
+    .await;
+    assert!(found.is_empty(), "both must match, as and_query asks");
+    let (found, _) = search(
+        json!({"or_query": {}, "and_query": {"usernames": {"or_query": ["bo", "car"]}},
+               "limit": 250, "sort": 2}),
+    )
+    .await;
+    assert_eq!(names(&found), ["bob", "carol"]);
+    // A chunk at a time, after the last member of the one before.
+    post_control(server, "/_control/members", r#"{"count": 260}"#);
+    let (first, total) = search(json!({"or_query": {}, "and_query": {}, "limit": 250})).await;
+    assert_eq!((first.len(), total), (250, Some(264)));
+    let last = first.last().unwrap();
+    let (rest, _) = search(json!({"or_query": {}, "and_query": {}, "limit": 250,
+        "after": {"guild_joined_at": last.joined_at, "user_id": last.user.id}}))
+    .await;
+    assert_eq!(
+        names(&rest),
+        [
+            "member_10",
+            "member_9",
+            "member_8",
+            "member_7",
+            "member_6",
+            "member_5",
+            "member_4",
+            "member_3",
+            "member_2",
+            "member_1",
+            "dave",
+            "carol",
+            "alice",
+            "bob"
+        ]
+    );
+    // While Discord indexes the server, it asks to wait.
+    post_control(
+        server,
+        "/_control/members",
+        r#"{"indexing": true, "count": 0}"#,
+    );
+    assert!(matches!(
+        discord
+            .members_search(guild, &json!({"or_query": {}, "and_query": {}, "limit": 250}))
+            .await
+            .unwrap(),
+        MembersSearch::Indexing(wait) if wait > 0.0
+    ));
+
+    // Invites, and revoking one.
+    let invites = discord.guild_invites(guild).await.unwrap();
+    let codes: Vec<&str> = invites.iter().map(|invite| invite.code.as_str()).collect();
+    assert!(codes.starts_with(&["bobinvite", "carol1"]), "{codes:?}");
+    let carols = &invites[1];
+    assert_eq!(
+        (carols.uses, carols.max_uses, carols.roles.len()),
+        (3, 10, 1)
+    );
+    assert!(carols.expires.is_some() && invites[0].expires.is_none());
+    assert_eq!(carols.channel.as_ref().unwrap().1, "general");
+    discord.revoke_invite("carol1").await.unwrap();
+    assert!(discord.revoke_invite("carol1").await.is_err());
+    assert!(
+        !discord
+            .guild_invites(guild)
+            .await
+            .unwrap()
+            .iter()
+            .any(|invite| invite.code == "carol1")
+    );
+
+    // Security Actions: invites paused for two hours, then resumed, which
+    // GUILD_UPDATE tells.
+    let mut live = discord.live();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let (invites, dms) = discord.pause_server(guild, true, false, 2).await.unwrap();
+    assert!(invites.is_some_and(|until| until.abs_diff(now + 7200) < 60));
+    assert_eq!(dms, None);
+    live_where(&mut live, |live| match live {
+        Live::ServerSettings {
+            guild: changed,
+            settings,
+        } if changed == guild && settings.invites_paused_until == invites => Some(()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        discord.pause_server(guild, false, false, 2).await.unwrap(),
+        (None, None)
+    );
+    post_control(server, "/_control/guild-reset", "");
+}
+
+/// Emoji and Stickers in Server Settings: listing them with who uploaded
+/// each, adding, renaming and deleting her own, as her Crew role's Create
+/// Expressions allows, and not Bob's; part of [`talks_to_the_fake_server`].
+async fn keeps_emoji_and_stickers_as_discords_client_does(
+    discord: &Discord,
+    server: &str,
+    guild: &str,
+) {
+    use base64::Engine;
+    let dot = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(dot)
+        .unwrap();
+    let code = |error: anyhow::Error| yapfast_discord::api::code(&error);
+    let names = |emojis: &[yapfast_discord::server_settings::GuildEmoji]| {
+        emojis
+            .iter()
+            .map(|emoji| emoji.name.clone())
+            .collect::<Vec<_>>()
+    };
+    // Each kind has 50 slots at level 0, as premium_features says.
+    let settings = discord.guild_settings(guild).await.unwrap();
+    assert_eq!(settings.extra_emoji_slots, Some(0));
+    let emojis = discord.guild_emojis(guild).await.unwrap();
+    assert_eq!(names(&emojis), ["talk", "party"]);
+    assert!(emojis[1].animated);
+    let bobs = emojis[0].clone();
+    assert_eq!(bobs.user.as_ref().unwrap().username, "bob");
+
+    // Hers, which GUILD_EMOJIS_UPDATE gives everyone.
+    let wave = discord
+        .create_emoji(guild, "wave", &format!("data:image/png;base64,{dot}"))
+        .await
+        .unwrap();
+    assert_eq!(wave.user.as_ref().unwrap().username, "alice");
+    let has_emoji = |name: &'static str| {
+        move |snapshot: &Snapshot| {
+            snapshot.servers.iter().any(|known| {
+                known.id == guild && known.emojis.iter().any(|emoji| emoji.name == name)
+            })
+        }
+    };
+    snapshot_where(discord, has_emoji("wave")).await;
+    discord
+        .rename_emoji(guild, &wave.id, "hello")
+        .await
+        .unwrap();
+    snapshot_where(discord, has_emoji("hello")).await;
+    assert_eq!(
+        code(
+            discord
+                .rename_emoji(guild, &bobs.id, "mine")
+                .await
+                .unwrap_err()
+        ),
+        Some(50013),
+        "Bob's isn't hers to change"
+    );
+    let big = format!("data:image/png;base64,{}", "A".repeat(400 * 1024));
+    assert_eq!(
+        code(discord.create_emoji(guild, "big", &big).await.unwrap_err()),
+        Some(50045)
+    );
+    discord.delete_emoji(guild, &wave.id).await.unwrap();
+    assert_eq!(
+        names(&discord.guild_emojis(guild).await.unwrap()),
+        ["talk", "party"]
+    );
+
+    // Stickers: five slots at level 0, each new one sent as a form.
+    let mut live = discord.live();
+    fn fields(name: &str) -> [(&str, &str); 3] {
+        [("name", name), ("tags", "👋"), ("description", "")]
+    }
+    discord
+        .create_sticker(guild, fields("Wave"), ("wave.png", "image/png", &png))
+        .await
+        .unwrap();
+    let stickers = live_where(&mut live, |live| match live {
+        Live::ServerStickers {
+            guild: changed,
+            stickers,
+        } if changed == guild && !stickers.is_empty() => Some(stickers),
+        _ => None,
+    })
+    .await;
+    // Only the list says who uploaded it.
+    assert_eq!(
+        (stickers[0].name.as_str(), stickers[0].user_id.as_deref()),
+        ("Wave", None)
+    );
+    let listed = discord.guild_stickers(guild).await.unwrap();
+    assert_eq!(listed[0].user.as_ref().unwrap().username, "alice");
+    assert_eq!((listed[0].format, listed[0].tags.as_str()), (1, "👋"));
+    let id = listed[0].id.clone();
+    discord
+        .edit_sticker(guild, &id, "Hello", "👋", "A hand waving")
+        .await
+        .unwrap();
+    assert!(
+        discord
+            .edit_sticker(guild, &id, "Hello", "👋", "x")
+            .await
+            .is_err(),
+        "a description of one character"
+    );
+    let listed = discord.guild_stickers(guild).await.unwrap();
+    assert_eq!(
+        (listed[0].name.as_str(), listed[0].description.as_str()),
+        ("Hello", "A hand waving")
+    );
+    for n in 1..5 {
+        let name = format!("Sticker {n}");
+        discord
+            .create_sticker(guild, fields(&name), ("s.png", "image/png", &png))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        code(
+            discord
+                .create_sticker(guild, fields("Sixth"), ("s.png", "image/png", &png))
+                .await
+                .unwrap_err()
+        ),
+        Some(30039)
+    );
+    discord.delete_sticker(guild, &id).await.unwrap();
+    assert_eq!(discord.guild_stickers(guild).await.unwrap().len(), 4);
+    post_control(server, "/_control/guild-reset", "");
+}
+
+/// Transfer Ownership and Delete Server, as the server's owner: by the code
+/// Discord emails without 2FA, or by confirming with it; part of
+/// [`talks_to_the_fake_server`].
+async fn gives_up_the_server_as_discords_client_does(discord: &Discord, server: &str, guild: &str) {
+    use yapfast_discord::mfa::Method;
+    let (alice, bob) = ("1400000000000000001", "1400000000000000002");
+    let code = |error: anyhow::Error| yapfast_discord::api::code(&error);
+    let owner = |id: &'static str| {
+        move |snapshot: &Snapshot| {
+            snapshot
+                .servers
+                .iter()
+                .any(|known| known.id == guild && known.owner_id.as_deref() == Some(id))
+        }
+    };
+    // Bob's, so not hers to give or delete.
+    assert_eq!(
+        code(discord.delete_guild(guild).await.unwrap_err()),
+        Some(50013)
+    );
+    post_control(
+        server,
+        "/_control/guild",
+        &format!(r#"{{"owner": "{alice}"}}"#),
+    );
+    snapshot_where(discord, owner(alice)).await;
+
+    // Without 2FA, the code Discord emails gives it away.
+    let account = snapshot_where(discord, |snapshot| snapshot.account.is_some()).await;
+    assert!(account.account.as_ref().unwrap().has_email);
+    assert_eq!(
+        code(discord.transfer_guild(guild, bob, None).await.unwrap_err()),
+        Some(50035)
+    );
+    discord.send_guild_pincode(guild).await.unwrap();
+    assert!(
+        discord
+            .transfer_guild(guild, bob, Some("000000"))
+            .await
+            .is_err()
+    );
+    discord
+        .transfer_guild(guild, bob, Some("424242"))
+        .await
+        .unwrap();
+    snapshot_where(discord, owner(bob)).await;
+
+    // With 2FA, confirming it does; then deleting the server takes it away.
+    post_control(
+        server,
+        "/_control/guild",
+        &format!(r#"{{"owner": "{alice}", "alice_mfa": true}}"#),
+    );
+    snapshot_where(discord, owner(alice)).await;
+    let mut live = discord.live();
+    let confirm = |id| discord.finish_mfa(id, Method::Totp, "123456");
+    let transfer = tokio::spawn({
+        let (discord, guild) = (discord.clone(), guild.to_owned());
+        async move {
+            discord
+                .stepping_up(|| discord.transfer_guild(&guild, bob, None))
+                .await
+        }
+    });
+    let id = live_where(&mut live, |live| match live {
+        Live::MfaRequired { id, .. } => Some(id),
+        _ => None,
+    })
+    .await;
+    confirm(id).await.unwrap();
+    transfer.await.unwrap().unwrap();
+    snapshot_where(discord, owner(bob)).await;
+    post_control(
+        server,
+        "/_control/guild",
+        &format!(r#"{{"owner": "{alice}"}}"#),
+    );
+    snapshot_where(discord, owner(alice)).await;
+    let delete = tokio::spawn({
+        let (discord, guild) = (discord.clone(), guild.to_owned());
+        async move { discord.stepping_up(|| discord.delete_guild(&guild)).await }
+    });
+    let id = live_where(&mut live, |live| match live {
+        Live::MfaRequired { id, .. } => Some(id),
+        _ => None,
+    })
+    .await;
+    confirm(id).await.unwrap();
+    delete.await.unwrap().unwrap();
+    snapshot_where(discord, |snapshot| {
+        !snapshot.servers.iter().any(|known| known.id == guild)
+    })
+    .await;
+    post_control(server, "/_control/rejoin", "");
+    snapshot_where(discord, |snapshot| {
+        snapshot.servers.iter().any(|known| known.id == guild)
+    })
+    .await;
+    post_control(server, "/_control/guild-reset", "");
+    snapshot_where(discord, owner(bob)).await;
 }
 
 /// Editing her main profile as Discord's client does, then putting it

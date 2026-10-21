@@ -6,6 +6,7 @@ use super::{
     *,
 };
 use crate::chat::ForwardFailure;
+use yapfast_discord::server_settings::GuildSettings as DiscordSettings;
 
 /// Why a Discord command fails for a room that isn't Discord's.
 pub(super) const NOT_DISCORD: &str = "That isn't a Discord room.";
@@ -73,6 +74,27 @@ pub fn command(
         return;
     };
     let Some(command) = gifs::command(command, discord, events) else {
+        return;
+    };
+    let Some(command) = super::server_settings::command(command, discord, events) else {
+        return;
+    };
+    let Some(command) = super::roles::command(command, discord, &channels.searches, events) else {
+        return;
+    };
+    let Some(command) = super::overwrites::command(command, discord, events) else {
+        return;
+    };
+    let Some(command) = super::audit_log::command(command, discord, events) else {
+        return;
+    };
+    let Some(command) = super::people::command(command, discord, events) else {
+        return;
+    };
+    let Some(command) = super::expressions::command(command, discord, events) else {
+        return;
+    };
+    let Some(command) = super::ownership::command(command, discord, events) else {
         return;
     };
     let room = match &command {
@@ -579,6 +601,56 @@ pub fn live(
         tokio::spawn(yapfast_discord::service::keep_favorite_gifs(
             favorites.clone(),
         ));
+        return;
+    }
+    if let Ok(Live::MfaRequired { id, methods }) = &event {
+        let methods = methods
+            .iter()
+            .map(|&method| super::server_settings::method(method))
+            .collect();
+        let _ = events.send(Event::MfaRequired { id: *id, methods });
+        return;
+    }
+    if let Ok(Live::ServerSettings { guild, settings }) = &event {
+        let _ = events.send(Event::ServerSettingsChanged {
+            server: discord::server_id(guild),
+            settings: Box::new(super::server_settings::guild_settings(
+                DiscordSettings::clone(settings),
+            )),
+        });
+        return;
+    }
+    if let Ok(Live::ServerRole { guild, role }) = &event {
+        let _ = events.send(Event::ServerRoleChanged {
+            server: discord::server_id(guild),
+            role: Box::new(super::roles::detail((**role).clone(), 0)),
+        });
+        return;
+    }
+    if let Ok(Live::ServerBan { guild, ban, banned }) = &event {
+        let _ = events.send(Event::ServerBan {
+            server: discord::server_id(guild),
+            ban: Box::new(super::server_settings::ban((**ban).clone())),
+            banned: *banned,
+        });
+        return;
+    }
+    if let Ok(Live::ServerStickers { guild, stickers }) = &event {
+        let _ = events.send(Event::ServerStickers {
+            server: discord::server_id(guild),
+            stickers: stickers
+                .iter()
+                .cloned()
+                .map(super::expressions::server_sticker)
+                .collect(),
+        });
+        return;
+    }
+    if let Ok(Live::ServerRoleDeleted { guild, role }) = &event {
+        let _ = events.send(Event::ServerRoleDeleted {
+            server: discord::server_id(guild),
+            role: role.clone(),
+        });
         return;
     }
     if let Ok(Live::PlacesUsed(places)) = &event {

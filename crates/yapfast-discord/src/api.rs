@@ -11,6 +11,7 @@ use crate::{
     captcha::Captcha,
     client,
     limits::{self, Limits, Refusals, Stopped},
+    mfa,
     settings::{self, CustomStatus},
 };
 
@@ -86,6 +87,22 @@ pub const PAGE: usize = 50;
 /// How many archived threads a page of a channel's list of threads holds,
 /// as Discord's client asks for them.
 pub const THREAD_PAGE: u32 = 25;
+
+/// How many bans Bans fetches at a time, as Discord's client does; a
+/// batch this full may have more after it.
+pub const BANS_PAGE: usize = 1000;
+
+/// What a members search gave: Discord's answer, or the seconds to wait
+/// while it indexes the server.
+#[derive(Debug)]
+pub enum MembersSearch {
+    Found(Value),
+    Indexing(f64),
+}
+
+/// How many audit log entries Audit Log fetches at a time, as Discord's
+/// client does; a page this full may have older ones.
+pub const AUDIT_PAGE: usize = 50;
 /// How many posts' messages Discord's client asks a forum for at a time.
 pub const POSTS_PER_ASK: usize = 10;
 
@@ -156,6 +173,29 @@ impl std::fmt::Display for Refused {
 }
 
 impl std::error::Error for Refused {}
+
+/// Discord's own code and words for a refusal, in its error's chain: `{:#}`
+/// shows them, and [`code`] finds the code.
+#[derive(Debug)]
+pub struct DiscordError {
+    pub code: u64,
+    pub message: String,
+}
+
+impl std::fmt::Display for DiscordError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "code {}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for DiscordError {}
+
+/// The code Discord refused a request with, if it gave one.
+pub fn code(error: &anyhow::Error) -> Option<u64> {
+    error
+        .downcast_ref::<DiscordError>()
+        .map(|refusal| refusal.code)
+}
 
 /// Whether a failed [`Api::download`] may work if tried later: Discord was
 /// out of reach, failed or asked Yapfast to slow down, rather than refusing the
@@ -259,6 +299,11 @@ impl Api {
             .http
             .request(method, format!("{}{path}", self.base))
             .header("X-Super-Properties", client::super_properties());
+        // A request sent again once confirmed carries what confirmed it.
+        let request = match mfa::token() {
+            Some(confirmed) => request.header("X-Discord-MFA-Authorization", confirmed),
+            None => request,
+        };
         let token = self.token();
         if token.is_empty() {
             return request;
@@ -1077,6 +1122,338 @@ impl Api {
             .await
     }
 
+    /// Turns a confirmation into the token a request held back for
+    /// two-factor authentication goes again with: `data` is the code, the
+    /// password or the backup code, by `method`.
+    pub async fn finish_mfa(
+        &self,
+        ticket: &str,
+        method: mfa::Method,
+        data: &str,
+    ) -> Result<String> {
+        let body = json!({"ticket": ticket, "mfa_type": method.name(), "data": data});
+        let answer = self
+            .json(with_json(self.request(Method::POST, "/mfa/finish"), &body))
+            .await?;
+        answer["token"]
+            .as_str()
+            .map(str::to_owned)
+            .context("Discord gave no token for the confirmation")
+    }
+
+    /// Has Discord text a code for a ticket; it answers with the phone
+    /// number it went to, partly hidden.
+    pub async fn send_mfa_sms(&self, ticket: &str) -> Result<String> {
+        let body = json!({"ticket": ticket});
+        let answer = self
+            .json(with_json(
+                self.request(Method::POST, "/auth/mfa/sms/send"),
+                &body,
+            ))
+            .await?;
+        Ok(answer["phone"].as_str().unwrap_or_default().to_owned())
+    }
+
+    /// A server's profile, as its settings' Server Profile page shows it:
+    /// its name, icon and description, among more.
+    pub async fn server_profile(&self, guild: &str) -> Result<Value> {
+        let path = format!("/guilds/{guild}/profile");
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Changes a server's profile, as Server Profile's Save Changes does;
+    /// it takes Manage Server. Discord answers with the profile, and
+    /// GUILD_UPDATE.
+    pub async fn modify_server_profile(&self, guild: &str, body: &Value) -> Result<Value> {
+        let path = format!("/guilds/{guild}/profile");
+        self.json(with_json(self.request(Method::PATCH, &path), body))
+            .await
+    }
+
+    /// A server's guild object, with its settings.
+    pub async fn guild(&self, guild: &str) -> Result<Value> {
+        self.json(self.request(Method::GET, &format!("/guilds/{guild}")))
+            .await
+    }
+
+    /// Changes a server's settings, as Discord's Engagement, Boost Perks and
+    /// Safety Setup pages do; it takes Manage Server. Discord answers with
+    /// the guild, and GUILD_UPDATE.
+    pub async fn modify_guild(&self, guild: &str, body: &Value) -> Result<Value> {
+        let path = format!("/guilds/{guild}");
+        self.json(with_json(self.request(Method::PATCH, &path), body))
+            .await
+    }
+
+    /// Up to [`BANS_PAGE`] of a server's bans, after a user's id, as Bans
+    /// fetches them; it takes Ban Members or View Audit Log.
+    pub async fn bans(&self, guild: &str, after: Option<&str>) -> Result<Value> {
+        let mut path = format!("/guilds/{guild}/bans?limit={BANS_PAGE}");
+        if let Some(after) = after {
+            path.push_str(&format!("&after={after}"));
+        }
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// A server's bans of users named like `query`, or by id, up to 10,
+    /// as Bans' search asks; `user_ids` repeats for each.
+    pub async fn search_bans(
+        &self,
+        guild: &str,
+        query: Option<&str>,
+        user_ids: &[String],
+    ) -> Result<Value> {
+        let mut path = format!("/guilds/{guild}/bans/search?limit=10");
+        if let Some(query) = query {
+            path.push_str(&format!("&query={}", encode(query)));
+        }
+        for id in user_ids {
+            path.push_str(&format!("&user_ids={}", encode(id)));
+        }
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Lifts a ban, as Bans' Revoke Ban does, without a reason; Discord
+    /// sends GUILD_BAN_REMOVE.
+    pub async fn unban(&self, guild: &str, user: &str) -> Result<()> {
+        let path = format!("/guilds/{guild}/bans/{user}");
+        self.empty(self.request(Method::DELETE, &path)).await
+    }
+
+    /// A page of a server's audit log, newest first: before an entry's id,
+    /// by one user, or of one action, as Audit Log asks; it takes View
+    /// Audit Log.
+    pub async fn audit_log(
+        &self,
+        guild: &str,
+        before: Option<&str>,
+        user: Option<&str>,
+        action: Option<u16>,
+    ) -> Result<Value> {
+        let mut path = format!("/guilds/{guild}/audit-logs?limit={AUDIT_PAGE}");
+        if let Some(before) = before {
+            path.push_str(&format!("&before={}", encode(before)));
+        }
+        if let Some(user) = user {
+            path.push_str(&format!("&user_id={}", encode(user)));
+        }
+        if let Some(action) = action {
+            path.push_str(&format!("&action_type={action}"));
+        }
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Members of a server as Members in its settings searches them, a
+    /// chunk at a time: `body` is Discord's `members-search` query. Discord
+    /// answers 202 while it indexes the server, with how many seconds to
+    /// wait before asking again.
+    pub async fn search_members(&self, guild: &str, body: &Value) -> Result<MembersSearch> {
+        let path = format!("/guilds/{guild}/members-search");
+        let response = self
+            .execute(with_json(self.request(Method::POST, &path), body))
+            .await?;
+        let indexing = response.status() == StatusCode::ACCEPTED;
+        let body = response
+            .bytes()
+            .await
+            .context("could not read Discord's answer")?;
+        let body: Value =
+            serde_json::from_slice(&body).context("could not understand Discord's answer")?;
+        Ok(if indexing {
+            MembersSearch::Indexing(body["retry_after"].as_f64().unwrap_or(5.0))
+        } else {
+            MembersSearch::Found(body)
+        })
+    }
+
+    /// A server's invites, as Invites in its settings lists them; it takes
+    /// Manage Server.
+    pub async fn guild_invites(&self, guild: &str) -> Result<Value> {
+        let path = format!("/guilds/{guild}/invites");
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Revokes an invite, as Invites' X does.
+    pub async fn revoke_invite(&self, code: &str) -> Result<()> {
+        let path = format!("/invites/{}", encode(code));
+        self.empty(self.request(Method::DELETE, &path)).await
+    }
+
+    /// A server's custom emoji, each with who uploaded it, as Emoji in its
+    /// settings lists them.
+    pub async fn guild_emojis(&self, guild: &str) -> Result<Value> {
+        let path = format!("/guilds/{guild}/emojis");
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Adds a custom emoji: `image` is a data URI. Discord answers with
+    /// the emoji.
+    pub async fn create_emoji(&self, guild: &str, name: &str, image: &str) -> Result<Value> {
+        let path = format!("/guilds/{guild}/emojis");
+        let body = json!({"name": name, "image": image});
+        self.json(with_json(self.request(Method::POST, &path), &body))
+            .await
+    }
+
+    /// Renames a custom emoji, as Emoji's name field does.
+    pub async fn rename_emoji(&self, guild: &str, emoji: &str, name: &str) -> Result<Value> {
+        let path = format!("/guilds/{guild}/emojis/{emoji}");
+        let body = json!({ "name": name });
+        self.json(with_json(self.request(Method::PATCH, &path), &body))
+            .await
+    }
+
+    pub async fn delete_emoji(&self, guild: &str, emoji: &str) -> Result<()> {
+        let path = format!("/guilds/{guild}/emojis/{emoji}");
+        self.empty(self.request(Method::DELETE, &path)).await
+    }
+
+    /// A server's stickers, each with who uploaded it.
+    pub async fn guild_stickers(&self, guild: &str) -> Result<Value> {
+        let path = format!("/guilds/{guild}/stickers");
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Uploads a sticker as Discord's client does: a form with `name`,
+    /// `tags`, `description` and the file, in that order. Discord answers
+    /// with the sticker.
+    pub async fn create_sticker(
+        &self,
+        guild: &str,
+        fields: [(&str, &str); 3],
+        file: (&str, &str, &[u8]),
+    ) -> Result<Value> {
+        let path = format!("/guilds/{guild}/stickers");
+        let (content_type, body) = form(&fields, file);
+        self.json(
+            self.request(Method::POST, &path)
+                .header(header::CONTENT_TYPE, content_type)
+                .body(body),
+        )
+        .await
+    }
+
+    /// Changes a sticker's name, related emoji and description; its file
+    /// stays.
+    pub async fn edit_sticker(&self, guild: &str, sticker: &str, body: &Value) -> Result<Value> {
+        let path = format!("/guilds/{guild}/stickers/{sticker}");
+        self.json(with_json(self.request(Method::PATCH, &path), body))
+            .await
+    }
+
+    pub async fn delete_sticker(&self, guild: &str, sticker: &str) -> Result<()> {
+        let path = format!("/guilds/{guild}/stickers/{sticker}");
+        self.empty(self.request(Method::DELETE, &path)).await
+    }
+
+    /// Pauses a server's invites or DMs until a time, or resumes them, as
+    /// Security Actions does: `body` has `invites_disabled_until`,
+    /// `dms_disabled_until` and `lockdown_duration_hours`. Discord answers
+    /// with the server's `incidents_data`, and GUILD_UPDATE.
+    pub async fn incident_actions(&self, guild: &str, body: &Value) -> Result<Value> {
+        let path = format!("/guilds/{guild}/incident-actions");
+        self.json(with_json(self.request(Method::PUT, &path), body))
+            .await
+    }
+
+    /// Whether a server's moderators need two-factor authentication, 1, or
+    /// not, 0; only its owner may, with two-factor authentication on.
+    /// Discord answers with `{level}`.
+    pub async fn set_mfa_level(&self, guild: &str, level: u8) -> Result<Value> {
+        let path = format!("/guilds/{guild}/mfa");
+        self.json(with_json(
+            self.request(Method::POST, &path),
+            &json!({ "level": level }),
+        ))
+        .await
+    }
+
+    /// Deletes a server, as only its owner may.
+    pub async fn delete_guild(&self, guild: &str) -> Result<()> {
+        let path = format!("/guilds/{guild}/delete");
+        self.empty(self.request(Method::POST, &path)).await
+    }
+
+    /// Gives a server to `owner`, with the code emailed for it, or none
+    /// when two-factor authentication confirms it instead.
+    pub async fn transfer_guild(&self, guild: &str, owner: &str, code: Option<&str>) -> Result<()> {
+        let path = format!("/guilds/{guild}");
+        self.empty(with_json(
+            self.request(Method::PATCH, &path),
+            &json!({ "owner_id": owner, "code": code }),
+        ))
+        .await
+    }
+
+    /// Has Discord email the owner a code to give the server away.
+    pub async fn send_guild_pincode(&self, guild: &str) -> Result<()> {
+        let path = format!("/guilds/{guild}/pincode");
+        self.empty(self.request(Method::PUT, &path)).await
+    }
+
+    /// How many members hold each role, by role id.
+    pub async fn role_member_counts(&self, guild: &str) -> Result<Value> {
+        let path = format!("/guilds/{guild}/roles/member-counts");
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Makes a role with `body`'s fields; it takes Manage Roles. Discord
+    /// answers with the role, and GUILD_ROLE_CREATE.
+    pub async fn create_role(&self, guild: &str, body: &Value) -> Result<Value> {
+        let path = format!("/guilds/{guild}/roles");
+        self.json(with_json(self.request(Method::POST, &path), body))
+            .await
+    }
+
+    /// Changes a role with `body`'s fields. Discord answers with the role,
+    /// and GUILD_ROLE_UPDATE.
+    pub async fn modify_role(&self, guild: &str, role: &str, body: &Value) -> Result<Value> {
+        let path = format!("/guilds/{guild}/roles/{role}");
+        self.json(with_json(self.request(Method::PATCH, &path), body))
+            .await
+    }
+
+    /// Moves roles, `[{"id", "position"}, ...]`. Discord answers with every
+    /// role, and GUILD_ROLE_UPDATE for each moved.
+    pub async fn move_roles(&self, guild: &str, positions: &Value) -> Result<Value> {
+        let path = format!("/guilds/{guild}/roles");
+        self.json(with_json(self.request(Method::PATCH, &path), positions))
+            .await
+    }
+
+    /// Deletes a role, and GUILD_ROLE_DELETE follows.
+    pub async fn delete_role(&self, guild: &str, role: &str) -> Result<()> {
+        let path = format!("/guilds/{guild}/roles/{role}");
+        self.empty(self.request(Method::DELETE, &path)).await
+    }
+
+    /// The ids of up to 100 members holding a role.
+    pub async fn role_member_ids(&self, guild: &str, role: &str) -> Result<Value> {
+        let path = format!("/guilds/{guild}/roles/{role}/member-ids");
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Gives a role to these members at once, as Add Members does.
+    pub async fn add_role_members(
+        &self,
+        guild: &str,
+        role: &str,
+        members: &[String],
+    ) -> Result<Value> {
+        let path = format!("/guilds/{guild}/roles/{role}/members");
+        let body = json!({ "member_ids": members });
+        self.json(with_json(self.request(Method::PATCH, &path), &body))
+            .await
+    }
+
+    /// Sets a member's roles, all of them, as Manage Members' remove does.
+    pub async fn set_member_roles(&self, guild: &str, user: &str, roles: &[String]) -> Result<()> {
+        let path = format!("/guilds/{guild}/members/{user}");
+        let body = json!({ "roles": roles });
+        self.empty(with_json(self.request(Method::PATCH, &path), &body))
+            .await
+    }
+
     /// Changes this account's user: its display name and avatar, as
     /// Discord's profile editor sends them. Discord answers with the user,
     /// and USER_UPDATE.
@@ -1264,6 +1641,21 @@ impl Api {
         self.json(self.request(Method::DELETE, &path))
             .await
             .map(drop)
+    }
+
+    /// Sets a role's or member's overwrite in a channel or category, as
+    /// Channel Permissions saves each one; Discord sends CHANNEL_UPDATE.
+    pub async fn put_overwrite(&self, channel: &str, id: &str, body: &Value) -> Result<()> {
+        let path = format!("/channels/{channel}/permissions/{id}");
+        self.empty(with_json(self.request(Method::PUT, &path), body))
+            .await
+    }
+
+    /// Takes a role's or member's overwrite off a channel or category;
+    /// Discord sends CHANNEL_UPDATE.
+    pub async fn delete_overwrite(&self, channel: &str, id: &str) -> Result<()> {
+        let path = format!("/channels/{channel}/permissions/{id}");
+        self.empty(self.request(Method::DELETE, &path)).await
     }
 
     /// Leaves a server, as a member rather than one lurking in it.
@@ -1480,9 +1872,19 @@ fn refusal(status: StatusCode, body: &Value) -> anyhow::Error {
     // The status stays at its root, for callers to tell refusals apart.
     let detail = anyhow::Error::new(Refused(status));
     let detail = match (body["code"].as_u64(), body["message"].as_str()) {
-        (Some(code), Some(message)) => detail.context(format!("code {code}: {message}")),
+        (Some(code), Some(message)) => detail.context(DiscordError {
+            code,
+            message: message.to_owned(),
+        }),
         _ => detail,
     };
+    // A request held back for two-factor authentication carries its ticket.
+    if status == StatusCode::UNAUTHORIZED
+        && body["code"] == mfa::MFA_REQUIRED
+        && let Some(required) = mfa::Required::from_body(body)
+    {
+        return detail.context(required);
+    }
     detail.context(match (status, body["code"].as_u64()) {
         (_, Some(UNKNOWN_USERNAME)) => anyhow!("Discord has nobody by that username."),
         (_, Some(REQUESTS_CLOSED)) => {
@@ -1498,6 +1900,21 @@ fn refusal(status: StatusCode, body: &Value) -> anyhow::Error {
         }
         (_, Some(SERVER_FULL)) => anyhow!("This server is full."),
         (_, Some(INVITES_PAUSED)) => anyhow!("This server has paused invites."),
+        (_, Some(mfa::INVALID_MFA)) => anyhow!("That didn't work. Check it and try again."),
+        (_, Some(mfa::MFA_REQUIRED)) => {
+            anyhow!("Discord asks for two-factor authentication, which Yapfast can't do here.")
+        }
+        (_, Some(MISSING_PERMISSIONS)) => {
+            anyhow!("You don't have permission to do that in this server.")
+        }
+        (StatusCode::BAD_REQUEST, Some(INVALID_FORM_BODY)) if form_errors(body).is_some() => {
+            anyhow!(form_errors(body).unwrap_or_default())
+        }
+        // Only a 401 without a code of its own is about the login.
+        (StatusCode::UNAUTHORIZED, Some(code)) if code != 0 => match body["message"].as_str() {
+            Some(message) => anyhow!("Discord refused: {message}"),
+            None => anyhow!("Discord answered {status}."),
+        },
         _ => match status {
             StatusCode::UNAUTHORIZED => anyhow!(UNAUTHORIZED),
             StatusCode::FORBIDDEN => {
@@ -1527,6 +1944,44 @@ fn refusal(status: StatusCode, body: &Value) -> anyhow::Error {
     })
 }
 
+/// What Discord found wrong in a form it refused (code 50035), field by
+/// field, as "Name: Must be between 2 and 100 in length."; none when it
+/// named no field.
+fn form_errors(body: &Value) -> Option<String> {
+    fn walk(value: &Value, field: &str, found: &mut Vec<String>) {
+        let Some(object) = value.as_object() else {
+            return;
+        };
+        if let Some(errors) = object.get("_errors").and_then(Value::as_array) {
+            for error in errors {
+                if let Some(message) = error["message"].as_str() {
+                    found.push(match field {
+                        "" => message.to_owned(),
+                        field => format!("{field}: {message}"),
+                    });
+                }
+            }
+        }
+        for (key, value) in object.iter().filter(|(key, _)| *key != "_errors") {
+            // An index names the field around it: `traits.0.label` is a
+            // trait's label.
+            let field = if key.bytes().all(|byte| byte.is_ascii_digit()) {
+                field.to_owned()
+            } else {
+                let mut words = key.replace('_', " ");
+                if let Some(first) = words.get_mut(..1) {
+                    first.make_ascii_uppercase();
+                }
+                words
+            };
+            walk(value, &field, found);
+        }
+    }
+    let mut found = Vec::new();
+    walk(&body["errors"], "", &mut found);
+    (!found.is_empty()).then(|| found.join(" "))
+}
+
 /// Discord's error codes that Yapfast words itself.
 const REQUESTS_CLOSED: u64 = 80000;
 const UNKNOWN_USERNAME: u64 = 80004;
@@ -1537,6 +1992,8 @@ const BANNED: u64 = 40007;
 const TOO_MANY_SERVERS: u64 = 30001;
 const SERVER_FULL: u64 = 30019;
 const INVITES_PAUSED: u64 = 40069;
+const MISSING_PERMISSIONS: u64 = 50013;
+const INVALID_FORM_BODY: u64 = 50035;
 
 /// The X-Context-Properties header Discord's client sends: where an action
 /// happened, as base64 JSON.
@@ -1597,6 +2054,32 @@ fn post_body(
         "applied_tags": tags,
         "message": message,
     })
+}
+
+/// A `multipart/form-data` body of text `fields` and a file, given by its
+/// name, type and bytes, with its content type.
+fn form(fields: &[(&str, &str)], file: (&str, &str, &[u8])) -> (String, Vec<u8>) {
+    let boundary = format!("yapfast{:016x}", rand::random::<u64>());
+    let mut body = Vec::with_capacity(file.2.len() + 512);
+    for (name, value) in fields {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    let (filename, mime, data) = file;
+    let filename = filename.replace(['"', '\r', '\n'], "_");
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: {mime}\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(data);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
 }
 
 fn with_json(request: RequestBuilder, body: &Value) -> RequestBuilder {
@@ -1769,5 +2252,47 @@ mod tests {
         assert!(!super::discord_file(
             "https://cdn.discordapp.com.example.com/a.png"
         ));
+    }
+
+    #[test]
+    fn refusals_carry_discords_code_and_say_what_went_wrong() {
+        use super::{StatusCode, code, mfa, refusal};
+        use serde_json::json;
+        let form = json!({"code": 50035, "message": "Invalid Form Body", "errors": {
+            "name": {"_errors": [{"code": "BASE_TYPE_BAD_LENGTH", "message": "Must be between 2 and 100 in length."}]},
+            "traits": {"0": {"label": {"_errors": [{"message": "Too long."}]}}},
+        }});
+        let error = refusal(StatusCode::BAD_REQUEST, &form);
+        assert_eq!(code(&error), Some(50035));
+        assert_eq!(
+            error.to_string(),
+            "Name: Must be between 2 and 100 in length. Label: Too long."
+        );
+
+        let denied = json!({"code": 50013, "message": "Missing Permissions"});
+        let error = refusal(StatusCode::FORBIDDEN, &denied);
+        assert_eq!(
+            error.to_string(),
+            "You don't have permission to do that in this server."
+        );
+
+        let held = json!({"code": 60003, "message": "Two factor is required for this operation",
+            "mfa": {"ticket": "t", "methods": [{"type": "totp"}]}});
+        let error = refusal(StatusCode::UNAUTHORIZED, &held);
+        let required = error.downcast_ref::<mfa::Required>().unwrap();
+        assert_eq!(required.methods, [mfa::Method::Totp]);
+        assert_eq!(code(&error), Some(60003));
+
+        // Only a 401 without a code is about the login.
+        let other = json!({"code": 50001, "message": "Missing Access"});
+        assert_eq!(
+            refusal(StatusCode::UNAUTHORIZED, &other).to_string(),
+            "Discord refused: Missing Access"
+        );
+        let login = json!({"code": 0, "message": "401: Unauthorized"});
+        assert_eq!(
+            refusal(StatusCode::UNAUTHORIZED, &login).to_string(),
+            super::UNAUTHORIZED
+        );
     }
 }

@@ -17,8 +17,9 @@ pub struct ListedCategory {
 }
 
 /// The server menu's choices its header's dropdown lists, in its order.
-const HEADER: [MenuChoice; 7] = [
+const HEADER: [MenuChoice; 8] = [
     MenuChoice::Invite,
+    MenuChoice::ServerSettings,
     MenuChoice::CreateChannel,
     MenuChoice::CreateCategory,
     MenuChoice::ServerNotifications,
@@ -43,8 +44,8 @@ pub const SLOWMODES: [u32; 14] = [
     0, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 21_600,
 ];
 /// The longest name and topic Discord's channel settings take.
-const NAME_LIMIT: usize = 100;
-const TOPIC_LIMIT: usize = 1024;
+pub(super) const CHANNEL_NAME_LIMIT: usize = 100;
+pub(super) const CHANNEL_TOPIC_LIMIT: usize = 1024;
 
 /// A dialog that makes, changes or deletes a Discord channel or category.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,7 +75,6 @@ pub enum ChannelAsk {
     },
     /// Make a copy of this channel.
     Duplicate(String),
-    Edit(String),
     Delete(String),
 }
 
@@ -189,6 +189,9 @@ impl Application {
             });
             choices.extend([MenuChoice::ServerNotifications, MenuChoice::HideMuted]);
         }
+        if self.state.discord_online && !self.settings_sections(id).is_empty() {
+            choices.push(MenuChoice::ServerSettings);
+        }
         // One's own profile there, which anyone may change something of.
         if self.state.discord_online && self.state.discord_user.is_some() {
             choices.push(MenuChoice::EditServerProfile);
@@ -277,6 +280,13 @@ impl Application {
         self.state.discord_online && self.may(place, Permission::ManageChannels)
     }
 
+    /// Whether a channel's or category's settings have a page this account
+    /// may change: Overview with Manage Channels, Permissions with Manage
+    /// Permissions there.
+    fn edits(&self, place: &str) -> bool {
+        !self.channel_sections(place).is_empty()
+    }
+
     /// A Discord channel's menu: a conversation's, with inviting to it and
     /// pinning it before its link, and its notifications after, as in
     /// Discord's menu.
@@ -344,8 +354,11 @@ impl Application {
         choices.splice(at..at, notifying);
         // Managing it goes after its notifications, before its id.
         let mut managing = vec![];
+        if self.edits(id) {
+            managing.push(MenuChoice::EditChannel);
+        }
         if self.manages(id) {
-            managing.extend([MenuChoice::EditChannel, MenuChoice::DuplicateChannel]);
+            managing.push(MenuChoice::DuplicateChannel);
         }
         let around = self
             .category_of(id)
@@ -678,8 +691,11 @@ impl Application {
             choices.push(MenuChoice::MarkRead);
         }
         choices.extend_from_slice(listed);
+        if self.edits(id) {
+            choices.push(MenuChoice::EditChannel);
+        }
         if self.manages(id) {
-            choices.extend([MenuChoice::EditChannel, MenuChoice::DeleteChannel]);
+            choices.push(MenuChoice::DeleteChannel);
         }
         choices.push(MenuChoice::CopyId);
         choices
@@ -780,11 +796,9 @@ impl Application {
     }
 
     /// Opens a Discord channel's or category's dialog from its menu: to
-    /// change it, which loads a text channel's settings first, to copy it,
-    /// or to make sure before deleting it.
+    /// copy it, or to make sure before deleting it.
     pub(super) fn ask_channel(&mut self, ask: ChannelAsk) -> Vec<Effect> {
         let (room, choice) = match &ask {
-            ChannelAsk::Edit(room) => (room.clone(), MenuChoice::EditChannel),
             ChannelAsk::Duplicate(room) => (room.clone(), MenuChoice::DuplicateChannel),
             ChannelAsk::Delete(room) => (room.clone(), MenuChoice::DeleteChannel),
             ChannelAsk::Create { .. } => return vec![],
@@ -792,48 +806,18 @@ impl Application {
         if !self.menu_choices(&room).contains(&choice) {
             return vec![];
         }
-        let (name, kind) = if self.state.is_category(&room) {
-            let name = self
-                .server_of(&room)
-                .and_then(|server| {
-                    self.categories(&server)
-                        .into_iter()
-                        .find(|known| known.id == room)
-                })
-                .map(|category| category.name)
-                .unwrap_or_default();
-            (name, ChannelKind::Category)
-        } else {
-            let listed = self.state.rooms.iter().find(|known| known.id == room);
-            let name = listed.map(|known| known.name.clone()).unwrap_or_default();
-            let voice = listed.is_some_and(|known| known.voice);
-            (
-                name,
-                if voice {
-                    ChannelKind::Voice
-                } else {
-                    ChannelKind::Text
-                },
-            )
-        };
-        // Only a text channel has more than a name to load.
-        let load = matches!(ask, ChannelAsk::Edit(_)) && kind == ChannelKind::Text;
-        let settings = (!load).then(|| ChannelSettings {
+        let kind = self.channel_kind(&room);
+        let name = self.channel_title(&room);
+        let settings = ChannelSettings {
             name: if matches!(ask, ChannelAsk::Delete(_)) {
                 String::new()
             } else {
                 name.clone()
             },
             ..Default::default()
-        });
-        self.open_channel_dialog(&room, ask, name, kind, settings);
-        if load {
-            vec![Effect::Backend(Command::Discord(
-                DiscordCommand::ChannelSettings { room },
-            ))]
-        } else {
-            vec![]
-        }
+        };
+        self.open_channel_dialog(&room, ask, name, kind, Some(settings));
+        vec![]
     }
 
     /// The server id of the Discord server a room id names.
@@ -867,21 +851,6 @@ impl Application {
             saving: false,
             error: None,
         });
-    }
-
-    pub(super) fn channel_loaded(&mut self, room: String, result: Result<ChannelSettings, String>) {
-        let Some(dialog) = self
-            .state
-            .channel_dialog
-            .as_mut()
-            .filter(|dialog| dialog.ask == ChannelAsk::Edit(room) && dialog.settings.is_none())
-        else {
-            return;
-        };
-        match result {
-            Ok(settings) => dialog.settings = Some(settings),
-            Err(error) => dialog.error = Some(error),
-        }
     }
 
     /// Carries out the channel dialog with what it was given: of `kind`, text
@@ -927,10 +896,14 @@ impl Application {
             None
         } else if settings.name.is_empty() {
             Some("Give it a name.".to_owned())
-        } else if settings.name.chars().count() > NAME_LIMIT {
-            Some(format!("Names can be up to {NAME_LIMIT} characters."))
-        } else if settings.topic.chars().count() > TOPIC_LIMIT {
-            Some(format!("Topics can be up to {TOPIC_LIMIT} characters."))
+        } else if settings.name.chars().count() > CHANNEL_NAME_LIMIT {
+            Some(format!(
+                "Names can be up to {CHANNEL_NAME_LIMIT} characters."
+            ))
+        } else if settings.topic.chars().count() > CHANNEL_TOPIC_LIMIT {
+            Some(format!(
+                "Topics can be up to {CHANNEL_TOPIC_LIMIT} characters."
+            ))
         } else if !SLOWMODES.contains(&settings.slowmode) {
             Some("Pick one of the slowmodes.".to_owned())
         } else {
@@ -955,11 +928,6 @@ impl Application {
                 kind,
                 parent: None,
                 copy_of: Some(room),
-                settings: Box::new(settings),
-            },
-            ChannelAsk::Edit(room) => DiscordCommand::EditChannel {
-                room,
-                kind,
                 settings: Box::new(settings),
             },
             ChannelAsk::Delete(room) => DiscordCommand::DeleteChannel { room },

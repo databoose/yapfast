@@ -138,7 +138,7 @@ fn own_profile(
 
 /// A picture as Discord's client sends it: a data URI, or null to go by
 /// the fallback's.
-fn picture(picture: &Option<PickedPicture>) -> Value {
+pub(super) fn picture(picture: &Option<PickedPicture>) -> Value {
     match picture {
         Some(picture) => Value::String(format!(
             "data:{};base64,{}",
@@ -206,6 +206,23 @@ fn main_bodies(change: &ProfileChange) -> (Value, Value) {
 /// file to send and the preview stay; the decoded picture goes. An animated
 /// GIF goes as it is, so it stays animated.
 pub(super) fn read_picture(path: &Path, kind: ProfilePicture) -> Result<PickedPicture, String> {
+    let (largest, preview) = match kind {
+        ProfilePicture::Avatar => (AVATAR, AVATAR_PREVIEW),
+        ProfilePicture::Banner => (BANNER, BANNER_PREVIEW),
+    };
+    read_shaped(path, largest, preview, "a profile picture")
+}
+
+/// The picture at `path` as Discord's client sends it: cropped from its
+/// middle to the shape of `largest`, and at most that, with a preview of
+/// `preview`'s size. `what` names it in an error, such as "a profile
+/// picture".
+pub(super) fn read_shaped(
+    path: &Path,
+    largest: (u32, u32),
+    preview: (u32, u32),
+    what: &str,
+) -> Result<PickedPicture, String> {
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -217,7 +234,7 @@ pub(super) fn read_picture(path: &Path, kind: ProfilePicture) -> Result<PickedPi
         .len();
     if size > PICTURE_LIMIT {
         return Err(format!(
-            "{name} is {}; a profile picture can be up to {}.",
+            "{name} is {}; {what} can be up to {}.",
             file_size(size),
             file_size(PICTURE_LIMIT)
         ));
@@ -240,13 +257,9 @@ pub(super) fn read_picture(path: &Path, kind: ProfilePicture) -> Result<PickedPi
     limits.max_alloc = Some(256 * 1024 * 1024);
     reader.limits(limits);
     let decoded = reader.decode().map_err(|error| {
-        tracing::info!(%error, "could not decode a profile picture");
+        tracing::info!(%error, "could not decode {what}");
         not_a_picture()
     })?;
-    let (largest, preview) = match kind {
-        ProfilePicture::Avatar => (AVATAR, AVATAR_PREVIEW),
-        ProfilePicture::Banner => (BANNER, BANNER_PREVIEW),
-    };
     let cropped = crop(&decoded, largest);
     drop(decoded);
     let small = cropped.thumbnail_exact(preview.0, preview.1).into_rgba8();

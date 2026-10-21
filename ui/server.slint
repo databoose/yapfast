@@ -2,7 +2,7 @@
 import { ScrollView } from "scrollview.slint";
 import { Theme, Label, Middle } from "theme.slint";
 import { ActionButton, Avatar, IconButton, MenuItem, TextField } from "controls.slint";
-import { Choices, SettingsSwitch } from "settings.slint";
+import { Choices, UnsavedBar } from "settings.slint";
 import { ProfileData, ProfileHeading } from "people.slint";
 
 // What an invite dialog shows: whom it invites where, and the link once
@@ -198,8 +198,8 @@ export component JoinDialog inherits Rectangle {
     }
 }
 
-// What a channel dialog asks: to make, change, copy or delete a channel or
-// category, and which of its fields it shows.
+// What a channel dialog asks: to make, copy or delete a channel or category,
+// and which of its fields it shows.
 export struct ChannelPrompt {
     title: string,
     /// Where it goes, or what deleting it does.
@@ -214,28 +214,20 @@ export struct ChannelPrompt {
     named: bool,
     field: string,
     placeholder: string,
-    /// Whether it changes a text channel's topic, slowmode and NSFW switch.
-    settings: bool,
-    /// Discord sends the settings it changes.
-    loading: bool,
     saving: bool,
     error: string,
 }
 
-// Makes, changes, copies or deletes a Discord channel or category, as
-// Discord's create channel and channel settings dialogs do.
+// Makes, copies or deletes a Discord channel or category, as Discord's
+// create channel dialog does.
 export component ChannelDialog inherits Rectangle {
     in property <ChannelPrompt> prompt;
     in-out property <string> name;
-    in-out property <string> topic;
-    /// 0 for text, 1 for voice; and an index into the slowmodes offered.
+    /// 0 for text, 1 for voice.
     in-out property <int> kind;
-    in-out property <int> slowmode;
-    in-out property <bool> nsfw;
     callback save;
     callback close;
-    property <[string]> slowmodes: ["Off", "5s", "10s", "15s", "30s", "1m", "2m", "5m", "10m", "15m", "30m", "1h", "2h", "6h"];
-    property <bool> ready: !root.prompt.loading && !root.prompt.saving;
+    property <bool> ready: !root.prompt.saving;
     background: #00000099;
     TouchArea { clicked => { root.close(); } }
     Rectangle {
@@ -266,45 +258,11 @@ export component ChannelDialog inherits Rectangle {
                 }
                 if root.prompt.named: Text { text: root.prompt.field; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
                 if root.prompt.named: TextField {
-                    init => { if self.enabled { self.focus-input(); } }
-                    changed enabled => { if self.enabled { self.focus-input(); } }
-                    enabled: !root.prompt.loading;
+                    init => { self.focus-input(); }
                     min-height: 36px; text-size: 15px; pad: 10px;
-                    placeholder: root.prompt.loading ? "Loading..." : root.prompt.placeholder; label: root.prompt.field;
+                    placeholder: root.prompt.placeholder; label: root.prompt.field;
                     text <=> root.name;
                     accepted => { if root.ready { root.save(); } }
-                }
-                if root.prompt.settings: Text { text: "CHANNEL TOPIC"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
-                if root.prompt.settings: TextField {
-                    enabled: !root.prompt.loading;
-                    min-height: 36px; text-size: 15px; pad: 10px;
-                    placeholder: "Let everyone know how to use this channel"; label: "Channel topic";
-                    text <=> root.topic;
-                    accepted => { if root.ready { root.save(); } }
-                }
-                if root.prompt.settings: Text { text: "SLOWMODE"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
-                if root.prompt.settings: HorizontalLayout {
-                    spacing: 8px; alignment: start;
-                    IconButton {
-                        icon: @image-url("icons/chevron-left.svg"); label: "Shorter slowmode"; size: 32px; glyph: 18px;
-                        clicked => { root.slowmode = max(0, root.slowmode - 1); }
-                    }
-                    Text {
-                        min-width: 48px; text: root.slowmodes[root.slowmode]; color: Theme.text; font-size: 15px;
-                        horizontal-alignment: center; vertical-alignment: center;
-                        accessible-role: text; accessible-label: "Slowmode " + self.text;
-                    }
-                    IconButton {
-                        icon: @image-url("icons/chevron-right.svg"); label: "Longer slowmode"; size: 32px; glyph: 18px;
-                        clicked => { root.slowmode = min(root.slowmodes.length - 1, root.slowmode + 1); }
-                    }
-                }
-                if root.prompt.settings: Label { text: "Members may send one message per interval, unless they may manage the channel or its messages."; }
-                if root.prompt.settings: SettingsSwitch {
-                    text: "Age-restricted channel";
-                    description: "Members must confirm they're of age to see what's in it.";
-                    enabled: !root.prompt.loading;
-                    checked <=> root.nsfw;
                 }
                 if root.prompt.error != "": Text { text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
                 HorizontalLayout {
@@ -800,24 +758,12 @@ export component ProfileEditorDialog inherits Rectangle {
                         }
                     }
                     // Discord's bar, once there's something to save.
-                    if root.prompt.changed || root.prompt.saving: Rectangle {
-                        background: Theme.raised;
-                        height: root.bar-height;
-                        Rectangle { y: 0px; height: 1px; background: Theme.edge; }
-                        bar := HorizontalLayout {
-                            padding: 12px; padding-left: root.pad; spacing: 8px;
-                            Middle { Text { text: "Careful — you have unsaved changes!"; color: Theme.text; font-size: 14px; font-weight: 600; overflow: elide; } }
-                            Rectangle { horizontal-stretch: 1; }
-                            ActionButton {
-                                text: "Reset"; ghost: true; enabled: root.ready;
-                                clicked => { root.stop-editing(); root.colour-open = false; root.undo(); }
-                            }
-                            ActionButton {
-                                text: root.prompt.saving ? "Saving..." : "Save Changes"; primary: true;
-                                enabled: root.ready && root.prompt.reading == "" && root.prompt.too-long == "" && root.prompt.bio-left >= 0 && !root.prompt.colour-wrong;
-                                clicked => { root.stop-editing(); root.save(); }
-                            }
-                        }
+                    if root.prompt.changed || root.prompt.saving: UnsavedBar {
+                        height: root.bar-height; pad: root.pad; saving: root.prompt.saving;
+                        may-reset: root.ready;
+                        may-save: root.ready && root.prompt.reading == "" && root.prompt.too-long == "" && root.prompt.bio-left >= 0 && !root.prompt.colour-wrong;
+                        undo => { root.stop-editing(); root.colour-open = false; root.undo(); }
+                        save => { root.stop-editing(); root.save(); }
                     }
                 }
             }

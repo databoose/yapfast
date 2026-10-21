@@ -1,7 +1,7 @@
 //! The menus a right click opens: what they offer, and the choices made.
 
 use yapfast_core::{
-    application::{ChannelAsk, MUTE_TIMES, MenuChoice, network_id, network_link},
+    application::{ChannelAsk, MUTE_TIMES, MenuChoice, OwnershipInput, network_id, network_link},
     chat::{
         ChannelKind, MemberChange, Muting, NotificationChange, Notifications, NotifyLevel,
         RelationshipChange,
@@ -144,7 +144,10 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 | MenuChoice::RemoveTimeout
                 | MenuChoice::Kick
                 | MenuChoice::Ban => 5,
-                MenuChoice::EditServerProfile
+                // Its own group, as in Discord's.
+                MenuChoice::TransferOwnership => 9,
+                MenuChoice::ServerSettings
+                | MenuChoice::EditServerProfile
                 | MenuChoice::CreateChannel
                 | MenuChoice::CreateCategory
                 | MenuChoice::EditChannel
@@ -204,6 +207,7 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                         | MenuChoice::Disconnect
                         | MenuChoice::DeleteChannel
                         | MenuChoice::LeaveServer
+                        | MenuChoice::TransferOwnership
                 ),
                 separated,
                 checkbox,
@@ -280,6 +284,7 @@ fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &sl
         MenuChoice::Timeout => ("Time out", &icons.timeout),
         MenuChoice::Kick => ("Kick", &icons.kick),
         MenuChoice::Ban => ("Ban", &icons.ban),
+        MenuChoice::TransferOwnership => ("Transfer Ownership", &icons.crown),
         MenuChoice::LocalMute | MenuChoice::SelfMute => ("Mute", &icons.mic_off),
         MenuChoice::SelfDeafen => ("Deafen", &icons.deafen),
         MenuChoice::MoveTo => ("Move to", &icons.move_to),
@@ -308,6 +313,7 @@ fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &sl
         MenuChoice::JoinThread => ("Join thread", &icons.thread),
         MenuChoice::LeaveThread => ("Leave thread", &icons.leave),
         MenuChoice::EditServerProfile => ("Edit server profile", &icons.rename),
+        MenuChoice::ServerSettings => ("Server settings", &icons.settings),
     }
 }
 
@@ -698,9 +704,15 @@ pub(super) fn choose(
         return;
     }
     let (room, user) = subjects(&adapter.app.state, &target, person);
-    // A member's choices act in the server of the channel they're in.
+    // A member's choices act in the server of the channel they're in, or
+    // of the settings listing them.
+    #[cfg(feature = "discord")]
+    let listed = adapter.app.member_place(&target).map(str::to_owned);
+    #[cfg(not(feature = "discord"))]
+    let listed = None;
     let place = in_voice
         .map(|(room, _)| room)
+        .or(listed)
         .or_else(|| adapter.app.state.selected.clone());
     let me = adapter.app.state.discord_user.as_deref() == Some(target.as_str());
     let voice = |change| {
@@ -814,6 +826,9 @@ pub(super) fn choose(
         MenuChoice::Timeout => ask_member(PersonAsk::Timeout),
         MenuChoice::Kick => ask_member(PersonAsk::Kick),
         MenuChoice::Ban => ask_member(PersonAsk::Ban),
+        MenuChoice::TransferOwnership => {
+            Some(Action::Ownership(OwnershipInput::Transfer(target.clone())))
+        }
         MenuChoice::RemoveTimeout => place.clone().map(|place| Action::ChangeMember {
             place,
             user: target.clone(),
@@ -860,7 +875,7 @@ pub(super) fn choose(
             place: target,
             kind: ChannelKind::Category,
         }),
-        MenuChoice::EditChannel => Some(Action::AskChannel(ChannelAsk::Edit(target))),
+        MenuChoice::EditChannel => Some(Action::OpenChannelSettings(target)),
         MenuChoice::DuplicateChannel => Some(Action::AskChannel(ChannelAsk::Duplicate(target))),
         MenuChoice::DeleteChannel => Some(Action::AskChannel(ChannelAsk::Delete(target))),
         MenuChoice::LeaveServer => Some(Action::AskLeaveServer(target)),
@@ -877,6 +892,7 @@ pub(super) fn choose(
                 Some(Action::EditServerProfile(target))
             }
         }
+        MenuChoice::ServerSettings => Some(Action::OpenServerSettings(target)),
         // A server's notifications change above; their rows are submenus.
         MenuChoice::MuteServer
         | MenuChoice::UnmuteServer
@@ -924,7 +940,7 @@ pub(super) fn server_change(
     }
 }
 
-const CHOICES: [MenuChoice; 57] = [
+const CHOICES: [MenuChoice; 59] = [
     MenuChoice::MarkRead,
     MenuChoice::JoinVoice,
     MenuChoice::OpenChat,
@@ -957,6 +973,7 @@ const CHOICES: [MenuChoice; 57] = [
     MenuChoice::RemoveTimeout,
     MenuChoice::Kick,
     MenuChoice::Ban,
+    MenuChoice::TransferOwnership,
     MenuChoice::ChannelMute,
     MenuChoice::ChannelNotifications,
     MenuChoice::MuteServer,
@@ -975,6 +992,7 @@ const CHOICES: [MenuChoice; 57] = [
     MenuChoice::JoinThread,
     MenuChoice::LeaveThread,
     MenuChoice::EditServerProfile,
+    MenuChoice::ServerSettings,
     MenuChoice::LocalMute,
     MenuChoice::SelfMute,
     MenuChoice::SelfDeafen,
@@ -1018,6 +1036,7 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::RemoveTimeout => "remove-timeout",
         MenuChoice::Kick => "kick",
         MenuChoice::Ban => "ban",
+        MenuChoice::TransferOwnership => "transfer-ownership",
         MenuChoice::ChannelMute => "channel-mute",
         MenuChoice::ChannelNotifications => "channel-notifications",
         MenuChoice::MuteServer => "mute-server",
@@ -1036,6 +1055,7 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::JoinThread => "join-thread",
         MenuChoice::LeaveThread => "leave-thread",
         MenuChoice::EditServerProfile => "edit-server-profile",
+        MenuChoice::ServerSettings => "server-settings",
         MenuChoice::LocalMute => "local-mute",
         MenuChoice::SelfMute => "self-mute",
         MenuChoice::SelfDeafen => "self-deafen",

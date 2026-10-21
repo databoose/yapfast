@@ -6,6 +6,8 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     super::gifs::bind(window, adapter);
     super::polls::bind(window, adapter);
     super::call_link::bind(window, adapter);
+    super::server_settings::bind(window, adapter);
+    super::channel_settings::bind(window, adapter);
     // UI bindings can request images while refresh borrows the adapter.
     // Deliver their requests in one batch after the current UI work.
     let pending = Rc::new(RefCell::new(HashSet::new()));
@@ -514,16 +516,9 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
             } else {
                 ChannelKind::Text
             };
-            let slowmode = usize::try_from(window.get_channel_slowmode())
-                .ok()
-                .and_then(|index| SLOWMODES.get(index))
-                .copied()
-                .unwrap_or_default();
             let settings = ChannelSettings {
                 name: window.get_channel_name().into(),
-                topic: window.get_channel_topic().into(),
-                slowmode,
-                nsfw: window.get_channel_nsfw(),
+                ..Default::default()
             };
             adapter
                 .borrow_mut()

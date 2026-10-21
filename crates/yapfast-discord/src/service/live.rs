@@ -47,6 +47,56 @@ pub(super) fn live_events(
         })
     };
     match event {
+        // Few and small: an open page of the server's settings follows it.
+        Event::GuildUpdate => data["id"]
+            .as_str()
+            .map(|guild| Live::ServerSettings {
+                guild: guild.to_owned(),
+                settings: Box::new(crate::server_settings::parse_guild(data)),
+            })
+            .into_iter()
+            .collect(),
+        Event::GuildRoleCreate | Event::GuildRoleUpdate => data["guild_id"]
+            .as_str()
+            .zip(crate::server_settings::parse_role(&data["role"]))
+            .map(|(guild, role)| Live::ServerRole {
+                guild: guild.to_owned(),
+                role: Box::new(role),
+            })
+            .into_iter()
+            .collect(),
+        Event::GuildRoleDelete => data["guild_id"]
+            .as_str()
+            .zip(data["role_id"].as_str())
+            .map(|(guild, role)| Live::ServerRoleDeleted {
+                guild: guild.to_owned(),
+                role: role.to_owned(),
+            })
+            .into_iter()
+            .collect(),
+        Event::GuildStickersUpdate => data["guild_id"]
+            .as_str()
+            .map(|guild| Live::ServerStickers {
+                guild: guild.to_owned(),
+                stickers: data["stickers"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(crate::server_settings::parse_sticker)
+                    .collect(),
+            })
+            .into_iter()
+            .collect(),
+        Event::GuildBanAdd | Event::GuildBanRemove => data["guild_id"]
+            .as_str()
+            .zip(crate::server_settings::parse_banned_user(&data["user"]))
+            .map(|(guild, user)| Live::ServerBan {
+                guild: guild.to_owned(),
+                ban: Box::new(crate::server_settings::Ban { user, reason: None }),
+                banned: *event == Event::GuildBanAdd,
+            })
+            .into_iter()
+            .collect(),
         Event::MessageCreate | Event::MessageUpdate => {
             let Some(message) = message.cloned() else {
                 return vec![];
