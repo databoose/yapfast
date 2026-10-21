@@ -5612,6 +5612,164 @@ fn server_channels_pin_to_the_top_as_discords_client_pins_them() {
 
 #[test]
 #[cfg(feature = "discord")]
+fn a_community_server_lists_only_the_channels_followed_as_discords_client_does() {
+    use MenuChoice::*;
+    use yapfast_discord::notifications::Override;
+    let mut app = discord_server();
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    app.dispatch(Action::SelectRoom("discord:10:11".into()));
+    let listed = |app: &Application| {
+        app.state
+            .scoped_rooms()
+            .map(|room| room.name.clone())
+            .collect::<Vec<_>>()
+    };
+    let settings = |app: &mut Application, server_flags: u64, flags: &[(&str, u64)]| {
+        let flags: Vec<(String, u64)> = flags
+            .iter()
+            .map(|(channel, flags)| ((*channel).to_owned(), *flags))
+            .collect();
+        change_server(app, move |server| {
+            let mut settings =
+                yapfast_discord::notifications::Notifications::clone(&server.notifications);
+            // Muted channels show, to see only what following hides.
+            settings.hide_muted_channels = false;
+            settings.flags = server_flags;
+            for (channel, flags) in flags {
+                let known = settings.overrides.entry(channel).or_default();
+                *known = Override { flags, ..*known };
+            }
+            server.notifications = Arc::new(settings);
+            server.community = true;
+        });
+    };
+    let follow = |app: &mut Application, room: &str, follow| match app
+        .dispatch(Action::FollowChannel {
+            room: room.into(),
+            follow,
+        })
+        .as_slice()
+    {
+        [
+            Effect::Backend(Command::Discord(DiscordCommand::FollowChannel { room: sent, flags })),
+        ] if sent == room => Some(*flags),
+        [] => None,
+        other => panic!("{} effects", other.len()),
+    };
+
+    // Outside a Community server, nothing to choose.
+    assert_eq!(
+        app.server_notifications("discord:10").unwrap().show_all,
+        None
+    );
+    assert!(!app.menu_choices("discord:10").contains(&ShowAllChannels));
+
+    // A Community server shows every channel until told otherwise.
+    settings(&mut app, 0, &[]);
+    assert_eq!(listed(&app), ["general", "news", "memes", "Lounge"]);
+    assert_eq!(
+        app.server_notifications("discord:10").unwrap().show_all,
+        Some(true)
+    );
+    let choices = app.menu_choices("discord:10");
+    let at = choices.iter().position(|choice| *choice == ShowAllChannels);
+    assert_eq!(at.map(|at| choices[at + 1]), Some(HideMuted));
+    assert!(app.header_choices("discord:10").contains(&ShowAllChannels));
+    assert_eq!(
+        follow(&mut app, "discord:10:11", true),
+        None,
+        "not while all show"
+    );
+    // Turning it off with none followed follows every channel she sees.
+    assert!(matches!(
+        app.dispatch(Action::ShowAllChannels { server: "discord:10".into(), show: false }).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::ShowAllChannels { server, flags: 16384, follow }))]
+            if server == "discord:10"
+                && *follow == [("11".into(), 4096), ("12".into(), 4096), ("13".into(), 4096), ("14".into(), 4096)]
+    ));
+
+    // Following #general alone: #news goes; #memes stays, mentioning her,
+    // and Lounge, a voice channel, as every voice channel does.
+    settings(&mut app, 16384 | 1, &[("11", 4096)]);
+    assert_eq!(
+        app.server_notifications("discord:10").unwrap().show_all,
+        Some(false)
+    );
+    assert_eq!(listed(&app), ["general", "memes", "Lounge"]);
+    app.dispatch(Action::SelectRoom("discord:10:12".into()));
+    assert_eq!(
+        listed(&app),
+        ["general", "news", "memes", "Lounge"],
+        "the open one stays"
+    );
+    assert_eq!(
+        app.menu_choices("discord:10:11"),
+        [
+            PinChannel,
+            RemoveFromChannelList,
+            CopyLink,
+            ChannelMute,
+            ChannelNotifications,
+            EditChannel,
+            CopyId
+        ],
+        "after pinning, before the link"
+    );
+    assert!(
+        app.menu_choices("discord:10:12")
+            .contains(&AddToChannelList)
+    );
+    assert_eq!(
+        app.menu_choices("discord:10:4").first(),
+        Some(&MarkRead),
+        "#memes is unread"
+    );
+    assert_eq!(app.menu_choices("discord:10:4")[1], AddToChannelList);
+    assert_eq!(follow(&mut app, "discord:10:12", true), Some(4096));
+    assert_eq!(follow(&mut app, "discord:10:11", false), Some(0));
+    assert_eq!(follow(&mut app, "discord:10:11", true), None, "followed");
+    // Turning it back on keeps what she follows; off again follows nothing more.
+    assert!(matches!(
+        app.dispatch(Action::ShowAllChannels { server: "discord:10".into(), show: true }).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::ShowAllChannels { flags: 1, follow, .. }))]
+            if follow.is_empty()
+    ));
+    assert!(
+        app.dispatch(Action::ShowAllChannels {
+            server: "discord:10".into(),
+            show: false
+        })
+        .is_empty(),
+        "already off"
+    );
+
+    // Following the category follows each channel in it; a channel's menu
+    // then unfollows the category, and a pinned channel shows unfollowed.
+    app.dispatch(Action::SelectRoom("discord:10:11".into()));
+    settings(&mut app, 16384, &[("11", 0), ("4", 4096)]);
+    assert_eq!(listed(&app), ["general", "news", "memes", "Lounge"]);
+    assert!(
+        app.menu_choices("discord:10:12")
+            .contains(&UnfollowCategory)
+    );
+    assert!(
+        app.menu_choices("discord:10:4")
+            .contains(&RemoveFromChannelList)
+    );
+    assert_eq!(follow(&mut app, "discord:10:4", false), Some(0));
+    settings(&mut app, 16384, &[("4", 0), ("12", 2048)]);
+    assert_eq!(listed(&app), ["general", "news", "memes", "Lounge"]);
+    app.dispatch(Action::SelectRoom("discord:10:13".into()));
+    assert_eq!(listed(&app), ["news", "memes", "Lounge"]);
+    assert_eq!(
+        follow(&mut app, "discord:10:12", true),
+        Some(2048 | 4096),
+        "keeps the pin"
+    );
+}
+
+#[test]
+#[cfg(feature = "discord")]
 fn a_discord_servers_menu_and_header_offer_its_notifications() {
     use MenuChoice::*;
     let mut app = discord_server();

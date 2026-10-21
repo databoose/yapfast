@@ -91,6 +91,15 @@ pub enum MenuChoice {
     /// this account wherever it signs in, or unpin it.
     PinChannel,
     UnpinChannel,
+    /// Add a Discord server's channel or category to its channel list, or
+    /// remove it, while the list shows only those this account follows;
+    /// or stop following the category a channel is followed through.
+    AddToChannelList,
+    RemoveFromChannelList,
+    UnfollowCategory,
+    /// Show every channel of a Discord server, or only those this account
+    /// follows; a checkbox.
+    ShowAllChannels,
     /// Make a channel in a Discord server, or one like a channel in its
     /// category; make a category.
     CreateChannel,

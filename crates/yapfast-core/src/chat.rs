@@ -104,6 +104,11 @@ pub struct ChatRoom {
     pub parent: Option<String>,
     /// A Discord forum, whose posts show in place of messages.
     pub forum: bool,
+    /// A Discord server's text channel its channel list leaves out unless
+    /// it's open or mentions this account, as Discord's client does with
+    /// Show All Channels off for one this account doesn't follow; or a
+    /// thread of one.
+    pub unlisted: bool,
     /// A Discord message request's latest message, when it's known.
     pub preview: Option<Box<RequestPreview>>,
 }
@@ -474,6 +479,9 @@ pub struct ServerNotifications {
     pub suppress_roles: bool,
     /// See [`ChatServer::hide_muted`].
     pub hide_muted: bool,
+    /// Its channel list shows every channel, not only those this account
+    /// follows; none where it can't choose, outside a Community server.
+    pub show_all: Option<bool>,
 }
 
 /// A change to a Discord server's, channel's or category's notification
@@ -1899,6 +1907,23 @@ pub enum DiscordCommand {
     PinChannel {
         room: String,
         flags: u64,
+    },
+    /// Set the flags of this account's override for a Discord server's
+    /// channel or category, by its room id, which add it to the channel
+    /// list or remove it; snapshots show it once Discord confirms it, and a
+    /// failure comes back as [`Event::Error`].
+    FollowChannel {
+        room: String,
+        flags: u64,
+    },
+    /// Set a Discord server's own flags in this account's settings for it,
+    /// by its server id, which turn Show All Channels on or off, with the
+    /// flags of the channels it `follow`s by id; snapshots show it once
+    /// Discord confirms it, and a failure comes back as [`Event::Error`].
+    ShowAllChannels {
+        server: String,
+        flags: u64,
+        follow: Vec<(String, u64)>,
     },
     /// Make an invite to a Discord server's channel, by its room id, that
     /// lasts `max_age` seconds, 0 for good, and works `max_uses` times, 0

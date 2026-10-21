@@ -2925,6 +2925,7 @@ fn friends_in_a_servers_voice_channel_show_where() {
         activities: Default::default(),
         parent: None,
         forum: false,
+        unlisted: false,
         preview: None,
     };
     let mut state = AppState::default();
@@ -3622,6 +3623,65 @@ fn pinned_channels_leave_their_categories_for_the_top() {
         [
             "Mark as read",
             "Unpin channel",
+            "Copy link",
+            "Mute channel",
+            "Notification settings",
+            "Copy ID"
+        ]
+    );
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn a_community_server_lists_the_channels_followed_and_offers_following() {
+    use yapfast_core::yapfast_discord::notifications::Notifications;
+    let (window, adapter, _directory) = discord_server_window_changed(0, |server| {
+        let mut settings = Notifications::clone(&server.notifications);
+        settings.flags = 1 << 14;
+        server.notifications = Arc::new(settings);
+        server.community = true;
+        server.text_channels[0].mentions = 0;
+        server.text_channels[0].unread = true;
+    });
+    window.invoke_navigate_server("discord:10".into());
+    let rail = window.get_servers();
+    let row = rail.iter().find(|row| row.id == "discord:10").unwrap();
+    assert!(!row.unread, "#general's messages don't mark the server");
+    let rows: Vec<RoomRow> = adapter.borrow().models.rooms.iter().collect();
+    let shown: Vec<_> = rows
+        .iter()
+        .map(|row| (row.heading.as_str(), row.name.as_str()))
+        .collect();
+    assert_eq!(
+        shown,
+        [("TALK", "Lounge"), ("LATER", "")],
+        "#general isn't followed"
+    );
+    let texts = |id: &str| -> Vec<(String, bool)> {
+        window.invoke_prepare_menu(id.into(), false);
+        window
+            .get_menu_rows()
+            .iter()
+            .map(|row| (row.text.to_string(), row.checked))
+            .collect()
+    };
+    let server = texts("discord:10");
+    let at = server
+        .iter()
+        .position(|(text, _)| text == "Show all channels")
+        .unwrap();
+    assert!(!server[at].1, "unticked");
+    assert_eq!(server[at + 1].0, "Hide muted channels");
+    let channel: Vec<String> = texts("discord:10:11")
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect();
+    assert_eq!(
+        channel,
+        [
+            "Mark as read",
+            "Pin channel to top",
+            "Add to channel list",
             "Copy link",
             "Mute channel",
             "Notification settings",
@@ -5415,6 +5475,7 @@ fn requests_list_someone_once_with_their_message() {
         activities: Default::default(),
         parent: None,
         forum: false,
+        unlisted: false,
         preview: Some(Box::new(RequestPreview {
             text: format!("Hi from {person}"),
             at: 1_700_000_000_000,

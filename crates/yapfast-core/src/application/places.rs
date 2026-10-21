@@ -17,13 +17,14 @@ pub struct ListedCategory {
 }
 
 /// The server menu's choices its header's dropdown lists, in its order.
-const HEADER: [MenuChoice; 8] = [
+const HEADER: [MenuChoice; 9] = [
     MenuChoice::Invite,
     MenuChoice::ServerSettings,
     MenuChoice::CreateChannel,
     MenuChoice::CreateCategory,
     MenuChoice::ServerNotifications,
     MenuChoice::EditServerProfile,
+    MenuChoice::ShowAllChannels,
     MenuChoice::HideMuted,
     MenuChoice::LeaveServer,
 ];
@@ -187,7 +188,11 @@ impl Application {
             } else {
                 MenuChoice::MuteServer
             });
-            choices.extend([MenuChoice::ServerNotifications, MenuChoice::HideMuted]);
+            choices.push(MenuChoice::ServerNotifications);
+            if notifications.show_all.is_some() {
+                choices.push(MenuChoice::ShowAllChannels);
+            }
+            choices.push(MenuChoice::HideMuted);
         }
         if self.state.discord_online && !self.settings_sections(id).is_empty() {
             choices.push(MenuChoice::ServerSettings);
@@ -339,6 +344,15 @@ impl Application {
                 },
             );
         }
+        // Then adding it to the channel list or taking it off, while the
+        // list shows only the channels followed.
+        if let Some(choice) = self.list_choice(id)
+            && let Some(at) = choices
+                .iter()
+                .position(|choice| *choice == MenuChoice::CopyLink)
+        {
+            choices.insert(at, choice);
+        }
         let notifying: Vec<MenuChoice> = choices
             .extract_if(.., |choice| {
                 matches!(
@@ -430,6 +444,106 @@ impl Application {
                 location,
             },
         ))]
+    }
+
+    /// What a Discord channel's or category's menu, by its room id, offers
+    /// for the channel list while it shows only the channels this account
+    /// follows, as Discord's client offers it: to stop following the
+    /// category a channel is followed through, else to add the channel or
+    /// category, or to remove it. None while Discord is away, and for a
+    /// thread.
+    fn list_choice(&self, id: &str) -> Option<MenuChoice> {
+        #[cfg(feature = "discord")]
+        if self.state.discord_online
+            && let Some((server, Some(channel), _)) = self.discord_place(id)
+            && server.follows_only()
+        {
+            let known = server.channel(channel);
+            if known.is_some_and(|known| known.thread.is_some()) {
+                return None;
+            }
+            let settings = &server.notifications;
+            let category = known.and_then(|known| known.parent.as_deref());
+            return Some(
+                if category.is_some_and(|category| settings.of(category).followed()) {
+                    MenuChoice::UnfollowCategory
+                } else if settings.of(channel).followed() {
+                    MenuChoice::RemoveFromChannelList
+                } else {
+                    MenuChoice::AddToChannelList
+                },
+            );
+        }
+        let _ = id;
+        None
+    }
+
+    /// Asks Discord to add a channel or category to the channel list that
+    /// shows only those this account follows, or to remove it, from its
+    /// menu: its override's flags, as Discord's client writes them. The
+    /// list changes when Discord confirms it.
+    pub(super) fn follow_channel(&mut self, room: String, follow: bool) -> Vec<Effect> {
+        let choice = if follow {
+            MenuChoice::AddToChannelList
+        } else {
+            MenuChoice::RemoveFromChannelList
+        };
+        if self.list_choice(&room) != Some(choice) {
+            return vec![];
+        }
+        #[cfg(feature = "discord")]
+        if let Some((server, Some(channel), _)) = self.discord_place(&room) {
+            let flags = server.notifications.of(channel).follow_flags(follow);
+            return vec![Effect::Backend(Command::Discord(
+                DiscordCommand::FollowChannel { room, flags },
+            ))];
+        }
+        vec![]
+    }
+
+    /// Asks Discord to show every channel of a server in its channel list,
+    /// or only those this account follows, from the server's menu. Turning
+    /// Show All Channels off with nothing followed follows every channel
+    /// this account sees, as Discord's client does, so the list doesn't
+    /// empty. The list changes when Discord confirms it.
+    pub(super) fn show_all_channels(&mut self, server: String, show: bool) -> Vec<Effect> {
+        if !self
+            .menu_choices(&server)
+            .contains(&MenuChoice::ShowAllChannels)
+            || self
+                .server_notifications(&server)
+                .and_then(|known| known.show_all)
+                == Some(show)
+        {
+            return vec![];
+        }
+        #[cfg(feature = "discord")]
+        if let Some((known, None, _)) = self.discord_place(&server) {
+            let settings = &known.notifications;
+            let flags = settings.show_all_flags(show);
+            let follow = if show || settings.follows_any() {
+                vec![]
+            } else {
+                known
+                    .text_channels
+                    .iter()
+                    .chain(&known.voice_channels)
+                    .filter(|channel| channel.access != yapfast_discord::ready::Access::Hidden)
+                    .map(|channel| {
+                        let flags = settings.of(&channel.id).follow_flags(true);
+                        (channel.id.clone(), flags)
+                    })
+                    .collect()
+            };
+            return vec![Effect::Backend(Command::Discord(
+                DiscordCommand::ShowAllChannels {
+                    server,
+                    flags,
+                    follow,
+                },
+            ))];
+        }
+        vec![]
     }
 
     /// Whether this account pinned a Discord channel, by its room id, to
@@ -690,6 +804,8 @@ impl Application {
         if !self.unread_in_category(id).is_empty() {
             choices.push(MenuChoice::MarkRead);
         }
+        // Following it comes before its notifications, as in Discord's menu.
+        choices.extend(self.list_choice(id));
         choices.extend_from_slice(listed);
         if self.edits(id) {
             choices.push(MenuChoice::EditChannel);

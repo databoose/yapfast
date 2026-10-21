@@ -158,6 +158,10 @@ pub struct Server {
     /// Verified or Partnered, which Discord's client won't give away.
     #[serde(default)]
     pub verified: bool,
+    /// A Community server, where the channel list may list only the
+    /// channels this account follows; see [`Self::follows_only`].
+    #[serde(default)]
+    pub community: bool,
     /// Muted in the account's notification settings; set when the service
     /// publishes it.
     pub muted: bool,
@@ -671,6 +675,13 @@ impl Server {
             && self.channel_permissions(channel, user, roles)
                 & (BYPASS_SLOWMODE | MANAGE_MESSAGES | MANAGE_CHANNELS)
                 == 0
+    }
+
+    /// Whether the channel list lists only the channels this account
+    /// follows, as Discord's client lists them: Show All Channels turned
+    /// off, which it heeds only in a Community server.
+    pub fn follows_only(&self) -> bool {
+        self.community && self.notifications.follows_only()
     }
 
     /// Whether `user`, holding `roles`, may forward `channel`'s messages, as
@@ -1204,6 +1215,7 @@ pub fn server(guild: &Value) -> Option<Server> {
         unavailable: guild["unavailable"].as_bool().unwrap_or(false),
         forwarding_disabled: has("FORWARDING_DISABLED"),
         verified: has("VERIFIED") || has("PARTNERED"),
+        community: has("COMMUNITY"),
         ..Default::default()
     };
     for role in guild["roles"].as_array().into_iter().flatten() {

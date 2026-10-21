@@ -907,6 +907,8 @@ pub(super) fn command(
         | DiscordCommand::Mute { .. }
         | DiscordCommand::Notifications { .. }
         | DiscordCommand::PinChannel { .. }
+        | DiscordCommand::FollowChannel { .. }
+        | DiscordCommand::ShowAllChannels { .. }
         | DiscordCommand::JoinThread { .. }
         | DiscordCommand::Member { .. }),
     ) = command
@@ -1252,7 +1254,7 @@ fn change_person(
             }
             DiscordCommand::PinChannel { room, flags } => {
                 let result = match discord::parse_room(&room) {
-                    Some((guild, channel)) => discord.pin_channel(guild, channel, flags).await,
+                    Some((guild, channel)) => discord.channel_flags(guild, channel, flags).await,
                     None => Err(anyhow::anyhow!(NOT_DISCORD)),
                 };
                 let pinned = flags & yapfast_discord::notifications::PINNED != 0;
@@ -1264,6 +1266,36 @@ fn change_person(
                         "unpin the channel"
                     },
                 )
+            }
+            DiscordCommand::FollowChannel { room, flags } => {
+                let result = match discord::parse_room(&room) {
+                    Some((guild, channel)) => discord.channel_flags(guild, channel, flags).await,
+                    None => Err(anyhow::anyhow!(NOT_DISCORD)),
+                };
+                let followed = yapfast_discord::notifications::Override {
+                    flags,
+                    ..Default::default()
+                }
+                .followed();
+                (
+                    result,
+                    if followed {
+                        "add it to the channel list"
+                    } else {
+                        "remove it from the channel list"
+                    },
+                )
+            }
+            DiscordCommand::ShowAllChannels {
+                server,
+                flags,
+                follow,
+            } => {
+                let result = match discord::parse_server(&server) {
+                    Some(guild) => discord.show_all_channels(guild, flags, &follow).await,
+                    None => Err(anyhow::anyhow!(NOT_DISCORD)),
+                };
+                (result, "change which channels show")
             }
             DiscordCommand::JoinThread {
                 room,

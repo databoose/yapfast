@@ -404,6 +404,7 @@ impl Tracker {
                 known.default_level = update.default_level;
                 known.forwarding_disabled = update.forwarding_disabled;
                 known.verified = update.verified;
+                known.community = update.community;
                 self.sort_servers();
                 true
             }

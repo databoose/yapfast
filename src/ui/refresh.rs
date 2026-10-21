@@ -3237,7 +3237,8 @@ pub(super) fn rail_rows(
     rooms_by_id: &HashMap<&str, &yapfast_core::chat::ChatRoom>,
     open_folders: &std::collections::BTreeSet<String>,
 ) -> Vec<ServerRow> {
-    // A server's channels: whether any is unread, and its mentions.
+    // A server's channels: whether any is unread, and its mentions. One its
+    // channel list leaves out marks it only by mentions, as in Discord.
     let marks = |server: &yapfast_core::chat::ChatServer| {
         let rooms = || {
             server
@@ -3247,7 +3248,9 @@ pub(super) fn rail_rows(
                 .filter(|room| !room.direct)
         };
         (
-            rooms().any(|room| room.mentions > 0 || (room.unread > 0 && !server.muted)),
+            rooms().any(|room| {
+                room.mentions > 0 || (room.unread > 0 && !server.muted && !room.unlisted)
+            }),
             rooms().map(|room| room.mentions).sum::<u64>(),
         )
     };

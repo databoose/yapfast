@@ -1226,6 +1226,7 @@ struct Icons {
     nickname: slint::Image,
     unfriend: slint::Image,
     ignore: slint::Image,
+    show: slint::Image,
     block: slint::Image,
     mute: slint::Image,
     unmute: slint::Image,
@@ -1444,6 +1445,7 @@ impl Adapter {
                 "../ui/icons/user-minus.svg"
             ))?,
             ignore: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/eye-off.svg"))?,
+            show: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/eye.svg"))?,
             block: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/ban.svg"))?,
             mute: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/bell-off.svg"))?,
             unmute: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/bell.svg"))?,

@@ -10,7 +10,7 @@ recorded on 2026-10-06.
 | [Voice](#voice) | Server voice channels, mute, deafen, per-person volume, voice gate with its sensitivity, [push-to-talk](#push-to-talk) on a recorded key, [DeepFilterNet noise suppression](#microphone) and its strength, taking a room's echo out, [camera video](#camera-video) | A check of Windows audio, cameras and push-to-talk on real Windows, and of push-to-talk on real Wayland desktops; soundboard |
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
-| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, invites, [joining by invite](#joining-by-invite), making and changing channels, [server settings](#server-settings)' Server Profile, Engagement, Boost Perks, [Roles](#roles), [Safety Setup](#safety-setup), [Audit Log](#audit-log) and [Bans](#bans), [channel settings](#channel-settings) and their permissions, [two-factor authentication](#two-factor-authentication), threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, most of a server's settings and its privacy, membership forms when joining |
+| [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, [following channels](#following-channels), invites, [joining by invite](#joining-by-invite), making and changing channels, [server settings](#server-settings)' Server Profile, Engagement, Boost Perks, [Roles](#roles), [Safety Setup](#safety-setup), [Audit Log](#audit-log) and [Bans](#bans), [channel settings](#channel-settings) and their permissions, [two-factor authentication](#two-factor-authentication), threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, most of a server's settings and its privacy, membership forms when joining, Browse Channels |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, [editing one's profile](#editing-ones-main-profile) and [server profiles](#editing-ones-server-profile), notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored; changing the username |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
@@ -1632,11 +1632,13 @@ sends each event.
 
 Right-clicking a server's channel offers, in order, as Discord's menu
 does: Mark as read when it has unread messages, Join voice for a voice
-channel, then Invite to channel, Pin channel to top or Unpin channel, and
-Copy link, then Mute channel and Notification settings for a text
-channel, then Edit channel, Duplicate channel, Create channel and Delete
-channel where the account may manage channels, and Copy ID. A thread's
-menu has none of inviting, pinning or managing.
+channel, then Invite to channel, Pin channel to top or Unpin channel, the
+channel list's choice while it [lists only the channels
+followed](#following-channels), and Copy link, then Mute channel and
+Notification settings for a text channel, then Edit channel, Duplicate
+channel, Create channel and Delete channel where the account may manage
+channels, and Copy ID. A thread's menu has none of inviting, pinning,
+following or managing.
 
 #### Pinning a channel
 
@@ -1672,6 +1674,52 @@ channels for everyone, and its Favorites server, kept in the settings
 protobuf, are different features; Discord's client only hides "Move to…"
 and dragging for a pinned channel, which Yapfast has neither of. The fake
 keeps each override's flags and answers the bulk endpoint as Discord does.
+
+#### Following channels
+
+A Community server's members may list only the channels they follow, as
+Discord's client has them do from the server's menu by unticking Show
+All Channels, from a channel's menu, and from Browse Channels, which
+Yapfast doesn't have yet. Discord keeps it with the account, so its list
+matches Discord's on every client. Its server menu, and the dropdown of its
+header, tick Show All Channels above Hide muted channels; a server that
+isn't a Community server (`COMMUNITY` among its `features`) has neither the
+choice nor the filter, as in Discord's client.
+
+With Show All Channels off, the server's own `flags` in the user guild
+settings hold `OPT_IN_CHANNELS_ON`, `1 << 14`, and the list shows a text
+channel only if its override, or its category's, holds `OPT_IN_ENABLED`,
+`1 << 12`; its threads go with it. One left out still shows while it, or a
+thread of it, is open or mentions the account, and a pinned channel shows
+in the pinned section all the same. A channel left out marks the server on
+the rail only with its mentions, not its unread messages. Voice channels
+all show. Discord's
+client differs in where it puts some of these: a channel left out that's
+open or mentions the account shows in a "Suggested" section at the top,
+which also suggests new channels, and the voice channels not followed show
+in a section of their own after the categories. Yapfast keeps each in its
+category.
+
+A channel's menu then offers Remove from channel list or Add to channel
+list, after pinning, by its own flag, or Unfollow channel category when its
+category is followed, which removes the category; a category's menu offers
+Add to channel list or Remove from channel list after Mark as read.
+Discord's client writes them as it pins (`PATCH
+/users/@me/guilds/settings` with the override's `flags`): adding sets
+`OPT_IN_ENABLED`, and removing clears it and `FAVORITED`, unpinning the
+channel. Show All Channels is `PATCH /users/@me/guilds/{guild}/settings`
+with the server's `flags`, `OPT_IN_CHANNELS_ON` cleared or set and the rest
+as they were. Turned off with no channel or category followed, the same
+body follows every text and voice channel the account sees, in
+`channel_overrides`, so the list doesn't empty; Discord's client does that
+too unless the account finished the server's onboarding, and adds the
+onboarding's default channels, which Yapfast doesn't fetch.
+
+`ChatRoom::unlisted` marks a channel left out, and each thread of it,
+worked out with the pinned channels when the server's snapshot changes,
+rather than a list of their ids on the server. The channel list drops them as it drops muted channels in a
+server that hides them (`AppState::scoped_rooms`). The fake keeps the server's flags, and its
+control endpoint makes "Server" a Community server.
 
 ### Threads
 

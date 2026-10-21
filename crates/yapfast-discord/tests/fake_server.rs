@@ -2343,13 +2343,16 @@ async fn talks_to_the_fake_server() {
         .of(&general)
         .pin_flags(true);
     assert_eq!(flags, 6144);
-    discord.pin_channel(&guild, &general, flags).await.unwrap();
+    discord
+        .channel_flags(&guild, &general, flags)
+        .await
+        .unwrap();
     snapshot_where(&discord, |snapshot| {
         let own = ours(snapshot).notifications.of(&general);
         own.pinned() && own.level == Some(Level::All)
     })
     .await;
-    discord.pin_channel(&guild, &general, 4096).await.unwrap();
+    discord.channel_flags(&guild, &general, 4096).await.unwrap();
     change(here, Change::Level(None)).await;
     let unpinned = snapshot_where(&discord, |snapshot| {
         let own = ours(snapshot).notifications.of(&general);
@@ -2357,6 +2360,30 @@ async fn talks_to_the_fake_server() {
     })
     .await;
     assert_eq!(ours(&unpinned).notifications.of(&general).flags, 4096);
+
+    // A Community server lists only the channels followed once Show All
+    // Channels is off, which the server's own flags say, following channels
+    // with it; a channel's flags take it off the list.
+    post_control(server, "/_control/guild", r#"{"features": ["COMMUNITY"]}"#);
+    snapshot_where(&discord, |snapshot| ours(snapshot).community).await;
+    discord
+        .show_all_channels(&guild, 16384, &[(general.clone(), 4096)])
+        .await
+        .unwrap();
+    snapshot_where(&discord, |snapshot| {
+        let server = ours(snapshot);
+        server.follows_only() && server.notifications.follows(&general, None)
+    })
+    .await;
+    discord.channel_flags(&guild, &general, 0).await.unwrap();
+    discord.show_all_channels(&guild, 0, &[]).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        let server = ours(snapshot);
+        !server.follows_only() && !server.notifications.follows(&general, None)
+    })
+    .await;
+    post_control(server, "/_control/guild", r#"{"features": []}"#);
+    snapshot_where(&discord, |snapshot| !ours(snapshot).community).await;
 
     // A category mutes as a channel does, and its channels show muted.
     let category = ours(&discord.snapshots().borrow())

@@ -127,6 +127,7 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 | MenuChoice::MuteServer
                 | MenuChoice::UnmuteServer
                 | MenuChoice::ServerNotifications
+                | MenuChoice::ShowAllChannels
                 | MenuChoice::HideMuted => 2,
                 MenuChoice::CopyLink
                 | MenuChoice::CopyId
@@ -134,7 +135,10 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 | MenuChoice::LeaveThread
                 | MenuChoice::Invite
                 | MenuChoice::PinChannel
-                | MenuChoice::UnpinChannel => 3,
+                | MenuChoice::UnpinChannel
+                | MenuChoice::AddToChannelList
+                | MenuChoice::RemoveFromChannelList
+                | MenuChoice::UnfollowCategory => 3,
                 MenuChoice::Roles | MenuChoice::MoveTo => 4,
                 MenuChoice::LocalMute | MenuChoice::SelfMute | MenuChoice::SelfDeafen => 8,
                 MenuChoice::ServerMute
@@ -172,7 +176,8 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
             };
             let checkbox = matches!(
                 choice,
-                MenuChoice::HideMuted
+                MenuChoice::ShowAllChannels
+                    | MenuChoice::HideMuted
                     | MenuChoice::LocalMute
                     | MenuChoice::SelfMute
                     | MenuChoice::SelfDeafen
@@ -180,6 +185,9 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                     | MenuChoice::ServerDeafen
             );
             let checked = match choice {
+                MenuChoice::ShowAllChannels => {
+                    notifications().is_some_and(|known| known.show_all == Some(true))
+                }
                 MenuChoice::HideMuted => notifications().is_some_and(|known| known.hide_muted),
                 MenuChoice::LocalMute => yapfast_core::volume::muted(id),
                 MenuChoice::SelfMute => state.voice.muted,
@@ -297,11 +305,15 @@ fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &sl
         MenuChoice::MuteServer => ("Mute server", &icons.mute),
         MenuChoice::UnmuteServer => ("Unmute server", &icons.unmute),
         MenuChoice::ServerNotifications => ("Notification settings", &icons.unmute),
+        MenuChoice::ShowAllChannels => ("Show all channels", &icons.show),
         MenuChoice::HideMuted => ("Hide muted channels", &icons.ignore),
         // A server's says so above.
         MenuChoice::Invite => ("Invite to channel", &icons.befriend),
         MenuChoice::PinChannel => ("Pin channel to top", &icons.pin),
         MenuChoice::UnpinChannel => ("Unpin channel", &icons.unpin),
+        MenuChoice::AddToChannelList => ("Add to channel list", &icons.show),
+        MenuChoice::RemoveFromChannelList => ("Remove from channel list", &icons.ignore),
+        MenuChoice::UnfollowCategory => ("Unfollow channel category", &icons.ignore),
         // A server's and a voice channel's say so above.
         MenuChoice::CreateChannel => ("Create text channel", &icons.create),
         MenuChoice::CreateCategory => ("Create category", &icons.create_category),
@@ -867,6 +879,26 @@ pub(super) fn choose(
             room: target,
             pinned: choice == MenuChoice::PinChannel,
         }),
+        MenuChoice::AddToChannelList | MenuChoice::RemoveFromChannelList => {
+            Some(Action::FollowChannel {
+                room: target,
+                follow: choice == MenuChoice::AddToChannelList,
+            })
+        }
+        // The channel's category goes, with every channel it lists.
+        MenuChoice::UnfollowCategory => {
+            adapter
+                .app
+                .category_of(&target)
+                .map(|category| Action::FollowChannel {
+                    room: category,
+                    follow: false,
+                })
+        }
+        MenuChoice::ShowAllChannels => ticked.map(|show| Action::ShowAllChannels {
+            server: target,
+            show,
+        }),
         MenuChoice::CreateChannel => Some(Action::NewChannel {
             place: target,
             kind: ChannelKind::Text,
@@ -940,7 +972,7 @@ pub(super) fn server_change(
     }
 }
 
-const CHOICES: [MenuChoice; 59] = [
+const CHOICES: [MenuChoice; 63] = [
     MenuChoice::MarkRead,
     MenuChoice::JoinVoice,
     MenuChoice::OpenChat,
@@ -983,6 +1015,10 @@ const CHOICES: [MenuChoice; 59] = [
     MenuChoice::Invite,
     MenuChoice::PinChannel,
     MenuChoice::UnpinChannel,
+    MenuChoice::AddToChannelList,
+    MenuChoice::RemoveFromChannelList,
+    MenuChoice::UnfollowCategory,
+    MenuChoice::ShowAllChannels,
     MenuChoice::CreateChannel,
     MenuChoice::CreateCategory,
     MenuChoice::EditChannel,
@@ -1046,6 +1082,10 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::Invite => "invite",
         MenuChoice::PinChannel => "pin-channel",
         MenuChoice::UnpinChannel => "unpin-channel",
+        MenuChoice::AddToChannelList => "add-to-channel-list",
+        MenuChoice::RemoveFromChannelList => "remove-from-channel-list",
+        MenuChoice::UnfollowCategory => "unfollow-category",
+        MenuChoice::ShowAllChannels => "show-all-channels",
         MenuChoice::CreateChannel => "create-channel",
         MenuChoice::CreateCategory => "create-category",
         MenuChoice::EditChannel => "edit-channel",

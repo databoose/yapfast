@@ -1,8 +1,9 @@
 //! This account's notification settings for one server, or for its DMs, as
 //! Discord keeps them in its user guild settings: the server's mute and
 //! level, which mentions call on it, whether muted channels hide, and each
-//! channel's and category's own mute and level, and whether a channel is
-//! pinned to the top of the channel list. READY lists them in
+//! channel's and category's own mute and level, whether a channel is
+//! pinned to the top of the channel list, and which channels and categories
+//! the channel list follows when it lists only those. READY lists them in
 //! `user_guild_settings`, USER_GUILD_SETTINGS_UPDATE replaces one, and
 //! `PATCH /users/@me/guilds/{guild}/settings` changes them; see
 //! <https://docs.discord.food/resources/user-settings>.
@@ -77,9 +78,14 @@ impl Mute {
 /// A channel override's flag that pins the channel to the top of the
 /// channel list, Discord's `FAVORITED`.
 pub const PINNED: u64 = 1 << 11;
-/// The flag Discord's client sets with the first pin, `OPT_IN_ENABLED`: the
-/// channel shows in a server whose channel list is opt-in.
+/// A channel override's flag that follows the channel, or every channel in
+/// a category, in a server whose channel list lists only those followed:
+/// Discord's `OPT_IN_ENABLED`, which its client also sets with the first
+/// pin.
 const OPT_IN_ENABLED: u64 = 1 << 12;
+/// A server's own flag that lists only the channels followed, which Discord's
+/// client calls turning off Show All Channels: `OPT_IN_CHANNELS_ON`.
+const OPT_IN_CHANNELS_ON: u64 = 1 << 14;
 
 /// A channel's or category's own settings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -107,6 +113,22 @@ impl Override {
             self.flags & !PINNED
         }
     }
+
+    /// Whether the channel list follows it, see [`OPT_IN_ENABLED`].
+    pub fn followed(&self) -> bool {
+        self.flags & OPT_IN_ENABLED != 0
+    }
+
+    /// The flags that add the channel or category to the channel list, or
+    /// remove it, as Discord's client writes them: removing a channel
+    /// unpins it too.
+    pub fn follow_flags(&self, follow: bool) -> u64 {
+        if follow {
+            self.flags | OPT_IN_ENABLED
+        } else {
+            self.flags & !(OPT_IN_ENABLED | PINNED)
+        }
+    }
 }
 
 /// This account's notification settings for one server, or its DMs.
@@ -123,6 +145,9 @@ pub struct Notifications {
     pub hide_muted_channels: bool,
     /// Channels' and categories' own settings, by id.
     pub overrides: HashMap<String, Override>,
+    /// The server's own `flags`, such as [`OPT_IN_CHANNELS_ON`].
+    #[serde(default)]
+    pub flags: u64,
 }
 
 impl Notifications {
@@ -150,6 +175,7 @@ impl Notifications {
             suppress_roles: value["suppress_roles"].as_bool().unwrap_or(false),
             hide_muted_channels: value["hide_muted_channels"].as_bool().unwrap_or(false),
             overrides,
+            flags: value["flags"].as_u64().unwrap_or_default(),
         }
     }
 
@@ -175,6 +201,37 @@ impl Notifications {
             .find_map(|place| self.overrides.get(place)?.level)
             .or(self.level)
             .unwrap_or(default)
+    }
+
+    /// Whether the channel list lists only the channels followed, Show
+    /// All Channels turned off. Discord's client heeds it only in a
+    /// Community server.
+    pub fn follows_only(&self) -> bool {
+        self.flags & OPT_IN_CHANNELS_ON != 0
+    }
+
+    /// Whether the channel list follows a channel, itself or through its
+    /// `category`.
+    pub fn follows(&self, channel: &str, category: Option<&str>) -> bool {
+        [Some(channel), category]
+            .into_iter()
+            .flatten()
+            .any(|place| self.of(place).followed())
+    }
+
+    /// Whether the channel list follows any channel or category.
+    pub fn follows_any(&self) -> bool {
+        self.overrides.values().any(Override::followed)
+    }
+
+    /// The server's flags with Show All Channels turned on, or off with
+    /// `show` false, the rest as they were.
+    pub fn show_all_flags(&self, show: bool) -> u64 {
+        if show {
+            self.flags & !OPT_IN_CHANNELS_ON
+        } else {
+            self.flags | OPT_IN_CHANNELS_ON
+        }
     }
 
     /// The channels pinned to the top of the channel list, in no order.
@@ -262,9 +319,27 @@ impl Change {
     }
 }
 
+/// The body of `PATCH /users/@me/guilds/{guild}/settings` that sets the
+/// server's own `flags`, which turn Show All Channels on or off, and the
+/// `flags` of the channels it `follow`s with them, as Discord's client
+/// follows every channel when it turns Show All Channels off with none
+/// followed; see [`Notifications::show_all_flags`].
+pub fn show_all_body(flags: u64, follow: &[(String, u64)]) -> Value {
+    let mut body = json!({"flags": flags});
+    if !follow.is_empty() {
+        body["channel_overrides"] = follow
+            .iter()
+            .map(|(channel, flags)| (channel.clone(), json!({"flags": flags})))
+            .collect::<Map<_, _>>()
+            .into();
+    }
+    body
+}
+
 /// The body of `PATCH /users/@me/guilds/settings` that sets a channel's
-/// override `flags`, as Discord's client pins and unpins a channel; see
-/// [`Override::pin_flags`].
+/// override `flags`, as Discord's client pins and unpins a channel, and
+/// adds it to the channel list or removes it; see [`Override::pin_flags`]
+/// and [`Override::follow_flags`].
 pub fn flags_body(guild: &str, channel: &str, flags: u64) -> Value {
     json!({"guilds": {guild: {"channel_overrides": {channel: {"flags": flags}}}}})
 }
@@ -333,6 +408,37 @@ mod tests {
         assert_eq!(
             flags_body("10", "12", 6144),
             json!({"guilds": {"10": {"channel_overrides": {"12": {"flags": 6144}}}}})
+        );
+    }
+
+    #[test]
+    fn follows_channels_as_discords_client_does() {
+        let settings = Notifications::read(&json!({
+            "guild_id": "10",
+            "flags": 16384 | 1,
+            "channel_overrides": [
+                {"channel_id": "4", "muted": false, "message_notifications": 3, "flags": 4096},
+                {"channel_id": "11", "muted": false, "message_notifications": 3, "flags": 6144},
+                {"channel_id": "12", "muted": true, "message_notifications": 3, "flags": 1024},
+            ],
+        }));
+        assert!(settings.follows_only());
+        assert!(settings.follows("11", None));
+        assert!(settings.follows("13", Some("4")), "through its category");
+        assert!(!settings.follows("12", None));
+        assert!(settings.follows_any());
+        // Following keeps the other flags; leaving unpins too.
+        assert_eq!(settings.of("12").follow_flags(true), 1024 | 4096);
+        assert_eq!(settings.of("11").follow_flags(false), 0);
+        assert_eq!(settings.show_all_flags(true), 1);
+        assert_eq!(settings.show_all_flags(false), 16384 | 1);
+        assert!(!Notifications::default().follows_only());
+        assert_eq!(show_all_body(0, &[]), json!({"flags": 0}));
+        assert_eq!(
+            show_all_body(16384, &[("11".into(), 4096), ("12".into(), 5120)]),
+            json!({"flags": 16384, "channel_overrides": {
+                "11": {"flags": 4096}, "12": {"flags": 5120},
+            }})
         );
     }
 

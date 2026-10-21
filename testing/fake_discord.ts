@@ -329,8 +329,12 @@ const wireRelationship = (id: string, type: number) => ({
 // keeps her user guild settings: the server's mute and level, which
 // mentions call on her, whether muted channels hide, and each channel's and
 // category's override, whose flags pin a channel to the top of her list
-// (FAVORITED, 1 << 11). PATCH /users/@me/guilds/{id}/settings changes them,
-// or PATCH /users/@me/guilds/settings several servers' at once.
+// (FAVORITED, 1 << 11) and follow it (OPT_IN_ENABLED, 1 << 12), and the
+// server's own flags, which list only the channels she follows
+// (OPT_IN_CHANNELS_ON, 1 << 14) in a Community server; POST /_control/guild
+// `{"features": ["COMMUNITY"]}` makes "Server" one. PATCH
+// /users/@me/guilds/{id}/settings changes them, or PATCH
+// /users/@me/guilds/settings several servers' at once.
 type MuteConfig = { end_time: string | null; selected_time_window: number };
 type ChannelOverride = { muted: boolean; mute_config: MuteConfig | null; message_notifications: number; collapsed: boolean; flags: number };
 type GuildSettings = {
@@ -341,6 +345,7 @@ type GuildSettings = {
   suppress_roles: boolean;
   hide_muted_channels: boolean;
   overrides: Map<string, ChannelOverride>;
+  flags: number;
 };
 const guildSettings = new Map<string, GuildSettings>();
 const settingsOf = (guild: string) => {
@@ -355,6 +360,7 @@ const settingsOf = (guild: string) => {
       suppress_roles: false,
       hide_muted_channels: false,
       overrides: new Map(),
+      flags: 0,
     };
     guildSettings.set(guild, settings);
   }
@@ -373,7 +379,7 @@ const wireGuildSettings = (guild: string) => {
     mobile_push: true,
     mute_scheduled_events: false,
     notify_highlights: 0,
-    flags: 0,
+    flags: settings.flags,
     version: 1,
     channel_overrides: [...settings.overrides].map(([channel_id, override]) => ({ channel_id, ...override })),
   };
@@ -5358,7 +5364,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
   const knownGuild = (guild: string) => guild === GUILD || fillers.some((filler) => filler.id === guild) || !!world?.byId.has(guild);
   const changeGuildSettings = (guild: string, body: any) => {
     const settings = settingsOf(guild);
-    for (const key of ["muted", "message_notifications", "suppress_everyone", "suppress_roles", "hide_muted_channels"] as const) {
+    for (const key of ["muted", "message_notifications", "suppress_everyone", "suppress_roles", "hide_muted_channels", "flags"] as const) {
       if (key in body) (settings as any)[key] = body[key];
     }
     if ("mute_config" in body) settings.mute_config = body.mute_config;

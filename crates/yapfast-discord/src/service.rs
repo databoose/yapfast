@@ -1929,13 +1929,28 @@ impl Discord {
         self.api.guild_settings(guild, &body).await
     }
 
-    /// Pins a server's channel to the top of its channel list, or unpins
-    /// it, by setting its override's `flags` to those of
-    /// [`crate::notifications::Override::pin_flags`]. Snapshots show it
-    /// when Discord confirms it.
-    pub async fn pin_channel(&self, guild: &str, channel: &str, flags: u64) -> Result<()> {
+    /// Sets the `flags` of a server's channel's override, which pin it to
+    /// the top of the channel list or unpin it, see
+    /// [`crate::notifications::Override::pin_flags`], and add it to the
+    /// list or remove it, see [`crate::notifications::Override::follow_flags`].
+    /// Snapshots show it when Discord confirms it.
+    pub async fn channel_flags(&self, guild: &str, channel: &str, flags: u64) -> Result<()> {
         let body = crate::notifications::flags_body(guild, channel, flags);
         self.api.guilds_settings(&body).await
+    }
+
+    /// Turns a server's Show All Channels on or off by setting its own
+    /// `flags`, following the channels `follow` names with theirs; see
+    /// [`crate::notifications::show_all_body`]. Snapshots show it when
+    /// Discord confirms it.
+    pub async fn show_all_channels(
+        &self,
+        guild: &str,
+        flags: u64,
+        follow: &[(String, u64)],
+    ) -> Result<()> {
+        let body = crate::notifications::show_all_body(flags, follow);
+        self.api.guild_settings(guild, &body).await
     }
 
     /// Makes an invite to a server's channel; its code. See

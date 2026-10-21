@@ -690,8 +690,10 @@ impl AppState {
     }
 
     /// The rooms [`Self::in_scope`], in order, but for the muted channels a
-    /// server hides. It finds the server once, so it suits going through
-    /// every room, as [`Self::in_scope`] for each doesn't with many servers.
+    /// server hides, and the channels it leaves off a list of those this
+    /// account follows, with their threads. It finds the server once, so it
+    /// suits going through every room, as [`Self::in_scope`] for each
+    /// doesn't with many servers.
     pub fn scoped_rooms(&self) -> impl Iterator<Item = &ChatRoom> {
         let server = match &self.navigation {
             Navigation::DirectMessages => None,
@@ -706,12 +708,24 @@ impl AppState {
             ),
         };
         let hide_muted = server.is_some_and(|server| server.hide_muted);
+        // A channel left off the list still shows while it, or a thread of
+        // it, is open or mentions this account, as in Discord's client.
+        let shown: HashSet<&str> = self
+            .rooms
+            .iter()
+            .filter(|room| {
+                room.unlisted && (room.mentions > 0 || self.selected.as_ref() == Some(&room.id))
+            })
+            .map(|room| room.parent.as_deref().unwrap_or(&room.id))
+            .collect();
         self.rooms.iter().filter(move |room| match &channels {
             None => room.direct,
             Some(channels) => {
                 !room.direct
                     && channels.contains(room.id.as_str())
                     && !(hide_muted && self.hidden_muted(room))
+                    && !(room.unlisted
+                        && !shown.contains(room.parent.as_deref().unwrap_or(&room.id)))
             }
         })
     }
@@ -1414,6 +1428,19 @@ pub enum Action {
     PinChannel {
         room: String,
         pinned: bool,
+    },
+    /// Add a Discord server's channel or category, by its room id, to the
+    /// channel list that shows only those this account follows, or remove
+    /// it with `follow` false.
+    FollowChannel {
+        room: String,
+        follow: bool,
+    },
+    /// Show every channel of a Discord server, by its server id, or with
+    /// `show` false only those this account follows.
+    ShowAllChannels {
+        server: String,
+        show: bool,
     },
     /// Join a Discord thread, by its room id, or leave it with `join` false,
     /// from the menu Discord's client names `location`.
@@ -2493,6 +2520,8 @@ impl Application {
                 self.change_notifications(place, change)
             }
             Action::PinChannel { room, pinned } => self.pin_channel(room, pinned),
+            Action::FollowChannel { room, follow } => self.follow_channel(room, follow),
+            Action::ShowAllChannels { server, show } => self.show_all_channels(server, show),
             Action::JoinThread {
                 room,
                 join,

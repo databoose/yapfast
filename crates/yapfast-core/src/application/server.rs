@@ -226,6 +226,7 @@ impl Application {
                 suppress_everyone: settings.suppress_everyone,
                 suppress_roles: settings.suppress_roles,
                 hide_muted: settings.hide_muted_channels,
+                show_all: known.community.then_some(!settings.follows_only()),
             });
         }
         let _ = own;

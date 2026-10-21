@@ -547,6 +547,7 @@ fn dm_rooms(snapshot: &Snapshot, premium: u8, me: &str) -> Vec<ChatRoom> {
             activities: dm.activities.clone(),
             parent: None,
             forum: false,
+            unlisted: false,
             preview: dm.preview.as_ref().map(|preview| {
                 Box::new(chat::RequestPreview {
                     text: match (preview.text.trim(), preview.files) {
@@ -617,6 +618,19 @@ fn server_rooms(
         .into_iter()
         .map(|(_, _, channel)| room_id(&server.id, channel))
         .collect();
+    // With Show All Channels off, the list leaves out the text channels
+    // this account doesn't follow, itself or through their category, as
+    // Discord's client does; pinned ones show above the rest all the same,
+    // and voice channels all show, as Discord's client lists them after
+    // the rest.
+    let follows_only = server.follows_only();
+    let unlisted = |channel: &yapfast_discord::ready::Channel| {
+        follows_only
+            && !server.notifications.of(&channel.id).pinned()
+            && !server
+                .notifications
+                .follows(&channel.id, channel.parent.as_deref())
+    };
     let mut channels = Vec::new();
     // A category's channels come together, and share its room id.
     let mut shared: Option<(&str, Arc<str>)> = None;
@@ -676,6 +690,7 @@ fn server_rooms(
                 ),
                 parent: None,
                 forum: false,
+                unlisted: false,
                 preview: None,
             }
         } else {
@@ -721,6 +736,7 @@ fn server_rooms(
                 ),
                 parent: None,
                 forum: channel.forum.is_some(),
+                unlisted: unlisted(channel),
                 preview: None,
             }
         });
@@ -792,6 +808,7 @@ fn thread_room(
         upload_limit: yapfast_discord::api::upload_limit(premium, Some(server.premium_tier)),
         parent: Some(parent.id.clone()),
         forum: false,
+        unlisted: parent.unlisted,
         preview: None,
     }
 }
