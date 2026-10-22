@@ -151,6 +151,13 @@ impl Item for Flickable {
         self_rc: &ItemRc,
         _: &mut super::MouseCursorInner,
     ) -> InputEventFilterResult {
+        // Yapfast: a middle press may autoscroll the innermost flickable it passes through; see
+        // `crate::yapfast_autoscroll`.
+        if matches!(event, MouseEvent::Pressed { button: PointerEventButton::Middle, .. })
+            && self.interactive()
+        {
+            crate::yapfast_autoscroll::offer(self_rc);
+        }
         // Yapfast: a press selecting text in the rows keeps the pointer here once it has selected
         // something, and wheels scroll it, as the text it began in may scroll away. Presses
         // that can't pan watch the moves after them, for one to begin selecting.

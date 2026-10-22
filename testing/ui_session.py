@@ -374,10 +374,11 @@ def perform(command):
         for code in reversed(codes):
             INPUT['send'](f'key {code} 0')
         time.sleep(.3)
-    elif verb == 'rightclick':
+    elif verb in ('rightclick', 'middleclick'):
         move(*map(float, values))
-        INPUT['send']('button 273 1')
-        INPUT['send']('button 273 0')
+        button = 273 if verb == 'rightclick' else 274
+        INPUT['send'](f'button {button} 1')
+        INPUT['send'](f'button {button} 0')
         time.sleep(.3)
     elif verb == 'move':
         move(*map(float, values))
@@ -400,11 +401,13 @@ def perform(command):
     elif verb == 'press':
         # Held until `release`, for what happens while a button is down,
         # such as a window being dragged by its title bar.
-        move(*map(float, values))
-        INPUT['send']('button 272 1')
+        button = 274 if values[2:] == ['middle'] else 272
+        move(*map(float, values[:2]))
+        INPUT['send'](f'button {button} 1')
         time.sleep(.1)
     elif verb == 'release':
-        INPUT['send']('button 272 0')
+        button = 274 if values == ['middle'] else 272
+        INPUT['send'](f'button {button} 0')
         time.sleep(.3)
     elif verb == 'scroll':
         # Over SECONDS, if given, in eased steps 60 times a second.

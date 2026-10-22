@@ -223,3 +223,50 @@ export component ListView inherits ScrollView {
     accessible-role: list;
     accessible-orientation: Orientation.vertical;
 }
+
+// Where an autoscroll began, which Slint's core reports to the application:
+// see `yapfast_autoscroll` in vendor/i-slint-core.
+export global Autoscroll {
+    in-out property <bool> shown;
+    in-out property <length> x;
+    in-out property <length> y;
+    in-out property <bool> vertical;
+    in-out property <bool> horizontal;
+}
+
+component AutoscrollArrow inherits Path {
+    in property <bool> horizontal;
+
+    width: root.horizontal ? 5px : 8px;
+    height: root.horizontal ? 8px : 5px;
+    viewbox-width: root.horizontal ? 5 : 8;
+    viewbox-height: root.horizontal ? 8 : 5;
+    fill: Theme.secondary;
+}
+
+// A circle at the click, with arrows the ways the list can go, as browsers mark it.
+export component AutoscrollMarker inherits Rectangle {
+    x: Autoscroll.x - self.width / 2;
+    y: Autoscroll.y - self.height / 2;
+    width: 30px;
+    height: 30px;
+    border-radius: self.width / 2;
+    background: Theme.raised;
+    border-width: 1px;
+    border-color: Theme.line;
+    drop-shadow-blur: 8px;
+    drop-shadow-color: #00000060;
+    drop-shadow-offset-y: 2px;
+
+    Rectangle {
+        width: 4px;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.secondary;
+    }
+
+    if Autoscroll.vertical: AutoscrollArrow { y: 5px; commands: "M 0 5 L 4 0 L 8 5 Z"; }
+    if Autoscroll.vertical: AutoscrollArrow { y: parent.height - self.height - 5px; commands: "M 0 0 L 4 5 L 8 0 Z"; }
+    if Autoscroll.horizontal: AutoscrollArrow { horizontal: true; x: 5px; commands: "M 5 0 L 0 4 L 5 8 Z"; }
+    if Autoscroll.horizontal: AutoscrollArrow { horizontal: true; x: parent.width - self.width - 5px; commands: "M 0 0 L 5 4 L 0 8 Z"; }
+}

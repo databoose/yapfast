@@ -62,6 +62,7 @@ pub mod string;
 pub mod styled_text;
 // Yapfast: see the modules.
 pub mod yapfast_anchor;
+pub mod yapfast_autoscroll;
 pub mod yapfast_marks;
 pub mod yapfast_selection;
 pub mod textlayout;

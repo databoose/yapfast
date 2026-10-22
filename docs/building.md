@@ -119,6 +119,18 @@ six times. Deltas smaller than a notch, as from touchpads that send no phases,
 keep their pace. These are the changes marked `Yapfast:` around
 `accelerate_wheel` in `items/flickable.rs`.
 
+A middle click autoscrolls, as browsers do: the innermost flickable under it
+with more to show than fits scrolls towards the pointer, faster the farther
+away the pointer is from where it clicked, until the next press, key or wheel.
+Holding the button and moving away scrolls until it's let go. A middle press
+in a `TextInput` still pastes there. While it scrolls the window gives the
+pointer's events to it, not to the items under the pointer, and the press
+that ends it goes no further. Yapfast marks where it began through
+`yapfast_autoscroll::on_marker`, with the `Autoscroll` global in
+`ui/scrollview.slint`. Upstream Slint has no autoscroll. This is
+`yapfast_autoscroll.rs` and the changes marked `Yapfast:` about it in
+`items/flickable.rs`, `items/text.rs` and `window.rs`.
+
 Reapply them to the matching release when upgrading Slint. Styled paragraphs now
 have byte ranges as if joined by newlines, where upstream gives them all `0..0`.
 
@@ -178,7 +190,8 @@ dependency in Cargo.toml:
 
 - `i-slint-core`: Slint's core 1.18.1 with selectable `StyledText`,
   mentions coloured in a `TextInput`, timelines that keep their place as
-  older messages load, and a wheel that speeds up when spun fast, above.
+  older messages load, a wheel that speeds up when spun fast, and middle-click
+  autoscroll, above.
 - `i-slint-renderer-skia`: Slint's Skia renderer 1.18.1 with slight hinting,
   mipmapped pictures, uncopied fonts and pictures, and Skia's own FreeType on
   Linux without wgpu, above, and a whole frame after every resize: Windows

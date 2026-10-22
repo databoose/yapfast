@@ -246,6 +246,7 @@ fn prepare(window: &YapfastWindow) {
     }
     window.set_emoji_font(emoji::family().into());
     copy_whole_messages(window);
+    mark_autoscrolls(window);
 }
 
 /// The most backend events applied together before the window refreshes, so
@@ -527,6 +528,27 @@ fn copy_whole_messages(window: &YapfastWindow) {
         Some(message_text(
             &window.upgrade()?.get_messages().row_data(row)?,
         ))
+    });
+}
+
+/// Marks where a middle click started scrolling, until the scroll ends.
+fn mark_autoscrolls(window: &YapfastWindow) {
+    let window = window.as_weak();
+    i_slint_core::yapfast_autoscroll::on_marker(move |scrolled, marker| {
+        let Some(window) = window.upgrade() else {
+            return;
+        };
+        if !std::ptr::eq(scrolled, window.window()) {
+            return;
+        }
+        let shown = window.global::<Autoscroll>();
+        if let Some(marker) = marker {
+            shown.set_x(marker.position.x);
+            shown.set_y(marker.position.y);
+            shown.set_vertical(marker.vertical);
+            shown.set_horizontal(marker.horizontal);
+        }
+        shown.set_shown(marker.is_some());
     });
 }
 

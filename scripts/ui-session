@@ -36,12 +36,13 @@ screenshots and videos have none.
 start also builds testing/record_host.rs, which `record` runs.
 
 do commands, run in order; the first error stops the rest:
-  click X Y [MODIFIERS] [glide [SECONDS]] | rightclick X Y | move X Y |
+  click X Y [MODIFIERS] [glide [SECONDS]] | rightclick X Y | middleclick X Y | move X Y |
       drag X Y TO_X TO_Y (left button); click's modifiers are held through
       it, as shift or ctrl+shift; with glide the pointer glides there first
   glide X Y [SECONDS]   moves the pointer along an eased path, 60 steps a
       second; by default in .3 to 1 s, by the distance
-  press X Y | release   hold the left button down, for what happens meanwhile
+  press X Y [middle] | release [middle]   hold the left (or middle) button
+      down, for what happens meanwhile
   scroll PIXELS [SECONDS] (negative scrolls up), at once or eased over SECONDS
   key NAME|CODE, with modifiers as ctrl+a (names: enter esc tab backspace
       delete space up down left right home end pageup pagedown f10 menu,
