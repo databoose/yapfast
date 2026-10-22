@@ -9,6 +9,9 @@ use std::{
     sync::Arc,
 };
 
+/// Steamworks Common Redistributables, which Steam installs beside games.
+const REDISTRIBUTABLES: &str = "228980";
+
 #[derive(Default, PartialEq, Eq)]
 pub(super) struct Steam {
     installed: Vec<(String, Arc<GameInfo>)>,
@@ -132,7 +135,7 @@ impl Steam {
                 else {
                     continue;
                 };
-                if !id.bytes().all(|b| b.is_ascii_digit()) {
+                if !id.bytes().all(|b| b.is_ascii_digit()) || id == REDISTRIBUTABLES {
                     continue;
                 }
                 let Some(content) = read_small(&file.path()) else {
@@ -164,6 +167,12 @@ impl Steam {
                     })
                 });
                 let path = library.join("steamapps/common").join(directory);
+                // Proton and the Steam Linux Runtime install as apps too, and
+                // their processes outlive a game's launch. Each has a
+                // toolmanifest.vdf, which no game has.
+                if path.join("toolmanifest.vdf").exists() {
+                    continue;
+                }
                 let path = path.canonicalize().unwrap_or(path);
                 installed.push((
                     normalize(&path.to_string_lossy(), cfg!(target_os = "windows")),
@@ -217,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn steam_matches_only_inside_an_installation_and_uses_catalog_identity() {
+    fn steam_matches_only_inside_a_games_installation() {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir(dir.path().join("steamapps")).unwrap();
         fs::write(
@@ -225,7 +234,34 @@ mod tests {
             r#""AppState" { "name" "Unknown Steam Game" "installdir" "Fixture" }"#,
         )
         .unwrap();
+        for (id, name, directory) in [
+            ("1493710", "Proton Experimental", "Proton"),
+            (
+                "1628350",
+                "Steam Linux Runtime 3.0 (sniper)",
+                "SteamLinuxRuntime_sniper",
+            ),
+        ] {
+            fs::write(
+                dir.path().join(format!("steamapps/appmanifest_{id}.acf")),
+                format!(r#""AppState" {{ "name" "{name}" "installdir" "{directory}" }}"#),
+            )
+            .unwrap();
+            let tool = dir.path().join("steamapps/common").join(directory);
+            fs::create_dir_all(&tool).unwrap();
+            fs::write(tool.join("toolmanifest.vdf"), r#""manifest" {}"#).unwrap();
+        }
+        fs::write(
+            dir.path().join("steamapps/appmanifest_228980.acf"),
+            r#""AppState" { "name" "Steamworks Common Redistributables" "installdir" "Steamworks Shared" }"#,
+        )
+        .unwrap();
         let steam = Steam::load(&[dir.path().into()], &Catalog::default());
+        assert_eq!(
+            steam.installed.len(),
+            1,
+            "only the game, none of Steam's tools"
+        );
         let path = dir
             .path()
             .canonicalize()
@@ -248,7 +284,9 @@ mod tests {
             steam
                 .matches(
                     &dir.path()
-                        .join("steamapps/common/Proton/wine")
+                        .canonicalize()
+                        .unwrap()
+                        .join("steamapps/common/Proton/files/bin/wine")
                         .to_string_lossy()
                 )
                 .is_none()
