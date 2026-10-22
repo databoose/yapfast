@@ -3,7 +3,7 @@
 //! only a hash of each executable's file name: a process whose name has one
 //! has the list read again for that name's rules, which are kept after.
 
-use crate::api::Api;
+use crate::api::{Api, GameList};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -18,7 +18,9 @@ use std::{
 };
 
 const MAX_FILE: u64 = 32 * 1024 * 1024;
-pub(super) const MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// How often the list is asked for again. An unchanged list costs only an
+/// answer that it's the same.
+pub(super) const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 /// The most file names whose rules are kept. Few running programs have a
 /// name the list knows; past this many, the kept rules start over.
 const KEPT_NAMES: usize = 256;
@@ -415,18 +417,33 @@ fn arguments_match(args: &[std::ffi::OsString], expected: &str) -> bool {
     command.contains(expected)
 }
 
-pub(super) fn fresh(path: &Path) -> bool {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
-        .is_some_and(|age| age < MAX_AGE)
+/// How long ago the list at `path` was fetched, or found unchanged.
+pub(super) fn age(path: &Path) -> Option<Duration> {
+    let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    SystemTime::now().duration_since(modified).ok()
 }
 
-/// Download and parse off the runtime; replace the cache only after validating
-/// the complete response. A failed refresh leaves the earlier catalogue intact.
-pub(super) async fn refresh(api: &Api, cache: Option<PathBuf>) -> Result<Catalog> {
-    let temp = tokio::task::spawn_blocking(move || -> Result<_> {
+/// Where the CDN's version of the list at `cache` is kept.
+fn etag_file(cache: &Path) -> PathBuf {
+    cache.with_extension("etag")
+}
+
+/// What asking for the list again found.
+pub(super) enum Refreshed {
+    Unchanged,
+    New(Catalog),
+}
+
+/// Downloads and compacts the list off the runtime, replacing the cache only
+/// once the whole answer proved valid; a failure leaves the earlier list.
+/// With `revalidate`, the cache holds the list the CDN's version kept
+/// beside it names, and an unchanged list isn't downloaded again.
+pub(super) async fn refresh(
+    api: &Api,
+    cache: Option<PathBuf>,
+    revalidate: bool,
+) -> Result<Refreshed> {
+    let (temp, cache, etag) = tokio::task::spawn_blocking(move || -> Result<_> {
         let temp = match cache.as_ref().and_then(|p| p.parent()) {
             Some(parent) => {
                 std::fs::create_dir_all(parent)?;
@@ -434,17 +451,52 @@ pub(super) async fn refresh(api: &Api, cache: Option<PathBuf>) -> Result<Catalog
             }
             None => tempfile::NamedTempFile::new()?,
         };
-        Ok((temp, cache))
+        let etag = cache
+            .as_deref()
+            .filter(|_| revalidate)
+            .and_then(|cache| std::fs::read_to_string(etag_file(cache)).ok())
+            .filter(|etag| etag.len() <= 256);
+        Ok((temp, cache, etag))
     })
     .await??;
-    tokio::time::timeout(
+    let answer = tokio::time::timeout(
         Duration::from_secs(30),
-        api.detectable_games(temp.0.reopen()?),
+        api.detectable_games(temp.reopen()?, etag.as_deref()),
     )
     .await??;
     tokio::task::spawn_blocking(move || -> Result<_> {
-        let (temp, cache) = temp;
-        compact(temp.path(), cache.as_deref())
+        match answer {
+            GameList::Unchanged => {
+                // Its age says when to ask again.
+                if let Some(cache) = &cache {
+                    File::options()
+                        .write(true)
+                        .open(cache)?
+                        .set_modified(SystemTime::now())?;
+                }
+                Ok(Refreshed::Unchanged)
+            }
+            GameList::Written(etag) => {
+                let catalog = compact(temp.path(), cache.as_deref())?;
+                if let Some(cache) = &cache {
+                    let file = etag_file(cache);
+                    let kept = match etag {
+                        Some(etag) => std::fs::write(file, etag),
+                        None => std::fs::remove_file(file).or_else(|error| {
+                            if error.kind() == std::io::ErrorKind::NotFound {
+                                Ok(())
+                            } else {
+                                Err(error)
+                            }
+                        }),
+                    };
+                    if let Err(error) = kept {
+                        tracing::debug!(%error, "could not keep the game list's version");
+                    }
+                }
+                Ok(Refreshed::New(catalog))
+            }
+        }
     })
     .await?
 }

@@ -3935,16 +3935,15 @@ function linkedGifEmbed(content: string, origin: string) {
 }
 let frecencySettings: string | null = null;
 
+const DETECTABLE_GAMES = [{ id: "123456789012345680", name: "Detected Fixture",
+  description: "Discard this unrelated catalogue metadata when caching",
+  executables: [
+    { os: "linux", name: "yapfast_detected_game", is_launcher: false },
+    { os: "darwin", name: "yapfast_detected_game", is_launcher: false },
+    { os: "win32", name: "yapfast_detected_game.exe", is_launcher: false }
+  ], third_party_skus: [] }];
+
 async function api(req: Request, path: string, origin: string): Promise<Response> {
-  if (req.method === "GET" && path === "/games/detectable") {
-    return json([{ id: "123456789012345680", name: "Detected Fixture",
-      description: "Discard this unrelated catalogue metadata when caching",
-      executables: [
-        { os: "linux", name: "yapfast_detected_game", is_launcher: false },
-        { os: "darwin", name: "yapfast_detected_game", is_launcher: false },
-        { os: "win32", name: "yapfast_detected_game.exe", is_launcher: false }
-      ], third_party_skus: [] }]);
-  }
   // A Rich Presence application and its images. Games leave out their name
   // and name images by key, which the client turns into the application's
   // name and image ids before the presence goes to the gateway.
@@ -6726,6 +6725,13 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "GET" && path.startsWith("/attachments/")) {
       return serveFile(path.slice("/attachments/".length), url);
+    }
+    // The games Discord detects, from its CDN as the desktop client asks:
+    // with the version it has, the answer is that it's unchanged.
+    if (req.method === "GET" && path === "/detectables/games-v1.json") {
+      const etag = 'W/"fixture-games"';
+      if (req.headers.get("if-none-match") === etag) return new Response(null, { status: 304, headers: { etag } });
+      return Response.json(DETECTABLE_GAMES, { headers: { etag } });
     }
     // The GIF provider's pictures.
     const gif = req.method === "GET" ? path.match(/^\/_gifs\/([a-z]+)\.(webp|gif)$/) : null;

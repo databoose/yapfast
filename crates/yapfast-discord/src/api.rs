@@ -361,14 +361,34 @@ impl Api {
         serde_json::from_value(body).context("could not understand Discord's answer")
     }
 
-    /// Streams the games Discord detects to `file`, as its desktop client
-    /// asks for them, so no whole copy of the list sits in memory.
-    pub(crate) async fn detectable_games(&self, file: std::fs::File) -> Result<()> {
+    /// Streams the games Discord detects to `file`, so no whole copy of the
+    /// list sits in memory. As Discord's desktop client does, it asks the
+    /// CDN, which answers without the list when `etag` is still its version.
+    pub(crate) async fn detectable_games(
+        &self,
+        file: std::fs::File,
+        etag: Option<&str>,
+    ) -> Result<GameList> {
         use tokio::io::AsyncWriteExt;
         const LIMIT: u64 = 32 * 1024 * 1024;
-        let mut response = self
-            .execute(self.request(Method::GET, "/games/detectable"))
-            .await?;
+        let mut request = self
+            .http
+            .get(format!("{}/detectables/games-v1.json", crate::ready::cdn()));
+        if let Some(etag) = etag {
+            request = request.header(header::IF_NONE_MATCH, etag);
+        }
+        let mut response = request.send().await.context("Can't reach Discord.")?;
+        if response.status() == StatusCode::NOT_MODIFIED {
+            return Ok(GameList::Unchanged);
+        }
+        if !response.status().is_success() {
+            return Err(Refused(response.status()).into());
+        }
+        let etag = response
+            .headers()
+            .get(header::ETAG)
+            .and_then(|etag| etag.to_str().ok())
+            .map(str::to_owned);
         let mut file = tokio::fs::File::from_std(file);
         let mut size = 0;
         while let Some(chunk) = response.chunk().await? {
@@ -379,7 +399,7 @@ impl Api {
             file.write_all(&chunk).await?;
         }
         file.flush().await?;
-        Ok(())
+        Ok(GameList::Written(etag))
     }
 
     /// The application a game's Rich Presence names, for its name, as the
@@ -1907,6 +1927,14 @@ impl Api {
             retried = true;
         }
     }
+}
+
+/// What asking for the games Discord detects found.
+pub(crate) enum GameList {
+    /// The list is as the version asked with.
+    Unchanged,
+    /// A new list went to the file, with its version.
+    Written(Option<String>),
 }
 
 /// Turns Discord's refusals into errors a person can act on.

@@ -512,10 +512,16 @@ async fn plays_through_rpc(discord: &Discord, server: &str, directory: &std::pat
                 .is_some_and(|a| a.iter().any(|a| a["name"] == "Detected Fixture"))
         })
         .await;
-        let cached: Value = serde_json::from_slice(&std::fs::read(cache).unwrap()).unwrap();
+        let cache = std::path::PathBuf::from(cache);
+        let cached: Value = serde_json::from_slice(&std::fs::read(&cache).unwrap()).unwrap();
         assert!(
             cached[0].get("description").is_none(),
             "discard unused remote metadata"
+        );
+        assert_eq!(
+            std::fs::read_to_string(cache.with_extension("etag")).unwrap(),
+            r#"W/"fixture-games""#,
+            "the CDN's version, to ask with tomorrow"
         );
         Some(process)
     } else {

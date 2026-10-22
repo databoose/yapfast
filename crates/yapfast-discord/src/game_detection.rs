@@ -52,8 +52,8 @@ async fn run(
         .map(PathBuf::from)
         .or_else(crate::cache::games_file);
     let path = custom.clone().or_else(|| cache.clone());
-    let (initial, fresh) = tokio::task::spawn_blocking(move || {
-        let fresh = path.as_ref().is_some_and(|p| catalog::fresh(p));
+    let (initial, age) = tokio::task::spawn_blocking(move || {
+        let age = path.as_deref().and_then(catalog::age);
         let catalog = path.as_ref().and_then(|p| match Catalog::read(p) {
             Ok(catalog) => Some(catalog),
             Err(error) => {
@@ -61,17 +61,21 @@ async fn run(
                 None
             }
         });
-        let fresh = fresh && catalog.is_some();
-        (catalog.unwrap_or_default(), fresh)
+        let age = age.filter(|_| catalog.is_some());
+        (catalog.unwrap_or_default(), age)
     })
     .await?;
     let mut detector = Detector::new(initial, steam::roots());
     detector.set_executables(&custom_games.borrow_and_update());
     let mut ticks = tokio::time::interval(INTERVAL);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut due = !fresh && custom.is_none();
-    let mut refresh = Box::pin(catalog::refresh(&api, cache.clone()));
-    let mut next_refresh = Instant::now() + catalog::MAX_AGE;
+    // A list from the cache is asked for again once it's a day old, and
+    // comes again only if it changed.
+    let mut cached = age.is_some();
+    let mut due = custom.is_none() && age.is_none_or(|age| age >= catalog::MAX_AGE);
+    let mut refresh = Box::pin(catalog::refresh(&api, cache.clone(), cached));
+    let mut next_refresh =
+        Instant::now() + age.map_or(catalog::MAX_AGE, |age| catalog::MAX_AGE.saturating_sub(age));
     loop {
         tokio::select! {
             biased;
@@ -84,7 +88,11 @@ async fn run(
             result = &mut refresh, if due => {
                 let success = result.is_ok();
                 match result {
-                    Ok(catalog) => detector.replace_catalog(catalog),
+                    Ok(catalog::Refreshed::New(catalog)) => {
+                        detector.replace_catalog(catalog);
+                        cached = true;
+                    }
+                    Ok(catalog::Refreshed::Unchanged) => {}
                     Err(error) => tracing::warn!(%error, "could not refresh game catalogue; using cache"),
                 }
                 due = false;
@@ -92,7 +100,7 @@ async fn run(
             }
             _ = ticks.tick() => {
                 if custom.is_none() && !due && Instant::now() >= next_refresh {
-                    refresh = Box::pin(catalog::refresh(&api, cache.clone()));
+                    refresh = Box::pin(catalog::refresh(&api, cache.clone(), cached));
                     due = true;
                 }
                 let scanned = tokio::task::spawn_blocking(move || {
