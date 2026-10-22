@@ -2347,7 +2347,12 @@ the bell, is still to come.
 ### Profiles
 
 Clicking someone in a channel's member list, or under a voice channel,
-shows their profile in a small card beside it, which "View full profile" enlarges into a centred one;
+shows their profile in a small card beside it, whose picture or name
+enlarges it into a centred one. The card leaves the dates and the roles'
+heading to the full profile, and ends in a box, "Message @name", as
+Discord's does: Enter opens or starts the DM with them and sends what it
+holds there, without touching the DM's own composer. The box shows only for
+someone Yapfast can message, never for this account;
 right-clicking a DM and choosing "Profile" opens the full one. A one-to-one
 DM shows its other person's profile in a panel on the right, with the bio in
 full and the mutual servers and friends. Mutual servers show their icon and
@@ -2360,7 +2365,7 @@ hides or shows it, and Yapfast remembers the choice in `layout.json`. Yapfast fe
 profile once each time the open DM changes to someone else. Yapfast fetches it
 from `GET /users/{id}/profile` with the open server's id, so the server's
 nickname, avatar, banner, bio and pronouns win over the person's own, and the
-card lists their roles in role order, when they joined Discord and the server,
+profile lists their roles in role order, when they joined Discord and the server,
 and the servers and friends the account shares with them. Profiles are kept for
 five minutes, at most 32 of them. Presence and activity come from the member
 list, since the profile doesn't carry them. When Discord refuses, the card

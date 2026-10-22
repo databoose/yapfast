@@ -3623,6 +3623,111 @@ fn discord_friends_are_listed_and_messaged() {
 
 #[test]
 #[cfg(feature = "discord")]
+fn a_profile_card_messages_its_person_in_their_dm() {
+    use yapfast_discord::service::{Conversation, Snapshot, Status};
+    let snapshot = |dms: &[(&str, &str)]| Snapshot {
+        status: Status::Online,
+        user_id: Some("1".into()),
+        friends: vec!["2".into(), "3".into()],
+        conversations: dms
+            .iter()
+            .map(|(id, person)| Conversation {
+                id: (*id).into(),
+                name: "DM".into(),
+                person: Some((*person).into()),
+                people: 2,
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let sends = |effects: &[Effect], to: &str, text: &str| {
+        effects.iter().any(|effect| matches!(
+            effect,
+            Effect::Backend(Command::Send { room, body, reply: None, .. }) if room == to && body == text
+        ))
+    };
+    let message = |user: &str, text: &str| Action::MessageFromProfile {
+        user: user.into(),
+        text: text.into(),
+    };
+    let mut app = Application::default();
+    app.apply(discord_event(snapshot(&[("30", "2")])));
+    app.dispatch(Action::OpenDmScreen(DmScreen::Friends));
+
+    let ready = |app: &mut Application, room: &str| {
+        app.apply(Event::Timeline {
+            room: room.into(),
+            messages: timeline(vec![]),
+        })
+    };
+
+    // A listed DM opens and the message goes once it can, leaving its
+    // composer as it was.
+    app.state
+        .drafts
+        .insert("discord:@me:30".into(), "half written".into());
+    let effects = app.dispatch(message("2", "hi Ann"));
+    assert_eq!(app.state.selected.as_deref(), Some("discord:@me:30"));
+    assert!(
+        !sends(&effects, "discord:@me:30", "hi Ann"),
+        "not before it's ready"
+    );
+    assert!(sends(
+        &ready(&mut app, "discord:@me:30"),
+        "discord:@me:30",
+        "hi Ann"
+    ));
+    assert_eq!(app.state.drafts["discord:@me:30"], "half written");
+    app.apply(Event::SendResult {
+        room: "discord:@me:30".into(),
+        body: "hi Ann".into(),
+        result: Ok(()),
+    });
+    assert_eq!(app.state.drafts["discord:@me:30"], "half written");
+
+    // Nothing goes empty, to oneself, or to someone Yapfast can't message.
+    for (user, text) in [("2", "  "), ("1", "hi me"), ("9", "hi")] {
+        assert!(app.dispatch(message(user, text)).is_empty(), "{user}");
+    }
+
+    // Without a DM, one starts, and the message goes once it opens; another
+    // DM opening first gets nothing.
+    app.dispatch(Action::OpenDmScreen(DmScreen::Friends));
+    assert!(matches!(
+        app.dispatch(message("3", "hi Bob")).as_slice(),
+        [Effect::Backend(Command::StartDm { id, discord: true })] if id == "3"
+    ));
+    app.apply(Event::DmStarted(Ok("discord:@me:31".into())));
+    app.apply(discord_event(snapshot(&[("30", "2"), ("31", "3")])));
+    assert_eq!(app.state.selected.as_deref(), Some("discord:@me:31"));
+    assert!(sends(
+        &ready(&mut app, "discord:@me:31"),
+        "discord:@me:31",
+        "hi Bob"
+    ));
+    assert!(app.pending_message.is_none());
+
+    // Leaving the DM before it's ready drops the message.
+    app.dispatch(Action::OpenDmScreen(DmScreen::Friends));
+    app.dispatch(message("3", "hi"));
+    app.dispatch(Action::Open("discord:@me:30".into()));
+    assert!(!sends(
+        &ready(&mut app, "discord:@me:30"),
+        "discord:@me:30",
+        "hi"
+    ));
+    assert!(app.pending_message.is_none());
+
+    // One that couldn't start drops its message.
+    app.apply(discord_event(snapshot(&[("30", "2")])));
+    app.dispatch(message("3", "hi again"));
+    app.apply(Event::DmStarted(Err("Could not start the DM".into())));
+    assert!(app.pending_message.is_none());
+}
+
+#[test]
+#[cfg(feature = "discord")]
 fn a_one_to_one_dm_shows_its_persons_profile_beside_it() {
     use yapfast_discord::service::{Conversation, Snapshot, Status};
     let dm = |id: &str, person: &str, people| Conversation {

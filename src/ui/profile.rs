@@ -291,6 +291,15 @@ pub(super) fn profile_data(
         } else {
             friend_offer(state.relation(&profile.id))
         },
+        // Discord's card names them as the profile does.
+        message_hint: if state
+            .person_choices(&profile.id)
+            .contains(&MenuChoice::Message)
+        {
+            format!("Message @{}", profile.name).into()
+        } else {
+            Default::default()
+        },
     }
 }
 

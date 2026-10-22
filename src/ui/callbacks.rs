@@ -184,6 +184,19 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     bind!(on_leave_voice, Action::Voice(voice::Command::Leave));
     let state = adapter.clone();
     let weak = window.as_weak();
+    window.on_message_from_profile(move |user, text| {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().action(
+                &window,
+                Action::MessageFromProfile {
+                    user: user.into(),
+                    text: text.into(),
+                },
+            );
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
     window.on_befriend(move |user| {
         if let Some(window) = weak.upgrade() {
             state

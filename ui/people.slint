@@ -1,6 +1,6 @@
 import { ScrollView, ListView } from "scrollview.slint";
 import { Theme, Middle, Label } from "theme.slint";
-import { ActionButton, IconButton, Avatar, StatusText, PictureStore } from "controls.slint";
+import { ActionButton, IconButton, Avatar, StatusText, PictureStore, TextField } from "controls.slint";
 import { StatusDot } from "rail.slint";
 
 /// A member of the open room. A heading starts each role's group.
@@ -153,6 +153,9 @@ export struct ProfileData {
     /// Friendship on Discord: 0 nothing to offer, 1 send a friend request,
     /// 2 one was sent, 3 accept theirs.
     friend: int,
+    /// The card's box that messages them in their DM, as "Message @name";
+    /// empty when there's none.
+    message-hint: string,
 }
 
 export component ProfileHeading inherits Text {
@@ -409,6 +412,8 @@ export component ProfileCard inherits Rectangle {
     /// A mutual server or friend was clicked, with where its row is in the window.
     callback open-server(ProfileServerRow, length, length, length, length);
     callback open-friend(string, length, length, length, length);
+    /// Enter in the card's message box, with what it held.
+    callback send-message(string);
     property <length> banner-height: root.large ? 210px : root.docked ? 120px : 105px;
     property <length> avatar-size: root.large ? 120px : 80px;
     property <length> pad: root.large ? 24px : 16px;
@@ -447,7 +452,14 @@ export component ProfileCard inherits Rectangle {
                             x: parent.width - self.width - (root.large ? 14px : 10px); y: parent.height - self.height - (root.large ? 14px : 10px);
                             presence: root.data.presence; ring: Theme.sidebar;
                         }
-                        if !root.large && !root.preview: TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.enlarge(); } }
+                        // The picture opens the full profile.
+                        if !root.large && !root.preview: TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            accessible-role: button;
+                            accessible-label: "View full profile";
+                            accessible-action-default => { root.enlarge(); }
+                            clicked => { root.enlarge(); }
+                        }
                     }
                 }
                 VerticalLayout {
@@ -493,7 +505,8 @@ export component ProfileCard inherits Rectangle {
                             }
                         }
                     }
-                    if root.data.created != "" || root.data.joined != "": VerticalLayout {
+                    // The card leaves the dates to the full profile.
+                    if root.full && (root.data.created != "" || root.data.joined != ""): VerticalLayout {
                         spacing: 6px;
                         ProfileHeading { text: "MEMBER SINCE"; }
                         HorizontalLayout {
@@ -510,7 +523,8 @@ export component ProfileCard inherits Rectangle {
                     }
                     if (root.large ? root.data.role-rows-large : root.data.role-rows).length > 0: VerticalLayout {
                         spacing: 6px;
-                        ProfileHeading { text: "ROLES"; }
+                        // The card's chips speak for themselves.
+                        if root.full: ProfileHeading { text: "ROLES"; }
                         for row in (root.large ? root.data.role-rows-large : root.data.role-rows): HorizontalLayout {
                             spacing: 4px; alignment: start;
                             for role in row.roles: Rectangle {
@@ -550,7 +564,26 @@ export component ProfileCard inherits Rectangle {
                         }
                     }
                     if root.data.note != "": Text { text: root.data.note; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
-                    if !root.large && !root.preview: ActionButton { text: "View full profile"; small: true; clicked => { root.enlarge(); } }
+                    // Escape in the box closes the card, as it does elsewhere.
+                    if !root.full && !root.preview && root.data.message-hint != "": FocusScope {
+                        // It empties for someone else's profile.
+                        property <string> person: root.data.id;
+                        changed person => { message-field.text = ""; }
+                        key-pressed(event) => {
+                            if event.text == Key.Escape { root.close(); return accept; }
+                            return reject;
+                        }
+                        message-field := TextField {
+                            placeholder: root.data.message-hint; label: root.data.message-hint;
+                            text-size: 14px;
+                            accepted => {
+                                if self.text != "" {
+                                    root.send-message(self.text);
+                                    self.text = "";
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

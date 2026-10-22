@@ -1306,6 +1306,12 @@ pub enum Action {
     /// Open the DM with someone, by Discord user id or Matrix ID, starting
     /// one with a Discord friend or a Matrix user if there's none.
     MessagePerson(String),
+    /// Send someone a message from their profile card, in their DM, which
+    /// opens, or starts as [`Action::MessagePerson`] starts one.
+    MessageFromProfile {
+        user: String,
+        text: String,
+    },
     /// Show or hide the other person's profile beside a one-to-one DM.
     ShowProfilePanel(bool),
     /// Ignore a Discord user's friend request, or cancel this account's.
@@ -1787,6 +1793,8 @@ pub struct Application {
     starting_dm: bool,
     /// Its call starts once it opens, as [`Action::CallPerson`] asks.
     pending_call: bool,
+    /// What [`Action::MessageFromProfile`] sends once its DM opens.
+    pending_message: Option<PendingMessage>,
     /// The composer text of the message being sent, which `Event::SendResult` clears
     /// once sent; the backend has it with its mentions in the network's form.
     sent_draft: Option<String>,
@@ -1809,6 +1817,15 @@ pub struct Application {
     /// member list as they were left, shown again at once on going back
     /// while the backend sends them afresh.
     shown: Vec<Shown>,
+}
+
+/// A message to someone, held until their DM is open and ready to send.
+struct PendingMessage {
+    user: String,
+    text: String,
+    /// Their DM showed; the message is dropped if something else shows
+    /// before it sends.
+    shown: bool,
 }
 
 struct Seeking {
@@ -2099,6 +2116,7 @@ impl Application {
         // A keystroke in the composer shows no picture that wasn't on screen.
         let composing = matches!(action, Action::SetDraft(_) | Action::MentionQuery(_));
         let mut effects = self.dispatch_action(action);
+        effects.extend(self.send_pending_message());
         effects.extend(self.show_panel_profile());
         if !composing {
             effects.extend(self.request_pictures());
@@ -2125,6 +2143,7 @@ impl Application {
         {
             effects.extend(self.dispatch(Action::OpenAside(room)));
         }
+        effects.extend(self.send_pending_message());
         effects.extend(self.show_panel_profile());
         effects.extend(self.request_pictures());
         effects
@@ -2253,6 +2272,7 @@ impl Application {
             Action::BrowseChannels => self.open_browse(),
             Action::BrowseFollow { room, follow } => self.browse_follow(room, follow),
             Action::MessagePerson(user) => self.message_person(user),
+            Action::MessageFromProfile { user, text } => self.message_from_profile(user, text),
             Action::ShowProfilePanel(shown) => {
                 self.state.profile_panel = shown;
                 self.show_panel_profile()
@@ -3221,6 +3241,7 @@ impl Application {
                     new_dm.error = Some(error);
                 } else if std::mem::take(&mut self.starting_dm) {
                     self.pending_call = false;
+                    self.pending_message = None;
                     self.state.notice = Some(error);
                 }
             }

@@ -153,6 +153,26 @@ impl Application {
         }
     }
 
+    /// Sends `text` in a room as its composer would, leaving what the
+    /// composer holds as it was.
+    pub(super) fn send_text_in(&mut self, room: String, text: String) -> Vec<Effect> {
+        let draft = self.state.drafts.insert(room.clone(), text);
+        let compose = self.state.compose.remove(&room);
+        let staged = self.state.staged.remove(&room);
+        let effects = self.send_in(room.clone());
+        match draft {
+            Some(draft) => self.state.drafts.insert(room.clone(), draft),
+            None => self.state.drafts.remove(&room),
+        };
+        if let Some(compose) = compose {
+            self.state.compose.insert(room.clone(), compose);
+        }
+        if let Some(staged) = staged {
+            self.state.staged.insert(room, staged);
+        }
+        effects
+    }
+
     /// Sends what the composer of a room on screen holds: the selected
     /// room's, or the thread's beside it.
     pub(super) fn send_in(&mut self, id: String) -> Vec<Effect> {

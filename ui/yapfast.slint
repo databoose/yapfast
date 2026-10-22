@@ -552,6 +552,8 @@ export component YapfastWindow inherits Window {
     }
     callback enlarge-profile();
     callback close-profile();
+    /// Send someone a message in their DM from their card: who, and what.
+    callback message-from-profile(string, string);
     in property <bool> viewer-open;
     in property <image> viewer-image;
     in property <[image]> viewer-frames;
@@ -3304,6 +3306,7 @@ export component YapfastWindow inherits Window {
             close => { root.close-profile(); }
             befriend => { root.befriend(root.profile.id); }
             open-link(link) => { root.open-link(link); }
+            send-message(text) => { root.message-from-profile(root.profile.id, text); }
         }
     }
     // A full profile over the window, as the viewer shows images.

@@ -497,6 +497,52 @@ impl Application {
         vec![Effect::Backend(Command::StartDm { id: user, discord })]
     }
 
+    pub(super) fn message_from_profile(&mut self, user: String, text: String) -> Vec<Effect> {
+        if text.trim().is_empty()
+            || !self
+                .state
+                .person_choices(&user)
+                .contains(&MenuChoice::Message)
+        {
+            return vec![];
+        }
+        self.state.profile = None;
+        self.pending_message = Some(PendingMessage {
+            user: user.clone(),
+            text,
+            shown: false,
+        });
+        self.message_person(user)
+    }
+
+    /// Sends what [`Action::MessageFromProfile`] holds once its DM is open
+    /// and ready to send, or drops it once something else shows after it.
+    pub(super) fn send_pending_message(&mut self) -> Vec<Effect> {
+        let Some(pending) = &mut self.pending_message else {
+            return vec![];
+        };
+        let dm = self
+            .state
+            .dm_with(&pending.user)
+            .map(|room| room.id.clone());
+        let Some(room) = dm.filter(|dm| self.state.selected.as_ref() == Some(dm)) else {
+            if pending.shown {
+                self.pending_message = None;
+            }
+            return vec![];
+        };
+        pending.shown = true;
+        if !self.state.room_ready || self.state.sending.is_some() {
+            return vec![];
+        }
+        let text = self
+            .pending_message
+            .take()
+            .map(|pending| pending.text)
+            .unwrap_or_default();
+        self.send_text_in(room, text)
+    }
+
     /// Marks a conversation read, or every conversation of a server or a
     /// Discord category.
     pub(super) fn mark_read(&mut self, id: String) -> Vec<Effect> {
