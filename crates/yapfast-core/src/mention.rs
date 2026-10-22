@@ -33,15 +33,18 @@ pub struct Mentioned {
     pub at: Vec<usize>,
 }
 
-/// Who a mention points at: a user, by Discord or Matrix id, or a Discord role.
+/// Who a mention points at: a user, by Discord or Matrix id, a Discord role,
+/// or everyone, as Discord's `@everyone` and `@here` do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
     User(String),
     Role(String),
+    Everyone,
 }
 
 const USER_LINK: &str = "yapfast:user/";
 const ROLE_LINK: &str = "yapfast:role/";
+const EVERYONE_LINK: &str = "yapfast:everyone";
 const MATRIX_TO: &str = "https://matrix.to/#/";
 
 /// The address a mention links to in a message; clicking it opens the person or role.
@@ -49,6 +52,7 @@ pub fn link(target: &Target) -> String {
     match target {
         Target::User(id) => format!("{USER_LINK}{id}"),
         Target::Role(id) => format!("{ROLE_LINK}{id}"),
+        Target::Everyone => EVERYONE_LINK.to_owned(),
     }
 }
 
@@ -59,6 +63,9 @@ pub fn target(link: &str) -> Option<Target> {
     }
     if let Some(id) = link.strip_prefix(ROLE_LINK) {
         return Some(Target::Role(id.to_owned()));
+    }
+    if link == EVERYONE_LINK {
+        return Some(Target::Everyone);
     }
     let user = link.strip_prefix(MATRIX_TO)?;
     let user = user.split(['?', '/']).next()?;
@@ -331,6 +338,7 @@ mod tests {
         );
         assert_eq!(target("yapfast:user/2"), Some(Target::User("2".into())));
         assert_eq!(target("yapfast:role/30"), Some(Target::Role("30".into())));
+        assert_eq!(target(&link(&Target::Everyone)), Some(Target::Everyone));
         assert_eq!(
             target("https://matrix.to/#/@sam:test?via=test"),
             Some(Target::User("@sam:test".into()))

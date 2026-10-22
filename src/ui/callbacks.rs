@@ -957,6 +957,8 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
                     Action::ShowProfile { user, large: false }
                 }
                 mention::Target::Role(role) => Action::ShowRole(role),
+                // As in Discord's client, @everyone and @here open nothing.
+                mention::Target::Everyone => return,
             };
             state.borrow_mut().action(&window, action);
             return;

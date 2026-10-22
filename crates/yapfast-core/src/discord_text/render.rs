@@ -2,6 +2,7 @@
 //! them.
 
 use super::{channels::SharedPreviews, *};
+use yapfast_discord::message::MentionTarget;
 
 /// A new Discord message as a notification: who wrote it, by their name in the server,
 /// and what it says, or what it carries when it has no text.
@@ -409,20 +410,23 @@ pub(super) fn rendered(
     let mentions = mentions
         .into_iter()
         .map(|mention| {
-            let color = server.and_then(|server| {
-                if mention.role {
-                    server.role_colors.get(&mention.id).map(|(_, color)| *color)
-                } else {
-                    discord.color(server, &mention.id)
+            // @everyone and @here take the colour of mentions.
+            let (target, color) = match mention.target {
+                MentionTarget::User(id) => {
+                    let color = server.and_then(|server| discord.color(server, &id));
+                    (Target::User(id), color)
                 }
-            });
+                MentionTarget::Role(id) => {
+                    let color = server
+                        .and_then(|server| server.role_colors.get(&id))
+                        .map(|(_, color)| *color);
+                    (Target::Role(id), color)
+                }
+                MentionTarget::Everyone => (Target::Everyone, None),
+            };
             Mentioned {
                 text: mention.text,
-                target: if mention.role {
-                    Target::Role(mention.id)
-                } else {
-                    Target::User(mention.id)
-                },
+                target,
                 color,
                 at: mention.at,
             }

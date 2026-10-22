@@ -1445,7 +1445,8 @@ impl Names {
 
     /// [`Names::render`], with the users and roles the message mentions:
     /// each with the text it shows for them and where that text starts, each
-    /// time, as Discord's client draws a mention where its tag was.
+    /// time, as Discord's client draws a mention where its tag was, and
+    /// where `@everyone` or `@here` is.
     pub fn render_mentions(
         &self,
         server: Option<&Server>,
@@ -1453,19 +1454,23 @@ impl Names {
     ) -> (String, Vec<Mention>) {
         let mut mentions: Vec<Mention> = Vec::new();
         let rendered = self.render_tags(server, content, |tag, at, text| {
-            let (role, id) = match tag.strip_prefix("@&") {
-                Some(id) => (true, id),
-                None => match tag.strip_prefix("@!").or_else(|| tag.strip_prefix('@')) {
-                    Some(id) => (false, id),
-                    None => return,
-                },
+            let target = if tag == "@everyone" || tag == "@here" {
+                MentionTarget::Everyone
+            } else if let Some(id) = tag.strip_prefix("@&") {
+                MentionTarget::Role(id.to_owned())
+            } else if let Some(id) = tag.strip_prefix("@!").or_else(|| tag.strip_prefix('@')) {
+                MentionTarget::User(id.to_owned())
+            } else {
+                return;
             };
-            match mentions.iter_mut().find(|known| known.id == id) {
+            match mentions
+                .iter_mut()
+                .find(|known| known.target == target && known.text == text)
+            {
                 Some(known) => known.at.push(at),
                 None => mentions.push(Mention {
                     text: text.to_owned(),
-                    role,
-                    id: id.to_owned(),
+                    target,
                     at: vec![at],
                 }),
             }
@@ -1474,7 +1479,9 @@ impl Names {
     }
 
     /// [`Names::render`], telling `rendered` of each tag shown as text: the
-    /// tag, where its text starts and the text.
+    /// tag, where its text starts and the text. `@everyone` and `@here` are
+    /// tags of their own, as Discord's client finds them anywhere but after
+    /// a backslash.
     fn render_tags(
         &self,
         server: Option<&Server>,
@@ -1485,7 +1492,7 @@ impl Names {
         let mut rendered = String::with_capacity(content.len());
         let mut rest = content;
         while let Some(start) = rest.find('<') {
-            rendered.push_str(&rest[..start]);
+            push_text(&mut rendered, &rest[..start], &mut rendered_tag);
             rest = &rest[start..];
             let Some(end) = rest.find('>') else {
                 break;
@@ -1503,7 +1510,7 @@ impl Names {
                 }
             }
         }
-        rendered.push_str(rest);
+        push_text(&mut rendered, rest, &mut rendered_tag);
         rendered
     }
 
@@ -1536,17 +1543,50 @@ impl Names {
     }
 }
 
-/// A user or role a message mentions, as [`Names::render_mentions`] finds them.
+/// Pushes text outside tags onto `rendered`, telling `rendered_tag` of each
+/// `@everyone` and `@here` in it that no backslash escapes.
+fn push_text(rendered: &mut String, text: &str, rendered_tag: &mut impl FnMut(&str, usize, &str)) {
+    for (at, _) in text.match_indices('@') {
+        let escaped = text[..at]
+            .bytes()
+            .rev()
+            .take_while(|&byte| byte == b'\\')
+            .count()
+            % 2
+            == 1;
+        let group = ["@everyone", "@here"]
+            .into_iter()
+            .find(|group| text[at..].starts_with(group));
+        if let Some(group) = group
+            && !escaped
+        {
+            rendered_tag(group, rendered.len() + at, group);
+        }
+    }
+    rendered.push_str(text);
+}
+
+/// Someone or something a message mentions, as [`Names::render_mentions`]
+/// finds them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mention {
     /// The text the message shows for them, such as `@Ann`.
     pub text: String,
-    pub role: bool,
-    /// The user's or role's id.
-    pub id: String,
+    pub target: MentionTarget,
     /// Where the text starts in the rendered message, a byte offset each
     /// time it mentions them.
     pub at: Vec<usize>,
+}
+
+/// Who a [`Mention`] is of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MentionTarget {
+    /// A user, by id.
+    User(String),
+    /// A role, by id.
+    Role(String),
+    /// `@everyone` or `@here`.
+    Everyone,
 }
 
 /// `text` with Markdown's punctuation escaped by backslashes.
@@ -2092,10 +2132,9 @@ mod tests {
             ]
         );
         assert!(names.knows_member("10", "2") && !names.knows_member("10", "1"));
-        let mention = |text: &str, role, id: &str, at: &[usize]| Mention {
+        let mention = |text: &str, target, at: &[usize]| Mention {
             text: text.into(),
-            role,
-            id: id.into(),
+            target,
             at: at.to_vec(),
         };
         assert_eq!(
@@ -2103,8 +2142,22 @@ mod tests {
             (
                 "@Annie and @Annie, @Mods, #general <@x".to_owned(),
                 vec![
-                    mention("@Annie", false, "2", &[0, 11]),
-                    mention("@Mods", true, "30", &[19])
+                    mention("@Annie", MentionTarget::User("2".into()), &[0, 11]),
+                    mention("@Mods", MentionTarget::Role("30".into()), &[19])
+                ]
+            )
+        );
+        assert_eq!(
+            names.render_mentions(
+                Some(&server),
+                "@here <@2>@everyone x@everyones \\@here @heresy"
+            ),
+            (
+                "@here @Annie@everyone x@everyones \\@here @heresy".to_owned(),
+                vec![
+                    mention("@here", MentionTarget::Everyone, &[0, 41]),
+                    mention("@Annie", MentionTarget::User("2".into()), &[6]),
+                    mention("@everyone", MentionTarget::Everyone, &[12, 23]),
                 ]
             )
         );

@@ -308,11 +308,14 @@ pub(super) fn create_text_paragraphs(
                 .collect();
 
             // Yapfast: a coloured link is drawn on a pill only when it's a mention, of a
-            // person or a role; others, such as a notice's links, show in the colour alone.
+            // person, a role or everyone; others, such as a notice's links, show in the colour
+            // alone.
             let mut mentions = mention_ranges(&formatting);
             mentions.retain(|(range, _)| {
                 links.iter().find(|(link, _)| link == range).is_none_or(|(_, url)| {
-                    url.starts_with("yapfast:user/") || url.starts_with("yapfast:role/")
+                    url.starts_with("yapfast:user/")
+                        || url.starts_with("yapfast:role/")
+                        || url == "yapfast:everyone"
                 })
             });
             let layout = layout_builder.build(font_context, text, formatting, Some(link_color));
