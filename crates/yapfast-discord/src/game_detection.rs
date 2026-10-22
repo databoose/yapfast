@@ -62,7 +62,7 @@ async fn run(
             }
         });
         let fresh = fresh && catalog.is_some();
-        (Arc::new(catalog.unwrap_or_default()), fresh)
+        (catalog.unwrap_or_default(), fresh)
     })
     .await?;
     let mut detector = Detector::new(initial, steam::roots());
@@ -184,8 +184,9 @@ impl Selection {
 }
 
 struct Detector {
-    system: System,
-    catalog: Arc<Catalog>,
+    /// How many processes the last scan saw.
+    seen: usize,
+    catalog: Catalog,
     steam: steam::Steam,
     steam_roots: Vec<PathBuf>,
     next_steam: Instant,
@@ -300,13 +301,13 @@ fn wine_executable(args: &[std::ffi::OsString]) -> Option<String> {
 }
 
 impl Detector {
-    fn new(catalog: Arc<Catalog>, steam_roots: Vec<PathBuf>) -> Self {
+    fn new(catalog: Catalog, steam_roots: Vec<PathBuf>) -> Self {
         // sysinfo normally caches an open /proc/<pid>/stat fd for each process.
         // Detection runs infrequently, so keep no such per-process file handles.
         #[cfg(target_os = "linux")]
         sysinfo::set_open_files_limit(0);
         Self {
-            system: System::new(),
+            seen: 0,
             catalog,
             steam: steam::Steam::default(),
             steam_roots,
@@ -318,9 +319,11 @@ impl Detector {
         }
     }
 
-    fn replace_catalog(&mut self, catalog: Arc<Catalog>) {
+    fn replace_catalog(&mut self, catalog: Catalog) {
         self.catalog = catalog;
         self.generation = self.generation.wrapping_add(1);
+        // Steam's games are looked up again in the new catalogue.
+        self.steam = steam::Steam::default();
         self.next_steam = Instant::now();
     }
 
@@ -344,14 +347,16 @@ impl Detector {
 
     fn scan(&mut self, now_ms: u64) -> Option<Arc<Value>> {
         if Instant::now() >= self.next_steam {
-            let steam = steam::Steam::load(&self.steam_roots, &self.catalog);
-            if self.steam != steam {
+            if let Some(steam) = steam::Steam::load(&self.steam_roots, &self.catalog, &self.steam) {
                 self.steam = steam;
                 self.generation = self.generation.wrapping_add(1);
             }
             self.next_steam = Instant::now() + STEAM_INTERVAL;
         }
-        self.system.refresh_processes_specifics(
+        // A table of every process for this scan only: what lasts between
+        // scans is what Yapfast learned of each, in `known`.
+        let mut system = System::new();
+        system.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
             ProcessRefreshKind::nothing()
@@ -363,13 +368,12 @@ impl Detector {
         );
         let me = sysinfo::get_current_pid()
             .ok()
-            .and_then(|pid| self.system.process(pid))
+            .and_then(|pid| system.process(pid))
             .and_then(|p| p.user_id())
             .cloned();
         // Fetch command lines only for new Wine processes or catalogue rules
         // that explicitly require arguments. Never read process environments.
-        let arguments: Vec<_> = self
-            .system
+        let arguments: Vec<_> = system
             .processes()
             .iter()
             .filter_map(|(pid, process)| {
@@ -388,10 +392,7 @@ impl Detector {
                 // Warm scans do no name normalization or catalogue lookup for
                 // unchanged processes. A new catalogue can introduce an
                 // argument-dependent rule for an already running executable.
-                if !changed
-                    && (known.is_some_and(|known| known.generation == self.generation)
-                        || !process.cmd().is_empty())
-                {
+                if !changed && known.is_some_and(|known| known.generation == self.generation) {
                     return None;
                 }
                 let needs = is_wine(process)
@@ -402,7 +403,7 @@ impl Detector {
             })
             .collect();
         if !arguments.is_empty() {
-            self.system.refresh_processes_specifics(
+            system.refresh_processes_specifics(
                 ProcessesToUpdate::Some(&arguments),
                 false,
                 ProcessRefreshKind::nothing()
@@ -412,7 +413,7 @@ impl Detector {
             );
         }
         self.known.retain(|pid, _| {
-            self.system
+            system
                 .process(sysinfo::Pid::from_u32(*pid))
                 .is_some_and(|process| {
                     me.as_ref()
@@ -420,7 +421,11 @@ impl Detector {
                         .is_none_or(|(me, other)| me == other)
                 })
         });
-        for (pid, process) in self.system.processes() {
+        // The processes new or changed since the last scan, and what each
+        // runs: for Wine, the Windows program in its command line.
+        let mut due = Vec::new();
+        self.seen = system.processes().len();
+        for (pid, process) in system.processes() {
             if me
                 .as_ref()
                 .zip(process.user_id())
@@ -428,59 +433,59 @@ impl Detector {
             {
                 continue;
             }
-            let identity = Identity {
-                pid: pid.as_u32(),
-                started: process.start_time(),
-            };
-            let hash = fingerprint(process);
-            let known = self.known.entry(identity.pid).or_insert(Known {
-                started: u64::MAX,
-                fingerprint: 0,
-                game: None,
-                generation: u64::MAX,
+            let started = process.start_time();
+            let fingerprint = fingerprint(process);
+            let unchanged = self.known.get(&pid.as_u32()).is_some_and(|known| {
+                known.started == started
+                    && known.fingerprint == fingerprint
+                    && known.generation == self.generation
             });
-            if known.started != identity.started
-                || known.fingerprint != hash
-                || known.generation != self.generation
-            {
-                let wine = is_wine(process);
-                let path = if wine {
-                    wine_executable(process.cmd())
-                } else {
-                    process.exe().map(|p| p.to_string_lossy().into_owned())
-                };
-                known.game = path.and_then(|path| {
-                    custom_match(
-                        &self.executables,
-                        &path,
-                        wine || cfg!(target_os = "windows"),
-                    )
-                    .or_else(|| {
-                        (!ignored(&path))
-                            .then(|| {
-                                self.catalog
-                                    .matches(
-                                        &path,
-                                        process.cmd(),
-                                        wine || cfg!(target_os = "windows"),
-                                    )
-                                    .or_else(|| self.steam.matches(&path))
-                                    .or_else(|| {
-                                        wine.then(|| {
-                                            process.cwd().and_then(|p| {
-                                                self.steam.matches(&p.to_string_lossy())
-                                            })
-                                        })
-                                        .flatten()
-                                    })
-                            })
-                            .flatten()
-                    })
-                });
-                known.started = identity.started;
-                known.fingerprint = hash;
-                known.generation = self.generation;
+            if unchanged {
+                continue;
             }
+            let wine = is_wine(process);
+            let path = if wine {
+                wine_executable(process.cmd())
+            } else {
+                process.exe().map(|p| p.to_string_lossy().into_owned())
+            };
+            due.push((*pid, started, fingerprint, wine, path));
+        }
+        // One read of the catalogue for all the names it has rules for.
+        let windows = cfg!(target_os = "windows");
+        self.catalog
+            .prepare(due.iter().filter_map(|(_, _, _, wine, path)| {
+                path.as_deref()
+                    .filter(|path| !ignored(path))
+                    .map(|path| (path, *wine || windows))
+            }));
+        for (pid, started, fingerprint, wine, path) in due {
+            let Some(process) = system.process(pid) else {
+                continue;
+            };
+            let game = path.and_then(|path| {
+                custom_match(&self.executables, &path, wine || windows).or_else(|| {
+                    if ignored(&path) {
+                        return None;
+                    }
+                    self.catalog
+                        .matches(&path, process.cmd(), wine || windows)
+                        .or_else(|| self.steam.matches(&path))
+                        .or_else(|| {
+                            let cwd = process.cwd().filter(|_| wine)?;
+                            self.steam.matches(&cwd.to_string_lossy())
+                        })
+                })
+            });
+            self.known.insert(
+                pid.as_u32(),
+                Known {
+                    started,
+                    fingerprint,
+                    game,
+                    generation: self.generation,
+                },
+            );
         }
         self.selection.update(
             self.known.iter().filter_map(|(&pid, known)| {
@@ -507,23 +512,20 @@ pub struct Measurement {
     pub cold_scan_ms: f64,
     pub warm_mean_ms: f64,
     pub warm_p95_ms: f64,
-    pub rss_before_kib: Option<u64>,
-    pub rss_after_kib: Option<u64>,
+    /// The heap in use before the catalogue loads and after the scans, as
+    /// glibc counts it.
+    pub heap_before_kib: Option<u64>,
+    pub heap_after_kib: Option<u64>,
 }
 
-fn rss_kib() -> Option<u64> {
-    #[cfg(target_os = "linux")]
+fn heap_kib() -> Option<u64> {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     {
-        let status = std::fs::read_to_string("/proc/self/status").ok()?;
-        status.lines().find_map(|line| {
-            line.strip_prefix("VmRSS:")?
-                .split_whitespace()
-                .next()?
-                .parse()
-                .ok()
-        })
+        // SAFETY: mallinfo2 only reads the allocator's counters.
+        let info = unsafe { libc::mallinfo2() };
+        Some(((info.uordblks + info.hblkhd) / 1024) as u64)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
     {
         None
     }
@@ -534,8 +536,8 @@ pub fn measure(path: &Path, samples: usize) -> Result<Measurement> {
         (1..=1000).contains(&samples),
         "samples must be between 1 and 1000"
     );
-    let rss_before_kib = rss_kib();
-    let catalog = Arc::new(Catalog::read(path)?);
+    let heap_before_kib = heap_kib();
+    let catalog = Catalog::read(path)?;
     let rules = catalog.rule_count();
     let mut detector = Detector::new(catalog, steam::roots());
     let started = Instant::now();
@@ -550,13 +552,13 @@ pub fn measure(path: &Path, samples: usize) -> Result<Measurement> {
     timings.sort_by(f64::total_cmp);
     Ok(Measurement {
         rules,
-        processes: detector.system.processes().len(),
+        processes: detector.seen,
         samples,
         cold_scan_ms,
         warm_mean_ms: timings.iter().sum::<f64>() / samples as f64,
         warm_p95_ms: timings[(samples * 95 / 100).min(samples - 1)],
-        rss_before_kib,
-        rss_after_kib: rss_kib(),
+        heap_before_kib,
+        heap_after_kib: heap_kib(),
     })
 }
 
@@ -708,15 +710,14 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let mut detector = Detector::new(Arc::new(Catalog::default()), Vec::new());
+        let mut detector = Detector::new(Catalog::default(), Vec::new());
         assert!(detector.scan(crate::service::now_ms()).is_none());
         // A weekly catalogue update can add argument-dependent rules for a
         // process that was already cached before its game became recognizable.
-        detector.replace_catalog(Arc::new(Catalog::read(&rules).unwrap()));
+        detector.replace_catalog(Catalog::read(&rules).unwrap());
         let shown = detector.scan(crate::service::now_ms()).unwrap();
         assert_eq!(shown["name"], "Native Fixture");
         assert_eq!(shown["application_id"], "42");
-        assert!(detector.system.cpus().is_empty(), "no CPU sampling");
         detector.set_executables(&[custom(name, "My custom title")]);
         let shown = detector.scan(crate::service::now_ms()).unwrap();
         assert_eq!(shown["name"], "My custom title");
@@ -767,7 +768,7 @@ mod tests {
             r#"[{"name":"Exec Game","executables":[{"os":"linux","name":"yf_exec_game"}]}]"#,
         )
         .unwrap();
-        let mut detector = Detector::new(Arc::new(Catalog::read(&rules).unwrap()), Vec::new());
+        let mut detector = Detector::new(Catalog::read(&rules).unwrap(), Vec::new());
         assert!(detector.scan(crate::service::now_ms()).is_none());
         child
             .0
@@ -784,12 +785,8 @@ mod tests {
             }
             assert!(
                 Instant::now() < deadline,
-                "did not refresh after exec(): child={:?}, process={:?}, kernel_exe={:?}, cmdline={:?}",
+                "did not refresh after exec(): child={:?}, kernel_exe={:?}, cmdline={:?}",
                 child.0.try_wait(),
-                detector
-                    .system
-                    .process(sysinfo::Pid::from_u32(child.0.id()))
-                    .map(|p| (p.name(), p.exe(), p.start_time())),
                 std::fs::read_link(format!("/proc/{}/exe", child.0.id())),
                 std::fs::read(format!("/proc/{}/cmdline", child.0.id()))
                     .map(|s| String::from_utf8_lossy(&s).into_owned())

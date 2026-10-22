@@ -4,16 +4,21 @@
 
 use super::catalog::{Catalog, GameInfo, normalize};
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 /// Steamworks Common Redistributables, which Steam installs beside games.
-const REDISTRIBUTABLES: &str = "228980";
+const REDISTRIBUTABLES: u64 = 228980;
 
 #[derive(Default, PartialEq, Eq)]
 pub(super) struct Steam {
+    /// The games the manifests list: their Steam id, where each is
+    /// installed and its manifest's name.
+    manifests: Vec<(u64, String, Box<str>)>,
+    /// Where each is installed and the game it is, the most specific first.
     installed: Vec<(String, Arc<GameInfo>)>,
 }
 
@@ -103,7 +108,9 @@ pub(super) fn roots() -> Vec<PathBuf> {
 }
 
 impl Steam {
-    pub(super) fn load(roots: &[PathBuf], catalog: &Catalog) -> Self {
+    /// The games installed now, unless they're those of `earlier`. Only a
+    /// change has the catalogue read, for the games Discord knows by id.
+    pub(super) fn load(roots: &[PathBuf], catalog: &Catalog, earlier: &Self) -> Option<Self> {
         let mut libraries = Vec::new();
         for root in roots {
             libraries.push(root.clone());
@@ -121,7 +128,7 @@ impl Steam {
             .collect();
         libraries.sort();
         libraries.dedup();
-        let mut installed = Vec::new();
+        let mut manifests = Vec::new();
         for library in libraries {
             let Ok(files) = fs::read_dir(library.join("steamapps")) else {
                 continue;
@@ -135,9 +142,9 @@ impl Steam {
                 else {
                     continue;
                 };
-                if !id.bytes().all(|b| b.is_ascii_digit()) || id == REDISTRIBUTABLES {
+                let Some(id) = id.parse::<u64>().ok().filter(|&id| id != REDISTRIBUTABLES) else {
                     continue;
-                }
+                };
                 let Some(content) = read_small(&file.path()) else {
                     continue;
                 };
@@ -160,12 +167,6 @@ impl Steam {
                 if name.trim().is_empty() || name.chars().count() > 128 {
                     continue;
                 }
-                let game = catalog.steam_game(id).unwrap_or_else(|| {
-                    Arc::new(GameInfo {
-                        id: None,
-                        name: name.as_str().into(),
-                    })
-                });
                 let path = library.join("steamapps/common").join(directory);
                 // Proton and the Steam Linux Runtime install as apps too, and
                 // their processes outlive a game's launch. Each has a
@@ -174,16 +175,37 @@ impl Steam {
                     continue;
                 }
                 let path = path.canonicalize().unwrap_or(path);
-                installed.push((
+                manifests.push((
+                    id,
                     normalize(&path.to_string_lossy(), cfg!(target_os = "windows")),
-                    game,
+                    name.as_str().into(),
                 ));
             }
         }
         // If a library has nested installation directories, the most specific
         // matching installation wins; directories are still few and bounded.
-        installed.sort_by(|(a, _), (b, _)| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
-        Self { installed }
+        manifests.sort_by(|(_, a, _), (_, b, _)| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+        if manifests == earlier.manifests {
+            return None;
+        }
+        let known =
+            catalog.steam_games(&manifests.iter().map(|(id, ..)| *id).collect::<HashSet<_>>());
+        let installed = manifests
+            .iter()
+            .map(|(id, path, name)| {
+                let game = known.get(id).cloned().unwrap_or_else(|| {
+                    Arc::new(GameInfo {
+                        id: None,
+                        name: name.clone(),
+                    })
+                });
+                (path.clone(), game)
+            })
+            .collect();
+        Some(Self {
+            manifests,
+            installed,
+        })
     }
 
     pub(super) fn matches(&self, path: &str) -> Option<Arc<GameInfo>> {
@@ -256,7 +278,12 @@ mod tests {
             r#""AppState" { "name" "Steamworks Common Redistributables" "installdir" "Steamworks Shared" }"#,
         )
         .unwrap();
-        let steam = Steam::load(&[dir.path().into()], &Catalog::default());
+        let steam =
+            Steam::load(&[dir.path().into()], &Catalog::default(), &Steam::default()).unwrap();
+        assert!(
+            Steam::load(&[dir.path().into()], &Catalog::default(), &steam).is_none(),
+            "nothing to do while the same games are installed"
+        );
         assert_eq!(
             steam.installed.len(),
             1,
