@@ -3954,6 +3954,12 @@ async function api(req: Request, path: string, origin: string): Promise<Response
   if (req.method === "GET" && path === "/oauth2/applications/123456789012345678/assets") {
     return json([{ id: "123456789012345679", name: "game_cover", type: 1 }]);
   }
+  // Images given by address: the media proxy's path for each.
+  if (req.method === "POST" && path === "/applications/123456789012345678/external-assets") {
+    const body: any = await req.json().catch(() => ({}));
+    const urls: string[] = Array.isArray(body.urls) ? body.urls : [];
+    return json(urls.map(url => ({ url, external_asset_path: `external/fixture/${url.replace("://", "/")}` })));
+  }
   // A confirmed remote login's ticket, traded for the login without one.
   if (req.method === "POST" && path === "/users/@me/remote-auth/login") {
     const body: any = await req.json().catch(() => ({}));

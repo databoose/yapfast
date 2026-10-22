@@ -390,6 +390,18 @@ impl Api {
         self.json(self.request(Method::GET, &path)).await
     }
 
+    /// Discord's media proxy's names for images a game's Rich Presence gives
+    /// by address, as the desktop client asks for them.
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn rpc_external_assets(&self, id: &str, urls: &[&str]) -> Result<Value> {
+        let path = format!("/applications/{id}/external-assets");
+        self.json(with_json(
+            self.request(Method::POST, &path),
+            &json!({"urls": urls}),
+        ))
+        .await
+    }
+
     /// The images an application uploaded, by name, for its Rich Presence.
     #[cfg(target_os = "linux")]
     pub(crate) async fn rpc_assets(&self, id: &str) -> Result<Value> {

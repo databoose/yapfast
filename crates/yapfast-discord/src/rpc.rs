@@ -28,6 +28,9 @@ use crate::{
 };
 
 const MAX_PACKET: usize = 64 * 1024;
+/// The most image addresses a client's images are kept for: a music player
+/// shows a new cover with each song.
+const KEPT_IMAGES: usize = 32;
 const MAX_CLIENTS: usize = 16;
 const WAIT: Duration = Duration::from_secs(15);
 
@@ -302,6 +305,7 @@ async fn connection(
     send(&mut stream, json!({"cmd":"DISPATCH", "evt":"READY", "nonce":null,
         "data":{"v":1,"config":{"cdn_host":"cdn.discordapp.com","api_endpoint":"//discord.com/api","environment":"production"},"user":user}})).await?;
     let mut assets = None;
+    let mut images = Assets::new();
     loop {
         let (opcode, payload) = read(&mut stream).await?;
         match opcode {
@@ -340,11 +344,30 @@ async fn connection(
             if args["activity"].is_null() {
                 return Ok(None);
             }
-            if assets.is_none() && args["activity"]["assets"].is_object() {
+            let pictures = &args["activity"]["assets"];
+            let (addresses, keys): (Vec<&str>, Vec<&str>) = ["large_image", "small_image"]
+                .iter()
+                .filter_map(|key| pictures[key].as_str())
+                .partition(|image| web_address(image, 512));
+            let addresses: Vec<&str> = addresses
+                .into_iter()
+                .filter(|address| !images.contains_key(*address))
+                .collect();
+            if assets.is_none() && !keys.is_empty() {
                 let response = tokio::time::timeout(WAIT, api.rpc_assets(&client)).await??;
                 assets = Some(asset_lookup(&response)?);
             }
-            normalize(&args["activity"], &client, &name, assets.as_ref())
+            if !addresses.is_empty() {
+                // As the desktop client does, Discord's media proxy takes them.
+                let response =
+                    tokio::time::timeout(WAIT, api.rpc_external_assets(&client, &addresses))
+                        .await??;
+                if images.len() + addresses.len() > KEPT_IMAGES {
+                    images.clear();
+                }
+                images.extend(external_lookup(&response)?);
+            }
+            normalize(&args["activity"], &client, &name, assets.as_ref(), &images)
                 .map(|value| Some(Arc::new(value)))
         }
         .await;
@@ -379,6 +402,25 @@ fn snowflake(value: &str) -> bool {
 
 type Assets = HashMap<String, String>;
 
+fn web_address(text: &str, longest: usize) -> bool {
+    text.len() <= longest && (text.starts_with("https://") || text.starts_with("http://"))
+}
+
+/// The media proxy's names for image addresses, as `mp:` asset keys.
+fn external_lookup(response: &Value) -> Result<Assets> {
+    Ok(response
+        .as_array()
+        .context("invalid external assets")?
+        .iter()
+        .filter_map(|asset| {
+            Some((
+                asset["url"].as_str()?.to_owned(),
+                format!("mp:{}", asset["external_asset_path"].as_str()?),
+            ))
+        })
+        .collect())
+}
+
 fn asset_lookup(response: &Value) -> Result<Assets> {
     Ok(response
         .as_array()
@@ -396,7 +438,13 @@ fn asset_lookup(response: &Value) -> Result<Assets> {
 /// RPC uses seconds for timestamps and asset names; the Gateway needs
 /// milliseconds and asset ids. Select fields so callers cannot inject a
 /// custom status, another application id, or internal gateway metadata.
-fn normalize(input: &Value, client: &str, name: &str, assets: Option<&Assets>) -> Result<Value> {
+fn normalize(
+    input: &Value,
+    client: &str,
+    name: &str,
+    assets: Option<&Assets>,
+    addresses: &Assets,
+) -> Result<Value> {
     ensure!(input.is_object(), "activity must be an object");
     let kind = match input.get("type") {
         None => 0,
@@ -500,7 +548,12 @@ fn normalize(input: &Value, client: &str, name: &str, assets: Option<&Assets>) -
         for key in ["large_image", "small_image", "large_text", "small_text"] {
             if let Some(value) = images.get(key).filter(|v| !v.is_null()) {
                 let text = value.as_str().context("asset must be text")?;
-                let text = if key.ends_with("_image") {
+                let text = if key.ends_with("_image") && web_address(text, usize::MAX) {
+                    addresses
+                        .get(text)
+                        .map(String::as_str)
+                        .context("Discord didn't take the image's address")?
+                } else if key.ends_with("_image") {
                     assets
                         .and_then(|lookup| lookup.get(text))
                         .map(String::as_str)
@@ -580,6 +633,7 @@ mod tests {
             "42",
             "Game",
             Some(&assets),
+            &Assets::new(),
         )
         .unwrap();
         assert_eq!(shown["type"], 0);
@@ -600,6 +654,21 @@ mod tests {
     }
 
     #[test]
+    fn shows_images_given_by_address_through_the_media_proxy() {
+        let images = external_lookup(&json!([{"url":"https://example.com/cover.png",
+            "external_asset_path":"external/abc/https/example.com/cover.png"}]))
+        .unwrap();
+        let activity = json!({"assets":{"large_image":"https://example.com/cover.png"}});
+        let shown = normalize(&activity, "42", "Game", None, &images).unwrap();
+        assert_eq!(
+            shown["assets"]["large_image"],
+            "mp:external/abc/https/example.com/cover.png"
+        );
+        let other = json!({"assets":{"large_image":"https://example.com/other.png"}});
+        assert!(normalize(&other, "42", "Game", None, &images).is_err());
+    }
+
+    #[test]
     fn rejects_invalid_activity_without_losing_the_previous_one() {
         for value in [
             json!([]),
@@ -611,10 +680,13 @@ mod tests {
             json!({"assets":{"large_image":"unknown"}}),
             json!({"buttons":[{"label":"Click","url":"javascript:alert(1)"}]}),
         ] {
-            assert!(normalize(&value, "42", "Game", None).is_err(), "{value}");
+            assert!(
+                normalize(&value, "42", "Game", None, &Assets::new()).is_err(),
+                "{value}"
+            );
         }
         for kind in [0, 2, 3, 5] {
-            assert!(normalize(&json!({"type":kind}), "42", "Game", None).is_ok());
+            assert!(normalize(&json!({"type":kind}), "42", "Game", None, &Assets::new()).is_ok());
         }
     }
 

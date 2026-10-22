@@ -565,7 +565,8 @@ async fn plays_through_rpc(discord: &Discord, server: &str, directory: &std::pat
         json!({"ping":1})
     );
     let activity = json!({"details":"In a match","timestamps":{"start":1700000000_u64},
-        "assets":{"large_image":"game_cover","large_text":"Fixture"},
+        "assets":{"large_image":"game_cover","large_text":"Fixture",
+            "small_image":"https://example.com/badge.png"},
         "buttons":[{"label":"Website","url":"https://example.com/game"}]});
     send(
         &mut first,
@@ -587,6 +588,8 @@ async fn plays_through_rpc(discord: &Discord, server: &str, directory: &std::pat
                     && a["application_id"] == "123456789012345678"
                     && a["timestamps"]["start"] == 1700000000000_u64
                     && a["assets"]["large_image"] == "123456789012345679"
+                    && a["assets"]["small_image"]
+                        == "mp:external/fixture/https/example.com/badge.png"
                     && a["metadata"]["button_urls"][0] == "https://example.com/game"
             })
     })
