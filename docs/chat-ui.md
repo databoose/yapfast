@@ -448,6 +448,13 @@ of display fonts that carry a few monochrome emoji, so emoji in message text
 draw in color too; symbols the UI typeface lacks that have an emoji form, such as ♥,
 then show as emoji. Windows uses "Segoe UI Emoji".
 
+The prebuilt Skia that drew nothing for COLRv1 was built for a FreeType
+without COLRv1. Fedora installs only the COLRv1 build, so reactions and emoji
+in text were blank there (issue #32). Since 2026-10-22 Linux uses the prebuilt
+Skia with Skia's own FreeType, which draws it, as `skia_draws_colrv1_glyphs_in_colour`
+checks. Yapfast still takes a bitmap emoji font if one is installed, and a COLR
+one otherwise.
+
 On Windows, fontique falls back by script, with a sample of each script, and
 its sans-serif and UI lists are only Arial and Segoe UI. Emoji, most symbols
 and the styled letters of Unicode's mathematical alphabets that Discord names

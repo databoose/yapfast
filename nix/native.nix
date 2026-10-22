@@ -12,10 +12,10 @@ rec {
     unzip -q ${webrtcArchive} -d unpacked
     mv unpacked/linux-x64-release "$out"
   '';
-  skiaPackage = "skia-binaries-b7f043e0b1e2a850e702-x86_64-unknown-linux-gnu-ganesh-gl-jpegd-jpege-pdf-vulkan.tar.gz";
+  skiaPackage = "skia-binaries-b7f043e0b1e2a850e702-x86_64-unknown-linux-gnu-ftembed-ganesh-gl-jpegd-jpege-pdf-textlayout.tar.gz";
   skiaArchive = pkgs.fetchurl {
     url = "https://github.com/rust-skia/skia-binaries/releases/download/0.153.3/${skiaPackage}";
-    sha256 = "9ebe4c448cc9f789bad241cbd11739cdf759e27db5719c23a7635e096d5807b3";
+    sha256 = "ef41a8ff85bebeb06238df88e144eb04778a368fc1672a63155155d97f0caf10";
   };
   skia = pkgs.runCommand "talk-skia-0.153.3-linux" {
     nativeBuildInputs = [ pkgs.python3 pkgs.binutils pkgs.llvmPackages_21.llvm ];
@@ -28,7 +28,7 @@ rec {
   '';
   libraries = with pkgs; [
     alsa-lib libpulseaudio fontconfig freetype glib libxkbcommon openssl
-    wayland vulkan-loader libGL
+    wayland libGL
     xorg.libX11 xorg.libXcursor xorg.libXi xorg.libXrandr
     xorg.libxcb
     # libwebrtc's screen capture loads these at runtime: PipeWire and GBM

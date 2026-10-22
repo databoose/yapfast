@@ -29,7 +29,8 @@ def zip_directory(source, destination):
 
 def license_file(path):
     name = path.name.upper()
-    return path.is_file() and name.startswith(("LICENSE", "COPYING", "NOTICE", "OFL"))
+    # FTL.TXT is the FreeType License, which FreeType's LICENSE.TXT only names.
+    return path.is_file() and (name.startswith(("LICENSE", "COPYING", "NOTICE", "OFL")) or name == "FTL.TXT")
 
 
 def names_home(contents):

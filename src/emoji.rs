@@ -1,9 +1,10 @@
 //! Emoji: the color font for reactions and message text, and the picker's grid.
 //!
-//! A Linux system can have several fonts named "Noto Color Emoji". Slint's Skia
-//! renderer draws nothing for the COLRv1 build, and fontconfig may prefer it to
-//! the bitmap (CBDT) build that it draws in color. Yapfast registers an installed
-//! bitmap emoji font under its own family name and uses that one.
+//! A Linux system can have several fonts named "Noto Color Emoji": the bitmap
+//! (CBDT) build Yapfast is designed and tested with, and the COLRv1 build, the
+//! only one Fedora installs. Fontconfig may prefer either. Yapfast registers an
+//! installed emoji font under its own family name and uses that one: a bitmap
+//! font if there is one, a COLR font otherwise.
 //!
 //! On Windows, text falls back to fonts by script, and emoji, most symbols and
 //! the styled letters of Unicode's mathematical alphabets that names use, such
@@ -33,7 +34,7 @@ pub fn family() -> &'static str {
             "Segoe UI Emoji"
         } else if cfg!(target_os = "macos") {
             "Apple Color Emoji"
-        } else if register_bitmap_font() {
+        } else if register_color_font() {
             REGISTERED
         } else {
             "Noto Color Emoji"
@@ -352,9 +353,9 @@ fn prefer_families(collection: &mut fontique::Collection, names: &[&str]) {
     }
 }
 
-/// Register the first installed emoji font with color bitmaps and no COLR
-/// table, and make text fall back to it for emoji.
-fn register_bitmap_font() -> bool {
+/// Register the first installed emoji font with color bitmaps, or failing that
+/// the first with COLR color layers, and make text fall back to it for emoji.
+fn register_color_font() -> bool {
     let mut collection = shared_collection();
     let mut names: Vec<String> = collection
         .family_names()
@@ -363,8 +364,9 @@ fn register_bitmap_font() -> bool {
         .collect();
     // Noto Color Emoji first, as the font Yapfast is designed and tested with.
     names.sort_by_key(|name| name != "Noto Color Emoji");
-    for name in names {
-        let Some(family) = collection.family_by_name(&name) else {
+    let mut layered = None;
+    for name in &names {
+        let Some(family) = collection.family_by_name(name) else {
             continue;
         };
         for font in family.fonts() {
@@ -380,25 +382,42 @@ fn register_bitmap_font() -> bool {
             let Ok(data) = (unsafe { memmap2::Mmap::map(&file) }) else {
                 continue;
             };
-            if !has_color_bitmaps(&data, font.index()) {
-                continue;
-            }
-            let registered = collection.register_fonts(
-                fontique::Blob::new(Arc::new(data)),
-                Some(fontique::FontInfoOverride {
-                    family_name: Some(REGISTERED),
-                    ..Default::default()
-                }),
-            );
-            if let Some(&(id, _)) = registered.first() {
-                prefer_for_text(&mut collection, id);
-                tracing::info!(family = name, "registered a bitmap color emoji font");
-                return true;
+            match color_kind(&data, font.index()) {
+                Some(ColorKind::Bitmaps) => {
+                    if register_as_emoji(&mut collection, data) {
+                        tracing::info!(family = name, "registered a bitmap color emoji font");
+                        return true;
+                    }
+                }
+                Some(ColorKind::Layers) if layered.is_none() => layered = Some((name, data)),
+                _ => {}
             }
         }
     }
-    tracing::warn!("no bitmap color emoji font found; emoji may not show");
+    if let Some((name, data)) = layered
+        && register_as_emoji(&mut collection, data)
+    {
+        tracing::info!(family = name, "registered a COLR color emoji font");
+        return true;
+    }
+    tracing::warn!("no color emoji font found; emoji may not show");
     false
+}
+
+/// Register `data` as [`REGISTERED`], and make text fall back to it for emoji.
+fn register_as_emoji(collection: &mut fontique::Collection, data: memmap2::Mmap) -> bool {
+    let registered = collection.register_fonts(
+        fontique::Blob::new(Arc::new(data)),
+        Some(fontique::FontInfoOverride {
+            family_name: Some(REGISTERED),
+            ..Default::default()
+        }),
+    );
+    let Some(&(id, _)) = registered.first() else {
+        return false;
+    };
+    prefer_for_text(collection, id);
+    true
 }
 
 /// Text falls back from the UI typeface through the system's sans-serif and UI
@@ -425,34 +444,43 @@ fn prefer_for_text(collection: &mut fontique::Collection, emoji: fontique::Famil
     collection.set_generic_families(GenericFamily::Emoji, std::iter::once(emoji));
 }
 
-/// Whether the font at `index` in an OpenType file or collection has CBDT or
-/// sbix color bitmaps and no COLR table.
-fn has_color_bitmaps(data: &[u8], index: u32) -> bool {
+/// How an emoji font draws in color.
+#[derive(Debug, PartialEq)]
+enum ColorKind {
+    /// CBDT or sbix pictures, and no COLR table.
+    Bitmaps,
+    /// COLR layers of outlines.
+    Layers,
+}
+
+/// How the font at `index` in an OpenType file or collection draws in color,
+/// if it does.
+fn color_kind(data: &[u8], index: u32) -> Option<ColorKind> {
     let u32_at = |offset: usize| {
         data.get(offset..offset + 4)
             .map(|bytes| u32::from_be_bytes(bytes.try_into().expect("four bytes")) as usize)
     };
     let directory = if data.starts_with(b"ttcf") {
-        match u32_at(12 + 4 * index as usize) {
-            Some(offset) => offset,
-            None => return false,
-        }
+        u32_at(12 + 4 * index as usize)?
     } else {
         0
     };
-    let Some(count) = data
+    let count = data
         .get(directory + 4..directory + 6)
-        .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]) as usize)
-    else {
-        return false;
-    };
+        .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]) as usize)?;
     let tags: Vec<&[u8]> = (0..count)
         .filter_map(|table| {
             let start = directory + 12 + 16 * table;
             data.get(start..start + 4)
         })
         .collect();
-    tags.iter().any(|tag| matches!(*tag, b"CBDT" | b"sbix")) && !tags.contains(&&b"COLR"[..])
+    if tags.contains(&&b"COLR"[..]) {
+        Some(ColorKind::Layers)
+    } else if tags.iter().any(|tag| matches!(*tag, b"CBDT" | b"sbix")) {
+        Some(ColorKind::Bitmaps)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -605,15 +633,23 @@ mod tests {
     }
 
     #[test]
-    fn only_bitmap_emoji_fonts_without_colr_qualify() {
-        assert!(has_color_bitmaps(&font(&[b"CBDT", b"CBLC", b"cmap"]), 0));
-        assert!(has_color_bitmaps(&font(&[b"sbix", b"cmap"]), 0));
-        assert!(!has_color_bitmaps(&font(&[b"COLR", b"CPAL", b"glyf"]), 0));
-        assert!(!has_color_bitmaps(&font(&[b"CBDT", b"COLR"]), 0));
-        assert!(!has_color_bitmaps(b"ttcf", 0));
+    fn emoji_fonts_draw_in_bitmaps_or_layers() {
+        let kind = |data: &[u8]| color_kind(data, 0);
+        assert_eq!(
+            kind(&font(&[b"CBDT", b"CBLC", b"cmap"])),
+            Some(ColorKind::Bitmaps)
+        );
+        assert_eq!(kind(&font(&[b"sbix", b"cmap"])), Some(ColorKind::Bitmaps));
+        assert_eq!(
+            kind(&font(&[b"COLR", b"CPAL", b"glyf"])),
+            Some(ColorKind::Layers)
+        );
+        assert_eq!(kind(&font(&[b"CBDT", b"COLR"])), Some(ColorKind::Layers));
+        assert_eq!(kind(&font(&[b"glyf", b"cmap"])), None);
+        assert_eq!(kind(b"ttcf"), None);
         let mut collection = b"ttcf\0\x01\0\0\0\0\0\x01\0\0\0\x10".to_vec();
         collection.extend(font(&[b"CBDT"]));
-        assert!(has_color_bitmaps(&collection, 0));
+        assert_eq!(kind(&collection), Some(ColorKind::Bitmaps));
     }
 
     #[test]

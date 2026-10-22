@@ -14,8 +14,8 @@ import tarfile
 import tempfile
 native_target = os.environ.get('YAPFAST_SKIA_TARGET', 'linux')
 pins = {
-    'linux': ('x86_64-unknown-linux-gnu-ganesh-gl-jpegd-jpege-pdf-vulkan',
-              '9ebe4c448cc9f789bad241cbd11739cdf759e27db5719c23a7635e096d5807b3'),
+    'linux': ('x86_64-unknown-linux-gnu-ftembed-ganesh-gl-jpegd-jpege-pdf-textlayout',
+              'ef41a8ff85bebeb06238df88e144eb04778a368fc1672a63155155d97f0caf10'),
     'windows': ('x86_64-pc-windows-msvc-d3d-ganesh-gl-jpegd-jpege-pdf-static',
                 os.environ.get('YAPFAST_SKIA_STATIC_SHA256')),
 }

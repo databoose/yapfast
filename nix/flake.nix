@@ -41,6 +41,11 @@
         (skiaDependency "zlib" "https://chromium.googlesource.com/chromium/src/third_party/zlib/+archive/646b7f569718921d7d4b5b8e22572ff6c76f2596.tar.gz" "sha256-jNj6SuTZ5/a7crtYhxW3Q/TlfRMNMfYIVxDlr7bYdzQ=")
         (skiaDependency "spirv-cross" "https://chromium.googlesource.com/external/github.com/KhronosGroup/SPIRV-Cross/+archive/b8fcf307f1f347089e3c46eb4451d27f32ebc8d3.tar.gz" "sha256-H43M9DXfEuyKuvo6rjb5k0KEbYOSFodbPJh8ZKY4PQg=")
       ];
+      # The Linux build also has Skia's own FreeType in it (nix/native.nix);
+      # the Windows build draws text through DirectWrite.
+      linuxSkiaDependencies = [
+        (skiaDependency "freetype" "https://chromium.googlesource.com/chromium/src/third_party/freetype2/+archive/264b5fbf5b912b39f98d038bf75d39be0a73f21b.tar.gz" "sha256-UeV2TAEDylx72nRVrzIVquzfduHgHWvO2Lw+OTWZrqE=")
+      ];
       windowsSkiaSource = pkgs.runCommand "talk-skia-0.153.3-windows-source" {} ''
         mkdir -p "$out"
         tar -xzf ${windowsSkiaSourceArchive} --strip-components=1 -C "$out"
@@ -52,7 +57,13 @@
     in {
       # scripts/package-linux.py copies the notices of Skia's third-party
       # code from here; the prebuilt Linux archive carries only Skia's own.
-      packages.${system}.skia-source = windowsSkiaSource;
+      packages.${system}.skia-source = pkgs.symlinkJoin {
+        name = "yapfast-skia-0.153.3-linux-source";
+        paths = [ windowsSkiaSource ] ++ map (dep: pkgs.runCommand "yapfast-skia-${dep.name}" {} ''
+          mkdir -p "$out/third_party/externals/${dep.name}"
+          cp -r ${dep.source}/. "$out/third_party/externals/${dep.name}/"
+        '') linuxSkiaDependencies;
+      };
       devShells.${system} = {
         default = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [

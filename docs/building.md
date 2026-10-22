@@ -27,7 +27,7 @@ hash there; a `nix build` with the old one prints it.
 
 Yapfast pins Rust 1.97.1, Slint 1.18.1 and Skia 0.153.3. Cargo.lock pins
 the complete Rust graph. `vendor/i-slint-renderer-skia` is Slint's Skia
-renderer 1.18.1 with four changes. Glyphs use Skia's slight (vertical-only)
+renderer 1.18.1 with these changes. Glyphs use Skia's slight (vertical-only)
 hinting, because the default hinting spaced Satoshi's letters unevenly.
 Smooth pictures up to 512×512 pixels sample mipmaps, because plain bilinear
 sampling made pictures drawn smaller than their pixels, such as avatars, look
@@ -39,9 +39,17 @@ the heap, which took 10 MiB for the colour emoji font. It reads a picture made
 in code, such as a camera's frame or an avatar, where Slint keeps it too,
 rather than copying it for each new frame: a table on the UI thread keeps the
 Slint buffer beside Skia's image until nothing else holds that image, and
-Slint copies a buffer it shares before anything writes to it. Each change is
-marked `Yapfast:` in `itemrenderer.rs`, `cached_image.rs`, `lib.rs` or
-`font_cache.rs`. Copy the matching release over it, and reapply them, when
+Slint copies a buffer it shares before anything writes to it. On Linux it
+takes rust-skia's prebuilt Skia with Skia's own FreeType: the one built for
+the system's FreeType lacks FreeType's COLRv1 calls, so it drew nothing for the
+COLRv1 build of Noto Color Emoji, the only one Fedora installs. Rust-skia
+builds that Skia only with its text layout, which the linker leaves out, and
+without Vulkan, so the renderer goes without wgpu, whose Vulkan surface needs
+it. Yapfast asks for Skia OpenGL or Skia Software by name; the wgpu renderers
+the winit backend still names make surfaces that fail to start. Without wgpu
+the Discord-only binary is 4.2 MB smaller. Each change is marked `Yapfast:` in
+`itemrenderer.rs`, `cached_image.rs`, `lib.rs`, `font_cache.rs` or
+`Cargo.toml`. Copy the matching release over it, and reapply them, when
 upgrading Slint.
 
 `vendor/i-slint-core` is Slint's core 1.18.1 with `StyledText` made selectable,
@@ -172,9 +180,10 @@ dependency in Cargo.toml:
   mentions coloured in a `TextInput`, timelines that keep their place as
   older messages load, and a wheel that speeds up when spun fast, above.
 - `i-slint-renderer-skia`: Slint's Skia renderer 1.18.1 with slight hinting,
-  mipmapped pictures, and uncopied fonts and pictures, above, and a whole
-  frame after every resize: Windows restores a minimized window at its old
-  size without its pixels, which partial rendering left black.
+  mipmapped pictures, uncopied fonts and pictures, and Skia's own FreeType on
+  Linux without wgpu, above, and a whole frame after every resize: Windows
+  restores a minimized window at its old size without its pixels, which
+  partial rendering left black.
 - `matrix-rtc-livekit`: Element's matrix-rust-rtc at `5831af8`, with native
   audio tracks and cancellable joins.
 - `webrtc-sys`: webrtc-sys 0.3.35 with a Windows link fix, capture leveling,

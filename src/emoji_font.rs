@@ -40,6 +40,11 @@ pub fn build(family: &str, glyphs: &[(char, Vec<u8>)]) -> Vec<u8> {
         (*b"name", name(family)),
         (*b"post", post()),
     ];
+    assemble(&tables)
+}
+
+/// A font of `tables`, which must be in the order of their tags.
+fn assemble(tables: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
     let mut font = Vec::new();
     let entry_selector = (tables.len() as u16).ilog2() as u16;
     let search_range = 16u16 << entry_selector;
@@ -50,7 +55,7 @@ pub fn build(family: &str, glyphs: &[(char, Vec<u8>)]) -> Vec<u8> {
     put16(&mut font, tables.len() as u16 * 16 - search_range);
     let mut offset = 12 + 16 * tables.len();
     let mut head_at = 0;
-    for (tag, data) in &tables {
+    for (tag, data) in tables {
         if tag == b"head" {
             head_at = offset;
         }
@@ -60,7 +65,7 @@ pub fn build(family: &str, glyphs: &[(char, Vec<u8>)]) -> Vec<u8> {
         put32(&mut font, data.len() as u32);
         offset += data.len().next_multiple_of(4);
     }
-    for (_, data) in &tables {
+    for (_, data) in tables {
         font.extend_from_slice(data);
         font.resize(font.len().next_multiple_of(4), 0);
     }
@@ -356,6 +361,115 @@ mod tests {
             u32::from_be_bytes(record[range].try_into().unwrap()) as usize
         };
         &font[at(8..12)..at(8..12) + at(12..16)]
+    }
+
+    /// A font whose one character, U+100000, is a red square in COLRv1: glyph
+    /// 1 paints glyph 2's outline, 0.8 em square, in the palette's one color.
+    fn colrv1_square() -> Vec<u8> {
+        let glyphs = [('\u{100000}', Vec::new())];
+        let advance = units(i32::from(ADVANCE));
+        let mut glyf = Vec::new();
+        // One contour of four points on the curve, each a 16-bit move.
+        for value in [1, 0, 0, 800, 800, 3, 0] {
+            put16(&mut glyf, value);
+        }
+        glyf.extend([1; 4]);
+        for value in [0i16, 800, 0, -800, 0, 0, 800, 0] {
+            put16(&mut glyf, value as u16);
+        }
+        let mut loca = Vec::new();
+        // Short offsets, in halves: glyphs 0 and 1 have no outline.
+        for value in [0, 0, 0, glyf.len() as u16 / 2] {
+            put16(&mut loca, value);
+        }
+        let mut maxp = Vec::new();
+        put32(&mut maxp, 0x0001_0000);
+        // Three glyphs, four points, one contour, two zones.
+        for value in [3, 4, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0] {
+            put16(&mut maxp, value);
+        }
+        let mut colr = Vec::new();
+        // Version 1, with no version 0 records, and its base glyph list at 34.
+        put16(&mut colr, 1);
+        put16(&mut colr, 0);
+        put32(&mut colr, 0);
+        put32(&mut colr, 0);
+        put16(&mut colr, 0);
+        put32(&mut colr, 34);
+        colr.extend([0; 16]);
+        // Glyph 1's paint, 10 bytes on: PaintGlyph of glyph 2, filled by a
+        // PaintSolid 6 bytes after it, of palette entry 0 at full alpha.
+        put32(&mut colr, 1);
+        put16(&mut colr, 1);
+        put32(&mut colr, 10);
+        colr.extend([10, 0, 0, 6]);
+        put16(&mut colr, 2);
+        put8(&mut colr, 2);
+        put16(&mut colr, 0);
+        put16(&mut colr, 0x4000);
+        let mut cpal = Vec::new();
+        // One palette of one color, opaque red in BGRA.
+        for value in [0, 1, 1, 1] {
+            put16(&mut cpal, value);
+        }
+        put32(&mut cpal, 14);
+        put16(&mut cpal, 0);
+        cpal.extend([0, 0, 255, 255]);
+        assemble(&[
+            (*b"COLR", colr),
+            (*b"CPAL", cpal),
+            (*b"OS/2", os2(advance, &glyphs)),
+            (*b"cmap", cmap(&glyphs)),
+            (*b"glyf", glyf),
+            (*b"head", head(advance)),
+            (*b"hhea", hhea(advance, 3)),
+            (*b"hmtx", hmtx(advance, 3)),
+            (*b"loca", loca),
+            (*b"maxp", maxp),
+            (*b"name", name("COLRv1 Square")),
+            (*b"post", post()),
+        ])
+    }
+
+    /// Fedora installs only the COLRv1 build of Noto Color Emoji. Skia draws
+    /// COLRv1 through FreeType, and the prebuilt Skia made for the system's
+    /// FreeType drew nothing; Linux uses the one with Skia's own FreeType.
+    #[test]
+    fn skia_draws_colrv1_glyphs_in_colour() {
+        use skia_safe::{Color, Data, Font, FontMgr, Paint, Point, image::CachingHint, surfaces};
+        let typeface = FontMgr::new()
+            .new_from_data(Data::new_copy(&colrv1_square()), None)
+            .expect("Skia loads the font");
+        assert_eq!(typeface.unichar_to_glyph(0x10_0000), 1);
+        let mut surface = surfaces::raster_n32_premul((100, 100)).unwrap();
+        surface.canvas().clear(Color::WHITE);
+        surface.canvas().draw_glyphs_at(
+            &[1],
+            &[Point::new(10.0, 60.0)][..],
+            Point::default(),
+            &Font::from_typeface(typeface, 40.0),
+            &Paint::default(),
+        );
+        let image = surface.image_snapshot();
+        let mut pixels = vec![0u8; 100 * 100 * 4];
+        assert!(image.read_pixels(
+            image.image_info(),
+            &mut pixels,
+            400,
+            (0, 0),
+            CachingHint::Allow
+        ));
+        let (red, blue) = if image.image_info().color_type() == skia_safe::ColorType::BGRA8888 {
+            (2, 0)
+        } else {
+            (0, 2)
+        };
+        let painted = pixels
+            .chunks(4)
+            .filter(|pixel| pixel[red] > 200 && pixel[1] < 80 && pixel[blue] < 80)
+            .count();
+        // 40 pixel text draws the square 32 pixels on a side.
+        assert!((900..=1100).contains(&painted), "{painted} red pixels");
     }
 
     #[test]

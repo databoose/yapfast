@@ -240,6 +240,19 @@ fn direct3d_wgpu_surface_factory(
     )
 }
 
+/// Yapfast: the surface of a wgpu renderer when Skia is built without wgpu. The
+/// winit backend still names those renderers, and their surfaces fail to start.
+#[cfg(not(feature = "wgpu-30"))]
+fn no_wgpu_surface_factory(
+    _context: &SkiaSharedContext,
+    _window_handle: Arc<dyn raw_window_handle::HasWindowHandle + Sync + Send>,
+    _display_handle: Arc<dyn raw_window_handle::HasDisplayHandle + Sync + Send>,
+    _size: PhysicalWindowSize,
+    _requested_graphics_api: Option<RequestedGraphicsAPI>,
+) -> Result<Box<dyn Surface>, PlatformError> {
+    Err("this Skia renderer is built without wgpu".to_string().into())
+}
+
 #[cfg(skia_windowed)]
 fn create_default_surface(
     context: &SkiaSharedContext,
@@ -499,6 +512,23 @@ impl SkiaRenderer {
             surface_factory::<wgpu_30_surface::WGPUSurface>,
             create_partial_renderer_state(None),
         )
+    }
+
+    // Yapfast: the wgpu renderers the winit backend names, when Skia is built
+    // without wgpu; see `no_wgpu_surface_factory`.
+    #[cfg(not(feature = "wgpu-30"))]
+    pub fn default_wgpu_30(context: &SkiaSharedContext) -> Self {
+        Self::new_with_surface_factory(context, no_wgpu_surface_factory, None)
+    }
+
+    #[cfg(all(target_family = "unix", not(target_vendor = "apple"), not(skia_wgpu_vulkan)))]
+    pub fn default_vulkan(context: &SkiaSharedContext) -> Self {
+        Self::new_with_surface_factory(context, no_wgpu_surface_factory, None)
+    }
+
+    #[cfg(all(target_family = "windows", not(skia_backend_wgpu)))]
+    pub fn default_direct3d(context: &SkiaSharedContext) -> Self {
+        Self::new_with_surface_factory(context, no_wgpu_surface_factory, None)
     }
 
     #[cfg(feature = "wgpu-29")]
