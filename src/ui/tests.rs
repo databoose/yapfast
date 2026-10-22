@@ -2868,6 +2868,58 @@ fn a_folder_on_the_rail_holds_its_servers_until_opened() {
     assert!(open[1].open && open[3].tint == open[1].tint);
 }
 
+#[test]
+fn a_right_click_on_a_folder_asks_for_its_menu() {
+    use slint::platform::{PointerEventButton, WindowEvent};
+    i_slint_backend_testing::init_no_event_loop();
+    let window = YapfastWindow::new().unwrap();
+    let folder = "discord-folder:7";
+    window.set_workspace(true);
+    window.set_servers(ModelRc::new(VecModel::from(vec![ServerRow {
+        id: folder.into(),
+        name: "Friends".into(),
+        folder: true,
+        ..Default::default()
+    }])));
+    let toggled = Rc::new(RefCell::new(Vec::new()));
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let record = toggled.clone();
+    window.on_toggle_folder(move |id| record.borrow_mut().push(id.to_string()));
+    let record = asked.clone();
+    window.on_prepare_menu(move |id, person| record.borrow_mut().push((id.to_string(), person)));
+    window.show().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1120., 760.));
+    settle(&window);
+    let press = |y: f32, button| {
+        let position = slint::LogicalPosition::new(36., y);
+        let dispatch = |event| window.window().dispatch_event(event);
+        dispatch(WindowEvent::PointerMoved { position });
+        dispatch(WindowEvent::PointerPressed { position, button });
+        dispatch(WindowEvent::PointerReleased { position, button });
+        settle(&window);
+    };
+    // A click opens the folder: that's where it is.
+    let y = (60..300)
+        .step_by(8)
+        .map(|y| y as f32)
+        .find(|&y| {
+            press(y, PointerEventButton::Left);
+            !toggled.borrow().is_empty()
+        })
+        .expect("the folder is on the rail");
+    assert_eq!(*toggled.borrow(), [folder]);
+    assert!(asked.borrow().is_empty());
+    press(y, PointerEventButton::Right);
+    assert_eq!(*asked.borrow(), [(folder.to_owned(), false)]);
+    assert_eq!(
+        toggled.borrow().len(),
+        1,
+        "a right click leaves it as it was"
+    );
+}
+
 #[cfg(feature = "discord")]
 #[test]
 fn a_profile_shows_activities_as_discord_cards() {

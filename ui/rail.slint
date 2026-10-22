@@ -234,6 +234,9 @@ component FolderItem inherits Rectangle {
     /// In a call in one of its servers, shown at the top right while closed.
     in property <bool> call;
     callback clicked;
+    /// A right click, or the Menu key or Shift+F10 when focused: where to open
+    /// a menu in the window.
+    callback context-menu(length, length);
     width: 72px; height: 48px;
     accessible-role: button;
     accessible-label: root.label;
@@ -289,11 +292,20 @@ component FolderItem inherits Rectangle {
             if event.text == "\n" || event.text == " " {
                 root.clicked(); return accept;
             }
+            if event.text == Key.Menu || (event.text == Key.F10 && event.modifiers.shift) {
+                root.context-menu(self.absolute-position.x + 60px, self.absolute-position.y + 24px);
+                return accept;
+            }
             return reject;
         }
         pointer := TouchArea {
             mouse-cursor: MouseCursor.pointer;
             clicked => { root.clicked(); }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                    root.context-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            }
             changed has-hover => {
                 if self.has-hover {
                     Tip.text = root.tip;
@@ -625,7 +637,8 @@ export component ServerRail inherits Rectangle {
     callback toggle-folder(string);
     /// An unread DM was clicked: open it.
     callback open-dm(string);
-    /// A server's or DM's menu was asked for: its id, and where in the window.
+    /// A server's, folder's or DM's menu was asked for: its id, and where in
+    /// the window.
     callback open-server-menu(string, length, length);
     /// Whether the "+" at the foot offers to join a Discord server.
     in property <bool> can-join;
@@ -668,6 +681,7 @@ export component ServerRail inherits Rectangle {
                     open: server.open; tint: server.tint; servers: server.preview;
                     selected: server.selected; unread: server.unread; badge: server.badge; call: server.call;
                     clicked => { root.toggle-folder(server.id); }
+                    context-menu(x, y) => { root.open-server-menu(server.id, x, y); }
                 }
                 if server.dm: RailItem {
                     y: 0px;

@@ -137,6 +137,8 @@ impl AppState {
     pub fn menu_choices(&self, id: &str) -> Vec<MenuChoice> {
         if self.servers.iter().any(|server| server.id == id) {
             self.server_choices(id)
+        } else if self.is_folder(id) {
+            self.folder_choices(id)
         } else if self.is_category(id) {
             self.notification_choices()
         } else {
@@ -343,6 +345,34 @@ impl AppState {
         choices
     }
 
+    /// Whether an id names a folder of servers on the rail.
+    fn is_folder(&self, id: &str) -> bool {
+        self.folder_servers(id).next().is_some()
+    }
+
+    /// The servers in a rail folder.
+    fn folder_servers(&self, id: &str) -> impl Iterator<Item = &ChatServer> {
+        self.servers
+            .iter()
+            .filter(move |server| server.folder.as_ref().is_some_and(|folder| folder.id == id))
+    }
+
+    /// What a rail folder's menu offers: marking its servers read, as
+    /// Discord's does.
+    fn folder_choices(&self, id: &str) -> Vec<MenuChoice> {
+        if !self.preview && self.unread_in_folder(id).next().is_some() {
+            vec![MenuChoice::MarkRead]
+        } else {
+            vec![]
+        }
+    }
+
+    /// The channels of a folder's servers with messages to read.
+    fn unread_in_folder(&self, id: &str) -> impl Iterator<Item = &ChatRoom> {
+        self.folder_servers(id)
+            .flat_map(|server| self.unread_channels(&server.id))
+    }
+
     /// The server's channels with messages to read.
     fn unread_channels(&self, id: &str) -> impl Iterator<Item = &ChatRoom> {
         let channels = self
@@ -543,8 +573,8 @@ impl Application {
         self.send_text_in(room, text)
     }
 
-    /// Marks a conversation read, or every conversation of a server or a
-    /// Discord category.
+    /// Marks a conversation read, or every conversation of a server, a
+    /// folder of servers or a Discord category.
     pub(super) fn mark_read(&mut self, id: String) -> Vec<Effect> {
         if !self.menu_choices(&id).contains(&MenuChoice::MarkRead) {
             return vec![];
@@ -553,6 +583,11 @@ impl Application {
         let rooms: Vec<String> = if self.state.servers.iter().any(|server| server.id == id) {
             self.state
                 .unread_channels(&id)
+                .map(|room| room.id.clone())
+                .collect()
+        } else if self.state.is_folder(&id) {
+            self.state
+                .unread_in_folder(&id)
                 .map(|room| room.id.clone())
                 .collect()
         } else if self.state.is_category(&id) {

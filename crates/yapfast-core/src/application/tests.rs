@@ -1682,6 +1682,53 @@ fn a_discord_voice_channels_chat_opens_without_joining_it() {
 }
 
 #[test]
+fn a_folder_marks_its_servers_read() {
+    let mut app = connected();
+    let folder = chat::ServerFolder {
+        id: "discord-folder:7".into(),
+        name: None,
+        color: None,
+    };
+    let mut rooms = app.state.rooms.clone();
+    rooms.push(preview_room("standup", "standup", false, 3));
+    let mut servers = app.state.servers.clone();
+    servers[0].folder = Some(folder.clone());
+    servers.push(ChatServer {
+        id: "work".into(),
+        name: "Work".into(),
+        channels: vec!["standup".into()],
+        folder: Some(folder),
+        ..servers[0].clone()
+    });
+    app.apply(Event::Rooms(RoomIndex {
+        rooms: rooms.clone(),
+        servers: servers.clone(),
+    }));
+    assert!(
+        app.state.menu_choices("discord-folder:7").is_empty(),
+        "nothing unread"
+    );
+
+    for (id, unread) in [("general", 4), ("standup", 1)] {
+        rooms.iter_mut().find(|room| room.id == id).unwrap().unread = unread;
+    }
+    app.apply(Event::Rooms(RoomIndex { rooms, servers }));
+    assert_eq!(
+        app.state.menu_choices("discord-folder:7"),
+        [MenuChoice::MarkRead]
+    );
+    let marked: Vec<String> = app
+        .dispatch(Action::MarkRead("discord-folder:7".into()))
+        .into_iter()
+        .filter_map(|effect| match effect {
+            Effect::Backend(Command::MarkRead { room, .. }) => Some(room),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(marked, ["general", "standup"]);
+}
+
+#[test]
 fn menus_offer_what_fits_their_conversation_or_server() {
     use MenuChoice::*;
     let mut app = connected();
