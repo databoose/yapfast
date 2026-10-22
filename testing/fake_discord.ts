@@ -3945,9 +3945,10 @@ async function api(req: Request, path: string, origin: string): Promise<Response
         { os: "win32", name: "yapfast_detected_game.exe", is_launcher: false }
       ], third_party_skus: [] }]);
   }
-  // Public RPC metadata. Games normally omit their name and refer to image
-  // keys, which the desktop resolves before sending a Gateway presence.
-  if (req.method === "GET" && path === "/applications/123456789012345678/rpc") {
+  // A Rich Presence application and its images. Games leave out their name
+  // and name images by key, which the client turns into the application's
+  // name and image ids before the presence goes to the gateway.
+  if (req.method === "GET" && path === "/oauth2/applications/123456789012345678/rpc") {
     return json({ id: "123456789012345678", name: "Fixture Game" });
   }
   if (req.method === "GET" && path === "/oauth2/applications/123456789012345678/assets") {

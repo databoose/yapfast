@@ -361,13 +361,13 @@ impl Api {
         serde_json::from_value(body).context("could not understand Discord's answer")
     }
 
-    /// Stream the public game catalogue to a temporary file. Never attach the
-    /// account's token or retain a second, unfiltered JSON copy in memory.
+    /// Streams the games Discord detects to `file`, as its desktop client
+    /// asks for them, so no whole copy of the list sits in memory.
     pub(crate) async fn detectable_games(&self, file: std::fs::File) -> Result<()> {
         use tokio::io::AsyncWriteExt;
         const LIMIT: u64 = 32 * 1024 * 1024;
         let mut response = self
-            .execute(self.http.get(format!("{}/games/detectable", self.base)))
+            .execute(self.request(Method::GET, "/games/detectable"))
             .await?;
         let mut file = tokio::fs::File::from_std(file);
         let mut size = 0;
@@ -382,24 +382,19 @@ impl Api {
         Ok(())
     }
 
-    /// Public metadata used by the local Rich Presence bridge. No account
-    /// credentials go with requests on behalf of an IPC application.
+    /// The application a game's Rich Presence names, for its name, as the
+    /// desktop client asks when a game connects.
     #[cfg(target_os = "linux")]
     pub(crate) async fn rpc_application(&self, id: &str) -> Result<Value> {
-        self.json(
-            self.http
-                .get(format!("{}/applications/{id}/rpc", self.base)),
-        )
-        .await
+        let path = format!("/oauth2/applications/{id}/rpc");
+        self.json(self.request(Method::GET, &path)).await
     }
 
+    /// The images an application uploaded, by name, for its Rich Presence.
     #[cfg(target_os = "linux")]
     pub(crate) async fn rpc_assets(&self, id: &str) -> Result<Value> {
-        self.json(
-            self.http
-                .get(format!("{}/oauth2/applications/{id}/assets", self.base)),
-        )
-        .await
+        let path = format!("/oauth2/applications/{id}/assets");
+        self.json(self.request(Method::GET, &path)).await
     }
 
     /// Up to [`PAGE`] messages of a channel, newest first, as [`Span`] says.
