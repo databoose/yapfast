@@ -823,3 +823,39 @@ shows at once.
 
 Reproduce: `python3 testing/measure_tray.py --output .local/measure-tray`,
 and with `--runs 1 --renderer gpu` for the GPU column.
+
+## 2026-10-22: Game detection
+
+`yapfast-game-detection-probe` loads a game list, scans this user's
+processes once and then 30 times more, and reports the heap in use, from
+glibc's `mallinfo2`, before the list loads and after the scans. It runs
+without Discord, a window or a call, and prints no process names. Both
+builds are the `measure` profile on an AMD Ryzen 9 9900X with 540
+processes running, five runs each, alternating. The list is Discord's
+`detectables/games-v1.json` of 2026-10-22, compacted as Yapfast caches it:
+19,465 games, 11,159 Linux and Windows executable rules.
+
+| | Before | After |
+| --- | ---: | ---: |
+| Heap held by detection | 5,215 KiB | 154–159 KiB |
+| First scan | 5.7–6.9 ms | 26–27 ms |
+| Later scans, mean | 2.9–3.0 ms | 4.5–4.6 ms |
+
+Before is the detector as the pull request brought it, which held every
+rule and game name of the list, and `sysinfo`'s table of every process
+between scans. After holds a sorted hash of each executable file name,
+about 80 KB, reads the cached list again for the rules of names it sees,
+and drops the process table after each scan. The first scan reads the list
+once for every name found; later scans, one every 15 s, list the processes
+anew. The first run of each build was slower and is left out of the ranges.
+
+Reproduce: download the list, compact it as `game_detection::catalog`
+does (this platform's executables and Steam ids), then
+
+```sh
+nix develop path:./nix --command cargo build --locked --profile measure -p yapfast-discord --bin yapfast-game-detection-probe
+target/measure/yapfast-game-detection-probe /path/to/discord-games.json 30
+```
+
+For the before column, build the parent of the commit that made the
+change, with the probe's `rss_kib` replaced by the same `mallinfo2` read.

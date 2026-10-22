@@ -3250,6 +3250,131 @@ OS credential store, like any other Discord login. Matrix-side behavior, such
 as the mirror, request events and encrypted names, is tested against the local
 Synapse stack with recorded Discord events instead of a live connection.
 
+## Linux Rich Presence
+
+Games and tools on Linux tell Discord what they're doing through its local
+RPC socket, which the discord-rpc library and Discord's game SDK use. While
+the account shares its game ([game detection](#game-detection)), Yapfast
+serves that socket itself, so no bridge such as arRPC needs to run. Windows'
+named pipes and the macOS socket aren't served yet.
+
+The socket is the first free `discord-ipc-0` to `discord-ipc-9` in
+`XDG_RUNTIME_DIR`, or else in `TMPDIR`, `TMP`, `TEMP` or `/tmp`. A socket
+another program serves, such as Discord's own app, stays that program's, and
+a game that only tries `discord-ipc-0` talks to it instead. A socket left by
+an ended program of the same user is taken over. The socket has mode `0600`
+and takes only that user's programs. `YAPFAST_DISCORD_RPC=0` turns it off,
+and `YAPFAST_DISCORD_RPC_DIR` puts it in another directory, for Wine or a
+sandboxed game that can't see the runtime directory; Yapfast doesn't change
+sandbox permissions or set up Wine's bridge.
+
+Yapfast answers the handshake with READY, PING with PONG, and CLOSE and
+SET_ACTIVITY, where `activity: null` clears the activity; other commands get
+an error. As Discord's desktop client does when a game connects, it asks
+`GET /oauth2/applications/{id}/rpc` for the application's name, and the
+first time the game names an image, `GET /oauth2/applications/{id}/assets`
+for its images' ids. Images given by https address go to
+`POST /applications/{id}/external-assets` and show through the media proxy
+as `mp:` assets; each client's last 32 addresses are kept. Timestamps in
+seconds become the gateway's milliseconds, and buttons become labels with
+their addresses in the activity's `metadata`. Playing, Listening, Watching
+and Competing activities show. Yapfast copies only the fields it knows, so a
+game can't replace the custom status or claim another application.
+
+The game that set its activity last shows. When it clears it or
+disconnects, the one before shows again, and once none is left, the game
+detection found. The activity lasts through reconnecting to the gateway and
+is never saved. Presence updates keep to Discord's limit, as every other
+presence change does.
+
+## Game detection
+
+Settings → Game activity → Share the game you play is the account's own
+`show_current_game` setting, which Discord's apps change too. Yapfast reads
+it from READY and settings updates and writes it with
+`PATCH /users/@me/settings-proto/1`; it's on unless the account turned it
+off, and a newly linked account shares nothing until READY says. While it's
+off, nothing scans processes, downloads the game list or serves the RPC
+socket.
+
+Every 15 seconds a blocking task lists this user's processes with
+`sysinfo`, built with only its `system` feature: each one's executable, start
+time and user, and the command line only for Wine processes and the few
+rules that need arguments. It never reads CPU, memory, environments or
+threads, and drops the process list after each scan. A process seen before and unchanged
+isn't matched again. Wine and Proton processes match by the Windows program
+in their command line, and runtime helpers, crash reporters and anti-cheat
+services don't count. The game started last shows and stays while it runs.
+One that ended clears after two scans without it, up to 30 s. Only the
+game's name, its application id and when it started go to Discord.
+
+Rich Presence comes first, then the custom games, Discord's list and Steam.
+A custom game is an executable and the name to show after Playing: a file
+name matches the executable in any folder, a full path only there, and
+Windows and Wine paths ignore case. Custom games are this device's, kept in
+`layout.json`, and a change rescans at once.
+
+Discord's list comes from `https://cdn.discordapp.com/detectables/games-v1.json`,
+about 4 MB, as Discord's desktop client fetches it. Yapfast keeps this
+platform's executables and the Steam ids in `discord-games.json` beside the
+account cache, which accounts share, and the CDN's ETag in
+`discord-games.etag`. It asks again a day later with the ETag, so an
+unchanged list costs a 304; a failed download keeps the old list and tries
+again an hour later. Memory holds only a hash of each executable's file
+name, about 80 KB. A process whose name has one has the file read again for
+that name's rules, once per scan for all such processes, and the rules are
+kept for the next scans. With the list of 2026-10-22, detection holds
+155 KiB of heap ([measurement](measurements/README.md#2026-10-22-game-detection)).
+
+Discord's list names many games only by their Windows executable. Steam's
+`libraryfolders.vdf` and `appmanifest_*.acf` fill in: a process under a
+game's install folder is that game, under Discord's identity when the list
+has its Steam id and else under the manifest's name. Proton, the Steam Linux
+Runtime and any other install with a `toolmanifest.vdf` don't count, nor do
+the Steamworks redistributables. The manifests are read at most once a
+minute, from Steam's usual folders, its Flatpak's and the libraries they
+name, and the list again only when the games installed change; no game's
+files are walked. A sandbox that hides the host's processes from Yapfast
+hides their games too.
+
+These take effect at startup:
+
+- `YAPFAST_DISCORD_GAME_DETECTION=0` turns off scanning and the list's
+  download. Rich Presence stays, under `YAPFAST_DISCORD_RPC`.
+- `YAPFAST_DISCORD_GAMES_CACHE=/path/games.json` keeps the list there.
+- `YAPFAST_DISCORD_GAMES_FILE=/path/rules.json` uses that list instead of
+  Discord's. Steam still matches; point `YAPFAST_STEAM_DIR` at an empty
+  folder too to match only the list.
+- `YAPFAST_STEAM_DIR=/path/to/Steam` reads Steam's manifests from there.
+
+A list of your own takes Discord's shape. Use `win32` for a Wine game and
+`darwin` on macOS, leave out `id` for a game Discord doesn't know, and give
+`arguments` to tell apart games one runtime starts:
+
+```json
+[
+  {
+    "id": "123456789012345678",
+    "name": "My Game",
+    "executables": [{ "os": "linux", "name": "my-game", "is_launcher": false }]
+  }
+]
+```
+
+`scripts/test-fake-discord` gives the socket, the list and its cache private
+paths, and plays a handshake, activities, images, clearing, several clients,
+the share setting and a detected process through to the fake gateway. Other
+runs against the fake leave Rich Presence and detection off unless those
+paths are set, so they never take the desktop's socket.
+
+`yapfast-game-detection-probe` measures the detector alone, without Discord,
+and prints counts, times and heap, never process names or paths:
+
+```sh
+nix develop path:./nix --command cargo build --profile measure -p yapfast-discord --bin yapfast-game-detection-probe
+target/measure/yapfast-game-detection-probe /path/to/discord-games.json 30
+```
+
 ## Licences
 
 davey is permissive, so closed-source Yapfast can use it, as songbird was

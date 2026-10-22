@@ -448,6 +448,18 @@ impl Application {
                     emoji_id: custom.emoji_id.clone(),
                     expires_at_ms: custom.expires_at_ms,
                 });
+        self.state.discord_show_game = snapshot.show_game;
+        let playing = snapshot.playing.as_deref();
+        // Snapshots come often; the game rarely changes.
+        let shown = self.state.discord_playing.as_ref();
+        if shown.map(|shown| (shown.name.as_str(), shown.started_ms))
+            != playing.map(|playing| (playing.name.as_str(), playing.started_ms))
+        {
+            self.state.discord_playing = playing.map(|playing| chat::Playing {
+                name: playing.name.clone(),
+                started_ms: playing.started_ms,
+            });
+        }
         self.state.friend_requests = snapshot
             .friend_requests
             .iter()
@@ -509,6 +521,8 @@ impl Application {
         self.state.friends.clear();
         self.state.friend_requests.clear();
         self.state.custom_status = None;
+        self.state.discord_show_game = false;
+        self.state.discord_playing = None;
         self.show_lists()
     }
 }

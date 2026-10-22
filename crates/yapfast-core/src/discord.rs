@@ -32,6 +32,26 @@ pub(crate) const PREFIX: &str = "discord:";
 /// eight MiB cache across these channels and come back from disk after eviction.
 pub const KEPT_CHANNELS: usize = 40;
 pub const KEPT_MESSAGES: usize = 200;
+
+/// The games this device names itself: an executable, by file name or full
+/// path, and the game to show for it. Detection running takes them at once.
+pub fn set_custom_games(games: &[(String, String)]) {
+    #[cfg(feature = "discord")]
+    yapfast_discord::game_detection::custom_games::set(
+        games
+            .iter()
+            .map(
+                |(executable, name)| yapfast_discord::game_detection::custom_games::CustomGame {
+                    executable: executable.clone(),
+                    name: name.clone(),
+                },
+            )
+            .collect(),
+    );
+    #[cfg(not(feature = "discord"))]
+    let _ = games;
+}
+
 /// The categories message requests are listed under in the DM list.
 pub const REQUESTS: &str = "Message requests";
 pub const SPAM: &str = "Spam";

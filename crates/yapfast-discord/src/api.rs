@@ -361,6 +361,74 @@ impl Api {
         serde_json::from_value(body).context("could not understand Discord's answer")
     }
 
+    /// Streams the games Discord detects to `file`, so no whole copy of the
+    /// list sits in memory. As Discord's desktop client does, it asks the
+    /// CDN, which answers without the list when `etag` is still its version.
+    pub(crate) async fn detectable_games(
+        &self,
+        file: std::fs::File,
+        etag: Option<&str>,
+    ) -> Result<GameList> {
+        use tokio::io::AsyncWriteExt;
+        const LIMIT: u64 = 32 * 1024 * 1024;
+        let mut request = self
+            .http
+            .get(format!("{}/detectables/games-v1.json", crate::ready::cdn()));
+        if let Some(etag) = etag {
+            request = request.header(header::IF_NONE_MATCH, etag);
+        }
+        let mut response = request.send().await.context("Can't reach Discord.")?;
+        if response.status() == StatusCode::NOT_MODIFIED {
+            return Ok(GameList::Unchanged);
+        }
+        if !response.status().is_success() {
+            return Err(Refused(response.status()).into());
+        }
+        let etag = response
+            .headers()
+            .get(header::ETAG)
+            .and_then(|etag| etag.to_str().ok())
+            .map(str::to_owned);
+        let mut file = tokio::fs::File::from_std(file);
+        let mut size = 0;
+        while let Some(chunk) = response.chunk().await? {
+            size += chunk.len() as u64;
+            if size > LIMIT {
+                bail!("game catalogue exceeds 32 MiB");
+            }
+            file.write_all(&chunk).await?;
+        }
+        file.flush().await?;
+        Ok(GameList::Written(etag))
+    }
+
+    /// The application a game's Rich Presence names, for its name, as the
+    /// desktop client asks when a game connects.
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn rpc_application(&self, id: &str) -> Result<Value> {
+        let path = format!("/oauth2/applications/{id}/rpc");
+        self.json(self.request(Method::GET, &path)).await
+    }
+
+    /// Discord's media proxy's names for images a game's Rich Presence gives
+    /// by address, as the desktop client asks for them.
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn rpc_external_assets(&self, id: &str, urls: &[&str]) -> Result<Value> {
+        let path = format!("/applications/{id}/external-assets");
+        self.json(with_json(
+            self.request(Method::POST, &path),
+            &json!({"urls": urls}),
+        ))
+        .await
+    }
+
+    /// The images an application uploaded, by name, for its Rich Presence.
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn rpc_assets(&self, id: &str) -> Result<Value> {
+        let path = format!("/oauth2/applications/{id}/assets");
+        self.json(self.request(Method::GET, &path)).await
+    }
+
     /// Up to [`PAGE`] messages of a channel, newest first, as [`Span`] says.
     pub async fn messages(&self, channel: &str, span: Span<'_>) -> Result<Vec<Value>> {
         let mut path = format!("/channels/{channel}/messages?limit={PAGE}");
@@ -991,6 +1059,18 @@ impl Api {
     /// Sets the status: `online`, `idle`, `dnd` or `invisible`.
     pub async fn set_status(&self, status: &str) -> Result<()> {
         let body = json!({"settings": settings::write_status(status)});
+        self.json(with_json(
+            self.request(Method::PATCH, "/users/@me/settings-proto/1"),
+            &body,
+        ))
+        .await
+        .map(drop)
+    }
+
+    /// Shares the game this account plays, everywhere it's signed in, or
+    /// stops sharing it.
+    pub async fn set_show_game(&self, shown: bool) -> Result<()> {
+        let body = json!({"settings": settings::write_show_game(shown)});
         self.json(with_json(
             self.request(Method::PATCH, "/users/@me/settings-proto/1"),
             &body,
@@ -1847,6 +1927,14 @@ impl Api {
             retried = true;
         }
     }
+}
+
+/// What asking for the games Discord detects found.
+pub(crate) enum GameList {
+    /// The list is as the version asked with.
+    Unchanged,
+    /// A new list went to the file, with its version.
+    Written(Option<String>),
 }
 
 /// Turns Discord's refusals into errors a person can act on.

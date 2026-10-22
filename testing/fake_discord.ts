@@ -2622,13 +2622,21 @@ function gatewayMessage(ws: Socket, text: string) {
       break;
     case 6: {
       // Resume: replay what the session missed, then RESUMED.
-      const session = parked.get(d.session_id);
+      // The new WebSocket can send RESUME before Bun dispatches the old
+      // connection's close callback. Sessions outlive their transport, so
+      // allow the handoff directly from that connection as well as parked.
+      const previous = [...sockets].find(other => other !== ws && other.data.identified && other.data.session === d.session_id);
+      const session = parked.get(d.session_id) ?? (previous ? { sequence: previous.data.sequence, missed: [] } : undefined);
       if (d.token !== apiToken || !session || d.seq !== session.sequence) {
-        console.error(`gateway: can't resume ${d.session_id} at ${d.seq}`);
+        console.error(`gateway: can't resume ${d.session_id} at ${d.seq} (parked sequence ${session?.sequence}, token matches: ${d.token === apiToken})`);
         send(ws, 9, false);
         return;
       }
       parked.delete(d.session_id);
+      if (previous) {
+        previous.data.identified = false;
+        previous.close(4000, "Session resumed on another connection");
+      }
       ws.data.session = d.session_id;
       ws.data.sequence = session.sequence;
       ws.data.identified = true;
@@ -3927,7 +3935,30 @@ function linkedGifEmbed(content: string, origin: string) {
 }
 let frecencySettings: string | null = null;
 
+const DETECTABLE_GAMES = [{ id: "123456789012345680", name: "Detected Fixture",
+  description: "Discard this unrelated catalogue metadata when caching",
+  executables: [
+    { os: "linux", name: "yapfast_detected_game", is_launcher: false },
+    { os: "darwin", name: "yapfast_detected_game", is_launcher: false },
+    { os: "win32", name: "yapfast_detected_game.exe", is_launcher: false }
+  ], third_party_skus: [] }];
+
 async function api(req: Request, path: string, origin: string): Promise<Response> {
+  // A Rich Presence application and its images. Games leave out their name
+  // and name images by key, which the client turns into the application's
+  // name and image ids before the presence goes to the gateway.
+  if (req.method === "GET" && path === "/oauth2/applications/123456789012345678/rpc") {
+    return json({ id: "123456789012345678", name: "Fixture Game" });
+  }
+  if (req.method === "GET" && path === "/oauth2/applications/123456789012345678/assets") {
+    return json([{ id: "123456789012345679", name: "game_cover", type: 1 }]);
+  }
+  // Images given by address: the media proxy's path for each.
+  if (req.method === "POST" && path === "/applications/123456789012345678/external-assets") {
+    const body: any = await req.json().catch(() => ({}));
+    const urls: string[] = Array.isArray(body.urls) ? body.urls : [];
+    return json(urls.map(url => ({ url, external_asset_path: `external/fixture/${url.replace("://", "/")}` })));
+  }
   // A confirmed remote login's ticket, traded for the login without one.
   if (req.method === "POST" && path === "/users/@me/remote-auth/login") {
     const body: any = await req.json().catch(() => ({}));
@@ -6694,6 +6725,13 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "GET" && path.startsWith("/attachments/")) {
       return serveFile(path.slice("/attachments/".length), url);
+    }
+    // The games Discord detects, from its CDN as the desktop client asks:
+    // with the version it has, the answer is that it's unchanged.
+    if (req.method === "GET" && path === "/detectables/games-v1.json") {
+      const etag = 'W/"fixture-games"';
+      if (req.headers.get("if-none-match") === etag) return new Response(null, { status: 304, headers: { etag } });
+      return Response.json(DETECTABLE_GAMES, { headers: { etag } });
     }
     // The GIF provider's pictures.
     const gif = req.method === "GET" ? path.match(/^\/_gifs\/([a-z]+)\.(webp|gif)$/) : null;

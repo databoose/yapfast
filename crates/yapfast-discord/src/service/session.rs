@@ -39,6 +39,10 @@ pub(super) struct Shared {
     pub(super) lists: MemberLists,
     /// The presence this session last sent, which it identifies with again.
     pub(super) presence: Value,
+    /// The game this account plays, as Rich Presence or detection says.
+    pub(super) activity: watch::Receiver<Option<Arc<Value>>>,
+    /// Whether the account shares it, which runs or stops what finds it.
+    pub(super) show_game: watch::Sender<bool>,
     /// Nobody has used Yapfast since then, in Unix milliseconds, and whether
     /// it may show idle; see [`settings::Away`].
     pub(super) inactive: Option<(u64, bool)>,
@@ -59,6 +63,11 @@ pub(super) async fn run(
         snapshots.send_modify(|snapshot| Arc::make_mut(snapshot).status = Status::Connecting);
         let connect = async {
             shared.api.learn_build_number().await;
+            let playing = *shared.show_game.borrow();
+            crate::own_activity::merge(
+                &mut shared.presence,
+                shared.activity.borrow().as_deref().filter(|_| playing),
+            );
             Gateway::connect(&token, shared.presence.clone(), &mut reconnects).await
         };
         let connected = tokio::select! {
@@ -139,8 +148,8 @@ async fn relogin(api: &Api, token: &str) {
     }
 }
 
-/// Answers a request while disconnected. Viewing a channel, and being
-/// idle, is remembered.
+/// Answers a request while disconnected. Viewing a channel, being idle,
+/// and sharing the game played are remembered.
 fn refuse(request: Request, shared: &mut Shared) {
     match request {
         Request::Join { reply, .. } => {
@@ -158,6 +167,16 @@ fn refuse(request: Request, shared: &mut Shared) {
         // The next session shows it once it connects.
         Request::Inactive(since, show_idle) => {
             shared.inactive = since.map(|since| (since, show_idle));
+        }
+        // The settings changed already; what finds the game stops or
+        // runs now, and the next READY says the same.
+        Request::ShowGame(shown) => {
+            shared.show_game.send_replace(shown);
+            shared.snapshots.send_modify(|snapshot| {
+                let snapshot = Arc::make_mut(snapshot);
+                snapshot.show_game = shown;
+                snapshot.playing = None;
+            });
         }
         _ => {}
     }
@@ -295,6 +314,7 @@ impl Session<'_> {
                     self.publisher.changed();
                     self.show_presence().await
                 }
+                () = activity_changed(&mut self.shared.activity) => self.show_presence().await,
                 () = self.away_changes.as_mut(), if self.away_change.is_some() => {
                     self.show_presence().await
                 }
@@ -462,6 +482,12 @@ impl Session<'_> {
                 self.shared.inactive = since.map(|since| (since, show_idle));
                 self.show_presence().await
             }
+            Request::ShowGame(shown) => {
+                // As with the status, the settings update that follows agrees.
+                self.tracker.show_game = shown;
+                self.publisher.changed();
+                self.show_presence().await
+            }
             Request::Session(reply) => {
                 let _ = reply.send(self.tracker.session.clone());
                 Ok(())
@@ -622,7 +648,11 @@ impl Session<'_> {
         self.away_changes
             .as_mut()
             .reset(Instant::now() + until(next));
-        let presence = self.tracker.own_presence(away);
+        let mut presence = self.tracker.own_presence(away);
+        let activity = self.shared.activity.borrow_and_update().clone();
+        let activity = activity.filter(|_| self.tracker.show_game);
+        self.show_playing(activity.as_deref());
+        crate::own_activity::merge(&mut presence, activity.as_deref());
         if presence != self.shared.presence {
             self.gateway.update_presence(presence.clone()).await?;
             self.shared
@@ -633,12 +663,36 @@ impl Session<'_> {
         Ok(())
     }
 
+    /// Runs or stops what finds the game as the settings say, and shows the
+    /// game played.
+    fn show_playing(&mut self, activity: Option<&Value>) {
+        let shown = self.tracker.show_game;
+        self.shared.show_game.send_if_modified(|old| {
+            let changed = *old != shown;
+            *old = shown;
+            changed
+        });
+        let playing = activity.and_then(crate::own_activity::Playing::of);
+        if self.tracker.playing.as_deref() != playing.as_ref() {
+            self.tracker.playing = playing.map(Arc::new);
+            self.publisher.changed();
+        }
+    }
+
     /// Waits for the custom status as it is now to end by itself.
     fn custom_status_changed(&mut self) {
         self.status_ends
             .as_mut()
             .reset(Instant::now() + status_left(&self.tracker));
     }
+}
+
+/// A stopped activity bridge must not spin the session loop.
+async fn activity_changed(activity: &mut watch::Receiver<Option<Arc<Value>>>) {
+    if activity.changed().await.is_ok() {
+        return;
+    }
+    std::future::pending::<()>().await;
 }
 
 impl Session<'_> {

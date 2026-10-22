@@ -417,9 +417,10 @@ fn control(server: &str, method: &str, path: &str, body: &str) -> String {
 }
 
 /// The presence Alice's session last sent the fake. Yapfast keeps to
-/// Discord's 5 presence updates in 20 seconds, so one may wait that long.
+/// Discord's 5 presence updates in 20 seconds, plus up to two 10-second
+/// detection scans when a game exits.
 async fn presence_where(server: &str, check: impl Fn(&serde_json::Value) -> bool) {
-    timeout(WAIT + Duration::from_secs(20), async {
+    timeout(WAIT + Duration::from_secs(40), async {
         loop {
             let presence = serde_json::from_str(&control(server, "GET", "/_control/presence", ""))
                 .unwrap_or_default();
@@ -466,6 +467,275 @@ async fn live_where<T>(
     })
     .await
     .expect("timed out waiting for a live event")
+}
+
+/// A real SDK-shaped IPC exchange all the way to the fake Gateway, while
+/// Alice has a custom status. The normal service runner opts in with a private
+/// directory so this test never takes the desktop's Discord IPC socket.
+#[cfg(target_os = "linux")]
+async fn plays_through_rpc(discord: &Discord, server: &str, directory: &std::path::Path) {
+    use serde_json::{Value, json};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::UnixStream,
+    };
+
+    struct GameProcess {
+        child: std::process::Child,
+        _directory: tempfile::TempDir,
+    }
+    impl Drop for GameProcess {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+    let mut detected = if let Some(cache) = std::env::var_os("YAPFAST_DISCORD_GAMES_CACHE") {
+        let executable = std::env::current_exe().unwrap();
+        let directory = tempfile::tempdir_in(executable.parent().unwrap()).unwrap();
+        let game = directory.path().join("yapfast_detected_game");
+        std::fs::hard_link(executable, &game).unwrap();
+        let child = std::process::Command::new(game)
+            .args(["--exact", "waits_as_detected_game"])
+            .env("YAPFAST_TEST_DETECTED_GAME", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let process = GameProcess {
+            child,
+            _directory: directory,
+        };
+        presence_where(server, |p| {
+            p["activities"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|a| a["name"] == "Detected Fixture"))
+        })
+        .await;
+        let cache = std::path::PathBuf::from(cache);
+        let cached: Value = serde_json::from_slice(&std::fs::read(&cache).unwrap()).unwrap();
+        assert!(
+            cached[0].get("description").is_none(),
+            "discard unused remote metadata"
+        );
+        assert_eq!(
+            std::fs::read_to_string(cache.with_extension("etag")).unwrap(),
+            r#"W/"fixture-games""#,
+            "the CDN's version, to ask with tomorrow"
+        );
+        Some(process)
+    } else {
+        None
+    };
+
+    async fn send(stream: &mut UnixStream, opcode: u32, value: Value) {
+        let payload = serde_json::to_vec(&value).unwrap();
+        stream.write_u32_le(opcode).await.unwrap();
+        stream.write_u32_le(payload.len() as u32).await.unwrap();
+        stream.write_all(&payload).await.unwrap();
+    }
+    async fn receive(stream: &mut UnixStream) -> Value {
+        timeout(Duration::from_secs(20), async {
+            assert_eq!(stream.read_u32_le().await.unwrap(), 1);
+            let size = stream.read_u32_le().await.unwrap();
+            assert!(size <= 65536);
+            let mut payload = vec![0; size as usize];
+            stream.read_exact(&mut payload).await.unwrap();
+            serde_json::from_slice(&payload).unwrap()
+        })
+        .await
+        .unwrap()
+    }
+    async fn connect(directory: &std::path::Path) -> UnixStream {
+        let mut stream = UnixStream::connect(directory.join("discord-ipc-0"))
+            .await
+            .unwrap();
+        send(
+            &mut stream,
+            0,
+            json!({"v":1,"client_id":"123456789012345678"}),
+        )
+        .await;
+        assert_eq!(receive(&mut stream).await["evt"], "READY");
+        stream
+    }
+    let mut first = connect(directory).await;
+    // PING is an opaque IPC payload and must be echoed as PONG.
+    send(&mut first, 3, json!({"ping":1})).await;
+    assert_eq!(first.read_u32_le().await.unwrap(), 4);
+    let size = first.read_u32_le().await.unwrap();
+    let mut pong = vec![0; size as usize];
+    first.read_exact(&mut pong).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&pong).unwrap(),
+        json!({"ping":1})
+    );
+    let activity = json!({"details":"In a match","timestamps":{"start":1700000000_u64},
+        "assets":{"large_image":"game_cover","large_text":"Fixture",
+            "small_image":"https://example.com/badge.png"},
+        "buttons":[{"label":"Website","url":"https://example.com/game"}]});
+    send(
+        &mut first,
+        1,
+        json!({"cmd":"SET_ACTIVITY","nonce":"game","args":{"pid":42,"activity":activity}}),
+    )
+    .await;
+    let response = receive(&mut first).await;
+    assert_eq!(response["nonce"], "game");
+    assert!(response["evt"].is_null());
+    assert_eq!(response["data"]["name"], "Fixture Game");
+    presence_where(server, |presence| {
+        let activities = presence["activities"].as_array().unwrap();
+        activities
+            .iter()
+            .any(|a| a["type"] == 4 && a["state"] == "Testing Yapfast")
+            && activities.iter().any(|a| {
+                a["name"] == "Fixture Game"
+                    && a["application_id"] == "123456789012345678"
+                    && a["timestamps"]["start"] == 1700000000000_u64
+                    && a["assets"]["large_image"] == "123456789012345679"
+                    && a["assets"]["small_image"]
+                        == "mp:external/fixture/https/example.com/badge.png"
+                    && a["metadata"]["button_urls"][0] == "https://example.com/game"
+            })
+    })
+    .await;
+    send(
+        &mut first,
+        1,
+        json!({"cmd":"SET_ACTIVITY","nonce":"invalid",
+        "args":{"pid":42,"activity":{"type":4,"state":"Cannot replace custom status"}}}),
+    )
+    .await;
+    let refused = receive(&mut first).await;
+    assert_eq!(refused["evt"], "ERROR");
+    assert_eq!(refused["nonce"], "invalid");
+
+    let mut second = connect(directory).await;
+    send(
+        &mut second,
+        1,
+        json!({"cmd":"SET_ACTIVITY","nonce":"second",
+        "args":{"pid":43,"activity":{"details":"Second game"}}}),
+    )
+    .await;
+    assert!(receive(&mut second).await["evt"].is_null());
+    presence_where(server, |p| {
+        p["activities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["details"] == "Second game")
+    })
+    .await;
+    // Explicit clear restores the other connected application.
+    send(
+        &mut second,
+        1,
+        json!({"cmd":"SET_ACTIVITY","nonce":"clear","args":{"pid":43,"activity":null}}),
+    )
+    .await;
+    assert!(receive(&mut second).await["data"].is_null());
+    presence_where(server, |p| {
+        p["activities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["details"] == "In a match")
+    })
+    .await;
+    drop(second);
+    // Disconnect without a clear must remove the game, preserving custom status.
+    drop(first);
+    if detected.is_some() {
+        use yapfast_discord::game_detection::custom_games::{self, CustomGame};
+        custom_games::set(vec![CustomGame {
+            executable: "yapfast_detected_game".into(),
+            name: "My custom game".into(),
+        }]);
+        presence_where(server, |p| {
+            p["activities"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|a| a["name"] == "My custom game"))
+        })
+        .await;
+        // The account's menu shows the same game.
+        snapshot_where(discord, |snapshot| {
+            snapshot
+                .playing
+                .as_ref()
+                .is_some_and(|playing| playing.name == "My custom game")
+        })
+        .await;
+        let mut disabled_client = connect(directory).await;
+        send(&mut disabled_client, 1, json!({"cmd":"SET_ACTIVITY","nonce":"before-disable","args":{"pid":44,"activity":{"details":"Before disabling"}}})).await;
+        receive(&mut disabled_client).await;
+        presence_where(server, |p| {
+            p["activities"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|a| a["details"] == "Before disabling"))
+        })
+        .await;
+        discord.set_show_game(false).await.unwrap();
+        presence_where(server, |p| {
+            p["activities"]
+                .as_array()
+                .is_some_and(|a| a.len() == 1 && a[0]["type"] == 4)
+        })
+        .await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while directory.join("discord-ipc-0").exists() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "disabled RPC must release its socket"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let mut byte = [0];
+        assert_eq!(
+            timeout(Duration::from_secs(5), disabled_client.read(&mut byte))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        snapshot_where(discord, |snapshot| {
+            !snapshot.show_game && snapshot.playing.is_none()
+        })
+        .await;
+        discord.set_show_game(true).await.unwrap();
+        presence_where(server, |p| {
+            p["activities"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|a| a["name"] == "My custom game"))
+        })
+        .await;
+        custom_games::set(Vec::new());
+        drop(connect(directory).await);
+        presence_where(server, |p| {
+            p["activities"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|a| a["name"] == "Detected Fixture"))
+        })
+        .await;
+        // With no RPC clients left, stopping the actual detected process
+        // eventually removes the game, preserving Alice's custom status.
+        drop(detected.take());
+    }
+    presence_where(server, |p| {
+        p["activities"]
+            .as_array()
+            .is_some_and(|a| a.len() == 1 && a[0]["type"] == 4)
+    })
+    .await;
+}
+
+#[test]
+fn waits_as_detected_game() {
+    if std::env::var_os("YAPFAST_TEST_DETECTED_GAME").is_some() {
+        use std::io::Read;
+        let _ = std::io::stdin().read_exact(&mut [0_u8]);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2170,6 +2440,10 @@ async fn talks_to_the_fake_server() {
         presence["activities"][0]["state"] == "Testing Yapfast"
     })
     .await;
+    #[cfg(target_os = "linux")]
+    if let Some(directory) = std::env::var_os("YAPFAST_DISCORD_RPC_DIR") {
+        plays_through_rpc(&discord, server, std::path::Path::new(&directory)).await;
+    }
     let away = CustomStatus {
         text: "Fixing the bridge".into(),
         emoji_name: Some("🔧".into()),

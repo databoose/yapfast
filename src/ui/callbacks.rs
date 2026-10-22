@@ -3,6 +3,7 @@
 use super::*;
 
 pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
+    super::games::bind(window, adapter);
     super::gifs::bind(window, adapter);
     super::polls::bind(window, adapter);
     super::call_link::bind(window, adapter);

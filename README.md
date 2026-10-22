@@ -164,6 +164,13 @@ They're untested between releases, so expect the odd rough edge.
 - Friends: requests, adding by username, nicknames, notes, profile cards, your
   status and custom status (custom emoji included). Block and ignore people
   from their menu, and hide what blocked people write.
+- Games: the game you play, found among your running programs on Linux,
+  Windows and macOS, Steam's and Wine's included, and on Linux the Rich
+  Presence games send, with details, elapsed time, images and buttons.
+  Settings → Game activity turns sharing on and off as Discord's own setting
+  does, and names games Yapfast doesn't know. See
+  [game detection](docs/discord.md#game-detection) and
+  [Rich Presence](docs/discord.md#linux-rich-presence).
 - Running a server: make and edit channels and categories, invite people, hand
   out roles, change nicknames, time out, kick and ban. In voice, server mute,
   deafen and move people to another channel. Edit your server profile, and

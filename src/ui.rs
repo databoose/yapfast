@@ -43,6 +43,7 @@ mod call_link;
 mod call_timer;
 mod callbacks;
 mod channel_settings;
+mod games;
 mod gifs;
 mod menus;
 mod messages;
@@ -820,6 +821,9 @@ struct Layout {
     /// Discord shows this account idle after 10 minutes nobody uses Yapfast;
     /// on unless turned off.
     show_idle: Option<bool>,
+    /// Games this device names itself: an executable, by file name or full
+    /// path, and the game to show for it.
+    game_executables: Vec<(String, String)>,
     /// Messages from people this account blocked don't show at all.
     hide_blocked: bool,
     /// A message that notifies while Yapfast isn't in front flashes the
@@ -1008,6 +1012,20 @@ impl Layout {
         layout
     }
 
+    /// Shows the custom games, and has detection use them.
+    fn apply_custom_games(&self, window: &YapfastWindow) {
+        window.set_game_executables(ModelRc::new(VecModel::from(
+            self.game_executables
+                .iter()
+                .map(|(executable, text)| GameExecutable {
+                    executable: executable.as_str().into(),
+                    text: text.as_str().into(),
+                })
+                .collect::<Vec<_>>(),
+        )));
+        discord::set_custom_games(&self.game_executables);
+    }
+
     /// A sound's own volume as a percentage: 100% unless adjusted.
     fn each_sound(&self, sound: Sound) -> u8 {
         self.each_sound
@@ -1024,6 +1042,7 @@ impl Layout {
     }
 
     fn apply(&self, window: &YapfastWindow) {
+        self.apply_custom_games(window);
         window.set_show_idle(self.show_idle.unwrap_or(true));
         window.set_hide_blocked(self.hide_blocked);
         window.set_flash_taskbar(self.flash_taskbar.unwrap_or(true));

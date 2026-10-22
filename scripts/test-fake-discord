@@ -18,9 +18,10 @@ fi
 
 mkdir -p target
 fakes=()
+rpc_dir=$(mktemp -d /tmp/yapfast-rpc.XXXXXX)
 # Stops every fake: a stopped one's status fails `wait`, which mustn't end
 # the trap before the next.
-trap 'for fake in "${fakes[@]}"; do kill "$fake" 2>/dev/null || true; wait "$fake" 2>/dev/null || true; done' EXIT
+trap 'for fake in "${fakes[@]}"; do kill "$fake" 2>/dev/null || true; wait "$fake" 2>/dev/null || true; done; rm -rf -- "$rpc_dir"' EXIT
 
 # Starts the fake on a free port, logging to the file given first, with the
 # other arguments, and waits until it answers; sets $server to its address.
@@ -49,7 +50,8 @@ start_fake() {
 }
 
 start_fake target/fake-discord.log
-YAPFAST_DISCORD_TEST_SERVER=$server \
+YAPFAST_DISCORD_TEST_SERVER=$server YAPFAST_DISCORD_RPC_DIR=$rpc_dir \
+YAPFAST_DISCORD_GAMES_CACHE=$rpc_dir/games.json YAPFAST_STEAM_DIR=$rpc_dir/steam \
   cargo test --locked --profile fast -p yapfast-discord --test fake_server -- --ignored "$@"
 # The shared core's Discord side, against the same fake.
 YAPFAST_DISCORD_TEST_SERVER=$server \

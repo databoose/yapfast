@@ -155,6 +155,11 @@ fn file() -> Option<PathBuf> {
     lock(&FILE).clone()
 }
 
+/// Public, account-independent game catalogue, stored beside the account cache.
+pub(crate) fn games_file() -> Option<PathBuf> {
+    Some(file()?.with_file_name("discord-games.json"))
+}
+
 fn pictures() -> Option<PathBuf> {
     Some(file()?.with_file_name("discord-pictures"))
 }

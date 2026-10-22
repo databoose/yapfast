@@ -157,6 +157,14 @@ pub struct CustomStatus {
     pub expires_at_ms: Option<u64>,
 }
 
+/// The game the Discord account shows it plays.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Playing {
+    pub name: String,
+    /// When it started, in Unix milliseconds, when the game says.
+    pub started_ms: Option<u64>,
+}
+
 /// A Discord friend request waiting for an answer.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FriendRequest {
@@ -2099,6 +2107,9 @@ pub enum DiscordCommand {
     /// Set the Discord status: `online`, `idle`, `dnd` or `invisible`;
     /// [`Event::StatusSet`] follows.
     SetStatus(String),
+    /// Share the game the Discord account plays, or stop;
+    /// [`Event::ShowGameSet`] follows.
+    ShowGame(bool),
     /// Nobody has used Yapfast since then, in Unix milliseconds, or someone is
     /// using it again; Discord goes AFK, and idle if `show_idle`, as its web
     /// client does.
@@ -3010,6 +3021,8 @@ pub enum Event {
     CustomStatusSet(Result<(), String>),
     /// Whether [`DiscordCommand::SetStatus`] changed it, or why not.
     StatusSet(Result<(), String>),
+    /// Whether [`DiscordCommand::ShowGame`] changed it, or why not.
+    ShowGameSet(Result<(), String>),
     /// [`DiscordCommand::Unlink`] forgot the account.
     DiscordUnlinked,
     /// [`DiscordCommand::Pins`]'s messages, the latest pinned first, or why

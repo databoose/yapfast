@@ -4320,6 +4320,54 @@ fn clears_a_status_today_at_midnight() {
 
 #[test]
 #[cfg(feature = "discord")]
+fn shares_the_game_as_the_account_settings_say() {
+    use yapfast_discord::{
+        own_activity::Playing,
+        service::{Snapshot, Status},
+    };
+    let mut app = Application::default();
+    let snapshot = |show_game: bool, playing: Option<&str>| Snapshot {
+        status: Status::Online,
+        user_id: Some("1".into()),
+        show_game,
+        playing: playing.map(|name| {
+            Arc::new(Playing {
+                name: name.into(),
+                started_ms: Some(5),
+            })
+        }),
+        ..Default::default()
+    };
+    app.apply(discord_event(snapshot(true, Some("Game"))));
+    assert!(app.state.discord_show_game);
+    assert_eq!(
+        app.state.discord_playing,
+        Some(chat::Playing {
+            name: "Game".into(),
+            started_ms: Some(5)
+        })
+    );
+    assert!(
+        app.dispatch(Action::ShowGame(true)).is_empty(),
+        "it's shared already"
+    );
+    assert!(matches!(
+        app.dispatch(Action::ShowGame(false)).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::ShowGame(
+            false
+        )))]
+    ));
+    assert!(!app.state.discord_show_game, "the switch moves at once");
+    app.apply(Event::ShowGameSet(Err("Discord said no.".into())));
+    assert!(app.state.discord_show_game, "and back when Discord refuses");
+    assert!(app.state.notice.is_some());
+    app.apply(discord_event(snapshot(false, None)));
+    assert!(!app.state.discord_show_game);
+    assert_eq!(app.state.discord_playing, None);
+}
+
+#[test]
+#[cfg(feature = "discord")]
 fn sets_the_status_and_holds_notifications_while_busy() {
     use yapfast_discord::service::{Snapshot, Status};
     let mut app = Application::default();
