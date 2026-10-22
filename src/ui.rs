@@ -574,6 +574,27 @@ fn message_text(row: &MessageRow) -> String {
         }
         lines.extend(card);
     }
+    for card in row.cards.iter() {
+        for each in card.rows.iter() {
+            lines.extend(each.blocks.iter().map(|block| plain(&block.text)));
+            if each.has_thumbnail {
+                lines.push("[Picture]".into());
+            }
+            lines.extend(pictures(each.images.row_count()));
+            lines.extend(each.files.iter().map(|file| file.name.to_string()));
+            let buttons = each
+                .buttons
+                .iter()
+                .chain(each.has_button.then_some(each.button.clone()));
+            let labels: Vec<_> = buttons.map(|button| button.label.to_string()).collect();
+            if !labels.is_empty() {
+                lines.push(labels.join(" "));
+            }
+            if !each.select.is_empty() {
+                lines.push(each.select.to_string());
+            }
+        }
+    }
     lines.join("\n")
 }
 

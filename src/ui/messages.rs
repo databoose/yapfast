@@ -523,29 +523,46 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
             }
         })
         .collect();
-    let files: Vec<FileCell> = message
-        .attachments
+    let files = |placement: Placement| -> Vec<FileCell> {
+        message
+            .attachments
+            .iter()
+            .enumerate()
+            .filter(|(_, attachment)| {
+                attachment.preview.is_none()
+                    && !loading(attachment)
+                    && !attachment.video
+                    && attachment.placement == placement
+            })
+            .map(|(index, attachment)| {
+                let size = attachment.size.map(file_size);
+                let detail = match (attachment.image, attachment.preview_failed, size) {
+                    (true, true, Some(size)) => format!("{size} · Preview unavailable"),
+                    (true, true, None) => "Preview unavailable".into(),
+                    (_, _, Some(size)) => size,
+                    _ => String::new(),
+                };
+                FileCell {
+                    index: index as i32,
+                    name: attachment.name.clone().into(),
+                    detail: detail.into(),
+                }
+            })
+            .collect()
+    };
+    let cards: Vec<ComponentCard> = message
+        .cards
         .iter()
-        .enumerate()
-        .filter(|(_, attachment)| {
-            attachment.preview.is_none()
-                && !loading(attachment)
-                && !attachment.video
-                && attachment.placement == Placement::Message
-        })
-        .map(|(index, attachment)| {
-            let size = attachment.size.map(file_size);
-            let detail = match (attachment.image, attachment.preview_failed, size) {
-                (true, true, Some(size)) => format!("{size} · Preview unavailable"),
-                (true, true, None) => "Preview unavailable".into(),
-                (_, _, Some(size)) => size,
-                _ => String::new(),
-            };
-            FileCell {
-                index: index as i32,
-                name: attachment.name.clone().into(),
-                detail: detail.into(),
-            }
+        .map(|card| ComponentCard {
+            framed: card.framed,
+            color: role_color(card.color),
+            has_color: card.color.is_some(),
+            rows: ModelRc::new(VecModel::from(
+                card.rows
+                    .iter()
+                    .map(|row| card_row(message, row, &previews, &covered, &files))
+                    .collect::<Vec<_>>(),
+            )),
         })
         .collect();
     let (delivery, can_retry, can_cancel) = match message.delivery {
@@ -638,8 +655,9 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         gallery_width,
         gallery_height,
         stickers: image_cells(stickers),
-        files: ModelRc::new(VecModel::from(files)),
+        files: ModelRc::new(VecModel::from(files(Placement::Message))),
         embeds: ModelRc::new(VecModel::from(embeds)),
+        cards: ModelRc::new(VecModel::from(cards)),
         hidden_card: SharedString::default(),
         delivery: delivery.into(),
         delivery_failed: message.delivery == Delivery::Failed,
@@ -701,6 +719,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
             stickers: ModelRc::default(),
             files: ModelRc::default(),
             embeds: ModelRc::default(),
+            cards: ModelRc::default(),
             has_poll: false,
             can_reply: false,
             can_edit: false,
@@ -710,6 +729,159 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         };
     }
     row
+}
+
+/// A row of a Discord app's card, its pictures and files found among the
+/// message's attachments by slot.
+fn card_row<'a>(
+    message: &'a ChatMessage,
+    row: &yapfast_core::chat::CardRow,
+    previews: &dyn Fn(Placement) -> Vec<Preview<'a>>,
+    covered: &dyn Fn(usize) -> bool,
+    files: &dyn Fn(Placement) -> Vec<FileCell>,
+) -> CardRow {
+    use yapfast_core::chat::{Beside, CardRow as Row};
+    let blocks = |text: &str| {
+        ModelRc::new(VecModel::from(text_blocks(&custom_emoji::text(
+            text,
+            &message.emoji,
+        ))))
+    };
+    match row {
+        Row::Text { text, beside } => {
+            let thumbnail = match beside {
+                Some(Beside::Thumbnail(slot)) => {
+                    previews(Placement::Component(*slot)).into_iter().next()
+                }
+                _ => None,
+            };
+            let button = match beside {
+                Some(Beside::Button(button)) => Some(card_button(button, &message.emoji)),
+                _ => None,
+            };
+            CardRow {
+                kind: CardRowKind::Text,
+                blocks: blocks(text),
+                thumbnail: thumbnail
+                    .and_then(|(_, _, preview)| preview.map(|preview| picture(preview)))
+                    .unwrap_or_default(),
+                thumbnail_loading: thumbnail.is_some_and(|(_, _, preview)| preview.is_none()),
+                thumbnail_index: thumbnail.map_or(-1, |(index, _, _)| index as i32),
+                thumbnail_spoiler: thumbnail
+                    .is_some_and(|(index, attachment, _)| attachment.spoiler && covered(index)),
+                has_thumbnail: thumbnail.is_some(),
+                has_button: button.is_some(),
+                button: button.unwrap_or_default(),
+                ..Default::default()
+            }
+        }
+        Row::Media(slot) => {
+            let placement = Placement::Component(*slot);
+            let (images, gallery_width, gallery_height) =
+                gallery_within(&previews(placement), covered, CARD_GALLERY_WIDTH);
+            CardRow {
+                kind: CardRowKind::Media,
+                images,
+                gallery_width,
+                gallery_height,
+                files: ModelRc::new(VecModel::from(files(placement))),
+                ..Default::default()
+            }
+        }
+        Row::Separator { divider, large } => CardRow {
+            kind: CardRowKind::Separator,
+            divider: *divider,
+            large: *large,
+            ..Default::default()
+        },
+        Row::Buttons(buttons) => CardRow {
+            kind: CardRowKind::Buttons,
+            buttons: ModelRc::new(VecModel::from(
+                buttons
+                    .iter()
+                    .map(|button| card_button(button, &message.emoji))
+                    .collect::<Vec<_>>(),
+            )),
+            ..Default::default()
+        },
+        Row::Select { text, .. } => CardRow {
+            kind: CardRowKind::Select,
+            select: text.as_str().into(),
+            ..Default::default()
+        },
+        Row::Unknown => CardRow {
+            kind: CardRowKind::Unknown,
+            ..Default::default()
+        },
+    }
+}
+
+/// The widest a card's gallery shows, inside the card's padding.
+const CARD_GALLERY_WIDTH: i32 = 566;
+
+fn card_button(
+    button: &yapfast_core::chat::CardButton,
+    emoji: &[yapfast_core::chat::CustomEmoji],
+) -> CardButton {
+    use yapfast_core::chat::ButtonStyle;
+    CardButton {
+        label: custom_emoji::text(&button.label, emoji).into(),
+        style: match button.style {
+            ButtonStyle::Primary => CardButtonStyle::Primary,
+            ButtonStyle::Secondary => CardButtonStyle::Secondary,
+            ButtonStyle::Success => CardButtonStyle::Success,
+            ButtonStyle::Danger => CardButtonStyle::Danger,
+            ButtonStyle::Link => CardButtonStyle::Link,
+        },
+        url: button.url.clone().unwrap_or_default().into(),
+        enabled: button.url.is_some() && !button.disabled,
+    }
+}
+
+/// Discord Markdown as runs of lines at one size: headings (`#` to `###`)
+/// and subtext (`-#`) apart from the rest, each without its marker, a
+/// heading in bold. Lines in fenced code stay as they are.
+pub(super) fn text_blocks(text: &str) -> Vec<TextBlock> {
+    let mut blocks: Vec<(i32, String)> = Vec::new();
+    let mut fenced = false;
+    for line in text.split('\n') {
+        let (level, rest) = if fenced {
+            (0, line)
+        } else if let Some(rest) = line.strip_prefix("### ") {
+            (3, rest)
+        } else if let Some(rest) = line.strip_prefix("## ") {
+            (2, rest)
+        } else if let Some(rest) = line.strip_prefix("# ") {
+            (1, rest)
+        } else if let Some(rest) = line.strip_prefix("-# ") {
+            (4, rest)
+        } else {
+            (0, line)
+        };
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+        }
+        // Each heading is a block of its own; other lines run together.
+        match blocks.last_mut() {
+            Some((last, lines)) if *last == level && matches!(level, 0 | 4) => {
+                lines.push('\n');
+                lines.push_str(rest);
+            }
+            _ => blocks.push((level, rest.to_owned())),
+        }
+    }
+    blocks
+        .into_iter()
+        .filter(|(_, text)| !text.trim().is_empty())
+        .map(|(level, text)| TextBlock {
+            text: if (1..=3).contains(&level) {
+                markdown(&format!("**{}**", text.trim()))
+            } else {
+                markdown(text.trim_matches('\n'))
+            },
+            level,
+        })
+        .collect()
 }
 
 /// What a thread's link says after its name: how many messages it has,
