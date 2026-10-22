@@ -1149,6 +1149,7 @@ export component GameActivitySettings inherits VerticalLayout {
     for game[index] in root.executables: VerticalLayout {
         spacing: 4px;
         HorizontalLayout {
+            spacing: 8px;
             Text { text: game.text; color: Theme.text; font-size: 15px; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
             ActionButton { text: "Edit"; small: true; clicked => { root.editing-game = index; root.executable-draft = game.executable; root.text-draft = game.text; root.invalid-game = false; } }
             ActionButton { text: "Remove"; small: true; clicked => { root.editing-game = -1; root.executable-draft = ""; root.text-draft = ""; root.remove(index); } }
