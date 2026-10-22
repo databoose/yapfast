@@ -361,6 +361,32 @@ export struct EmbedCard {
     images: [ImageCell], gallery-width: int, gallery-height: int,
     video: bool,
 }
+/// A Discord app's button. Only a link's is `enabled`: the others would ask
+/// the app, which Yapfast can't yet.
+export enum CardButtonStyle { primary, secondary, success, danger, link }
+export struct CardButton { label: string, style: CardButtonStyle, url: string, enabled: bool }
+/// A run of a card's text at one size: Markdown (0), a heading (1 to 3),
+/// or subtext (4). Slint's Markdown draws neither headings nor subtext.
+export struct TextBlock { text: styled-text, level: int }
+export enum CardRowKind { text, media, separator, buttons, select, unknown }
+/// A row of a Discord app's card, of one `kind`, with the fields it uses:
+/// text and what a section shows beside it; pictures in a gallery and file
+/// cards; a gap, `large`, with or without a `divider`; buttons; or a menu
+/// by what it shows, which doesn't open; or a note that Yapfast can't show
+/// some components.
+export struct CardRow {
+    kind: CardRowKind,
+    blocks: [TextBlock],
+    thumbnail: image, thumbnail-index: int, has-thumbnail: bool, thumbnail-loading: bool, thumbnail-spoiler: bool,
+    button: CardButton, has-button: bool,
+    images: [ImageCell], gallery-width: int, gallery-height: int, files: [FileCell],
+    divider: bool, large: bool,
+    buttons: [CardButton],
+    select: string,
+}
+/// A container of a Discord message's components, framed with a bar of its
+/// colour, or the components outside one.
+export struct ComponentCard { framed: bool, color: color, has-color: bool, rows: [CardRow] }
 /// What a poll card's button does.
 export enum PollAction { none, vote, remove-vote, back-to-vote }
 
@@ -562,6 +588,8 @@ export struct MessageRow {
     stickers: [ImageCell],
     files: [FileCell],
     embeds: [EmbedCard],
+    /// A Discord app's buttons and menus, or a message made of components.
+    cards: [ComponentCard],
     /// Says a card is hidden, for a message that is only one, with link previews off.
     hidden-card: string,
     delivery: string, delivery-failed: bool, can-retry: bool, can-cancel: bool,
@@ -828,7 +856,13 @@ export component MessageMenu inherits Rectangle {
 // A message's images with previews, laid out as a gallery. Clicking an image
 // opens it large.
 export component MessageGallery inherits HorizontalLayout {
-    in property <MessageRow> message;
+    in property <[ImageCell]> images;
+    in property <int> gallery-width;
+    in property <int> gallery-height;
+    /// The message's item, which its pictures open by, and its delivery
+    /// state, empty once it's sent.
+    in property <string> item;
+    in property <string> delivery;
     in property <string> active-item;
     in property <bool> preview;
     callback reveal-attachment(string, int);
@@ -839,8 +873,8 @@ export component MessageGallery inherits HorizontalLayout {
     callback media-menu(string, int, bool, length, length);
     padding-top: 4px;
     Rectangle {
-        width: root.message.gallery-width * 1px; height: root.message.gallery-height * 1px;
-        for cell in root.message.images: Rectangle {
+        width: root.gallery-width * 1px; height: root.gallery-height * 1px;
+        for cell in root.images: Rectangle {
             x: cell.x * 1px; y: cell.y * 1px; width: cell.width * 1px; height: cell.height * 1px;
             border-radius: 8px; clip: true; background: Theme.sunken;
             if cell.loading: Skeleton { width: parent.width; height: parent.height; }
@@ -849,30 +883,30 @@ export component MessageGallery inherits HorizontalLayout {
             cell-touch := TouchArea {
                 mouse-cursor: MouseCursor.pointer;
                 clicked => {
-                    if cell.spoiler { root.reveal-attachment(root.message.item, cell.index); } else { root.view-image(root.message.item, cell.index); }
+                    if cell.spoiler { root.reveal-attachment(root.item, cell.index); } else { root.view-image(root.item, cell.index); }
                 }
                 pointer-event(event) => {
                     if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
-                        root.media-menu(root.message.item, cell.index, cell.video, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        root.media-menu(root.item, cell.index, cell.video, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
                     }
                 }
                 // Inside the touch area, so the pointer on it still hovers the GIF.
-                if cell.gif != "" && !cell.spoiler && !root.preview && root.message.delivery == "": FavoriteStar {
+                if cell.gif != "" && !cell.spoiler && !root.preview && root.delivery == "": FavoriteStar {
                     x: 8px; y: 8px;
                     on: GifFavorites.is-favorite(cell.gif, GifFavorites.revision);
                     shown: cell-touch.has-hover;
-                    clicked => { GifFavorites.toggle(root.message.item, cell.index); }
+                    clicked => { GifFavorites.toggle(root.item, cell.index); }
                 }
             }
             if cell.video && !cell.spoiler && !cell.loading && !root.preview: VideoCell {
-                width: parent.width; height: parent.height; item: root.message.item; cell: cell;
-                menu(x, y) => { root.media-menu(root.message.item, cell.index, true, x, y); }
+                width: parent.width; height: parent.height; item: root.item; cell: cell;
+                menu(x, y) => { root.media-menu(root.item, cell.index, true, x, y); }
             }
-            if root.active-item == root.message.item && !root.preview && root.message.delivery == "" && !cell.spoiler: Rectangle {
+            if root.active-item == root.item && !root.preview && root.delivery == "" && !cell.spoiler: Rectangle {
                 x: parent.width - self.width - 8px; y: 8px; width: 32px; height: 32px; border-radius: 6px; background: #000000b3;
                 IconButton {
                     icon: @image-url("icons/download.svg"); label: "Save " + cell.name; tint: #ffffff;
-                    clicked => { root.save-attachment(root.message.item, cell.index); }
+                    clicked => { root.save-attachment(root.item, cell.index); }
                 }
             }
         }
@@ -1072,6 +1106,157 @@ export component EmbedView inherits HorizontalLayout {
                                 root.media-menu(root.item, root.embed.thumbnail-index, false, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+    Rectangle { horizontal-stretch: 1; }
+}
+
+// Text of a Discord app's card, its headings and subtext at their sizes.
+// Inside a container, its text and subtext are smaller, as in Discord's
+// client; headings are not.
+component CardText inherits VerticalLayout {
+    in property <[TextBlock]> blocks;
+    in property <length> font-size;
+    in property <bool> framed;
+    callback open-link(string);
+    spacing: 4px;
+    for block in root.blocks: StyledText {
+        min-width: 0px;
+        text: block.text; link-color: Theme.link;
+        default-color: block.level == 4 ? Theme.secondary : Theme.text;
+        default-font-size: block.level == 1 ? root.font-size * 1.5 : block.level == 2 ? root.font-size * 1.25
+            : block.level == 3 ? root.font-size
+            : root.font-size * (block.level == 4 ? (root.framed ? 0.75 : 0.875) : (root.framed ? 0.875 : 1));
+        link-clicked(link) => { root.open-link(link); }
+    }
+}
+
+// A Discord app's button. A link's opens its page; the others show what the
+// app offers, but would ask the app, which Yapfast can't yet.
+component CardButtonView inherits ActionButton {
+    in property <CardButton> button;
+    callback open-link(string);
+    property <image> no-icon;
+    text: root.button.label;
+    icon: root.button.style == CardButtonStyle.link ? @image-url("icons/external-link.svg") : root.no-icon;
+    primary: root.button.style == CardButtonStyle.primary;
+    success: root.button.style == CardButtonStyle.success;
+    danger: root.button.style == CardButtonStyle.danger;
+    enabled: root.button.enabled;
+    small: true;
+    clicked => { root.open-link(root.button.url); }
+}
+
+// A Discord message's container of components, or those outside one: text
+// beside a thumbnail or button, galleries, files, gaps, buttons and menus.
+export component CardView inherits HorizontalLayout {
+    in property <ComponentCard> card;
+    /// The message's item, which its pictures open by, and its delivery
+    /// state, empty once it's sent.
+    in property <string> item;
+    in property <string> delivery;
+    in property <string> active-item;
+    in property <bool> preview;
+    in property <length> message-font-size;
+    callback open-link(string);
+    callback reveal-attachment(string, int);
+    callback view-image(string, int);
+    callback save-attachment(string, int);
+    callback media-menu(string, int, bool, length, length);
+    padding-top: 4px;
+    Rectangle {
+        max-width: root.card.framed ? 600px : 100000px; horizontal-stretch: 100;
+        background: root.card.framed ? Theme.sidebar : transparent;
+        border-radius: 8px; clip: root.card.framed;
+        border-width: root.card.framed ? 1px : 0px; border-color: Theme.edge;
+        if root.card.framed && root.card.has-color: Rectangle { x: 0px; width: 4px; background: root.card.color; }
+        VerticalLayout {
+            // The accent bar sits over the left padding.
+            padding: root.card.framed ? 16px : 0px;
+            spacing: 8px; alignment: start;
+            for row in root.card.rows: VerticalLayout {
+                if row.kind == CardRowKind.text: HorizontalLayout {
+                    spacing: 12px;
+                    CardText {
+                        horizontal-stretch: 1; blocks: row.blocks; font-size: root.message-font-size; framed: root.card.framed;
+                        alignment: row.has-button ? LayoutAlignment.center : LayoutAlignment.start;
+                        open-link(link) => { root.open-link(link); }
+                    }
+                    if row.has-thumbnail: VerticalLayout {
+                        alignment: start;
+                        Rectangle {
+                            width: 85px; height: 85px; border-radius: 8px; clip: true; background: Theme.sunken;
+                            if row.thumbnail-loading: Skeleton { width: parent.width; height: parent.height; }
+                            if !row.thumbnail-spoiler: Image {
+                                source: row.thumbnail; width: parent.width; height: parent.height; image-fit: cover;
+                                accessible-role: image; accessible-label: "Thumbnail";
+                            }
+                            if row.thumbnail-spoiler: SpoilerCover {}
+                            TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => {
+                                    if row.thumbnail-spoiler { root.reveal-attachment(root.item, row.thumbnail-index); }
+                                    else { root.view-image(root.item, row.thumbnail-index); }
+                                }
+                                pointer-event(event) => {
+                                    if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                                        root.media-menu(root.item, row.thumbnail-index, false, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if row.has-button: VerticalLayout {
+                        alignment: start;
+                        CardButtonView { button: row.button; open-link(link) => { root.open-link(link); } }
+                    }
+                }
+                if row.kind == CardRowKind.media && row.images.length > 0: MessageGallery {
+                    images: row.images; gallery-width: row.gallery-width; gallery-height: row.gallery-height;
+                    item: root.item; delivery: root.delivery; active-item: root.active-item; preview: root.preview;
+                    reveal-attachment(id, index) => { root.reveal-attachment(id, index); }
+                    view-image(id, index) => { root.view-image(id, index); }
+                    save-attachment(id, index) => { root.save-attachment(id, index); }
+                    media-menu(id, index, video, x, y) => { root.media-menu(id, index, video, x, y); }
+                }
+                // Only a media row has files.
+                for file in row.files: FileCard {
+                    file: file; preview: root.preview; delivery: root.delivery;
+                    save => { root.save-attachment(root.item, file.index); }
+                }
+                // With the layout's spacing either side, a small gap is 16
+                // pixels and a large one 32, a divider's line between.
+                if row.kind == CardRowKind.separator: Rectangle {
+                    height: (row.large ? 16px : 0px) + (row.divider ? 1px : 0px);
+                    if row.divider: Rectangle { y: row.large ? 8px : 0px; height: 1px; background: Theme.line; }
+                }
+                if row.kind == CardRowKind.buttons: HorizontalLayout {
+                    spacing: 8px; alignment: start;
+                    for button in row.buttons: CardButtonView { button: button; open-link(link) => { root.open-link(link); } }
+                }
+                if row.kind == CardRowKind.select: HorizontalLayout {
+                    // It doesn't open, so it shows as disabled.
+                    Rectangle {
+                        max-width: 400px; horizontal-stretch: 100; height: 40px; border-radius: 8px; opacity: 0.5;
+                        background: Theme.field; border-width: 1px; border-color: Theme.edge;
+                        accessible-role: combobox; accessible-label: row.select; accessible-enabled: false;
+                        HorizontalLayout {
+                            padding-left: 12px; padding-right: 12px; spacing: 8px;
+                            Text { text: row.select; color: Theme.secondary; font-weight: 500; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                            Image { source: @image-url("icons/chevron-down.svg"); width: 18px; image-fit: contain; colorize: Theme.secondary; }
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                // As Discord's client tells of components it doesn't know.
+                if row.kind == CardRowKind.unknown: Rectangle {
+                    border-width: 1px; border-color: Theme.accent; border-radius: 12px;
+                    HorizontalLayout {
+                        padding: 16px;
+                        Text { text: "Yapfast can't show this part of the message yet."; color: Theme.secondary; font-size: 14px; wrap: word-wrap; }
                     }
                 }
             }
@@ -1531,7 +1716,8 @@ export component MessageContent inherits VerticalLayout {
             if message.edited && !message.deleted: Text { text: "(edited)"; color: Theme.muted; font-size: 12px; }
             // Fixed-size children sit beside a spacer, so they do not cap the column's width.
             if message.images.length > 0: MessageGallery {
-                message: message; active-item: root.active-item; preview: root.preview;
+                images: message.images; gallery-width: message.gallery-width; gallery-height: message.gallery-height;
+                item: message.item; delivery: message.delivery; active-item: root.active-item; preview: root.preview;
                 reveal-attachment(id, index) => { root.reveal-attachment(id, index); }
                 view-image(id, index) => { root.view-image(id, index); }
                 save-attachment(id, index) => { root.save-attachment(id, index); }
@@ -1551,6 +1737,15 @@ export component MessageContent inherits VerticalLayout {
                 open-link(link) => { root.open-link(link); }
                 reveal-attachment(id, index) => { root.reveal-attachment(id, index); }
                 view-image(id, index) => { root.view-image(id, index); }
+                media-menu(id, index, video, x, y) => { root.media-menu(id, index, video, x, y); }
+            }
+            for card in message.cards: CardView {
+                card: card; item: message.item; delivery: message.delivery; active-item: root.active-item; preview: root.preview;
+                message-font-size: root.message-font-size;
+                open-link(link) => { root.open-link(link); }
+                reveal-attachment(id, index) => { root.reveal-attachment(id, index); }
+                view-image(id, index) => { root.view-image(id, index); }
+                save-attachment(id, index) => { root.save-attachment(id, index); }
                 media-menu(id, index, video, x, y) => { root.media-menu(id, index, video, x, y); }
             }
             if message.thread-room != "": ThreadChip {

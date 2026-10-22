@@ -3,7 +3,7 @@
 
   scripts/ui-session start [--discord [--fake-args '--servers 3 --dms 50']] [--live]
                            [--size 1120x760] [--renderer software|gpu] [--tray]
-                           [--zoom 1.2] [--cursor [SIZE]] [--bin PATH | --no-build]
+                           [--zoom 1.2] [--cursor [SIZE]] [--desktop] [--bin PATH | --no-build]
                            [-- YAPFAST_ARGS...]
   scripts/ui-session do 'click X Y' 'type Hello' 'key enter' 'shot NAME' ...
   scripts/ui-session relaunch [-- YAPFAST_ARGS...]   rebuild, then restart Yapfast
@@ -22,22 +22,27 @@ runtime and reloads it a moment after each save, keeping its state, so a UI edit
 needs no rebuild. A save that renames a new file over the old one, as sed -i and
 Claude's Edit tool do, goes unnoticed; touch the file after it. Rust changes, and properties or callbacks
 Rust code newly uses, still take a relaunch.
-The display is the window's size, so coordinates are window coordinates.
+The display is the window's size, so coordinates are window coordinates (but see --desktop).
 --tray also runs testing/tray_host.rs, a stand-in tray on the session's bus,
 which Yapfast's tray icon registers with; without it there is no tray.
 --zoom opens Yapfast zoomed to one of its levels, as Ctrl and + would, with the
 level in its layout.json: 0.5 to 1.5 in steps of 0.05, then to 2 in 0.1.
+--desktop runs Weston's desktop shell instead of its kiosk shell, which makes the
+window full screen: the window can then be moved, resized and maximized, as for
+Yapfast's own title bar on Linux. The display is then 240x160 larger than --size,
+for Weston's panel and room around the window, and coordinates are the display's.
 --cursor shows the pointer, 24 pixels tall unless SIZE says; without it
 screenshots and videos have none.
 start also builds testing/record_host.rs, which `record` runs.
 
 do commands, run in order; the first error stops the rest:
-  click X Y [MODIFIERS] [glide [SECONDS]] | rightclick X Y | move X Y |
+  click X Y [MODIFIERS] [glide [SECONDS]] | rightclick X Y | middleclick X Y | move X Y |
       drag X Y TO_X TO_Y (left button); click's modifiers are held through
       it, as shift or ctrl+shift; with glide the pointer glides there first
   glide X Y [SECONDS]   moves the pointer along an eased path, 60 steps a
       second; by default in .3 to 1 s, by the distance
-  press X Y | release   hold the left button down, for what happens meanwhile
+  press X Y [middle] | release [middle]   hold the left (or middle) button
+      down, for what happens meanwhile
   scroll PIXELS [SECONDS] (negative scrolls up), at once or eased over SECONDS
   key NAME|CODE, with modifiers as ctrl+a (names: enter esc tab backspace
       delete space up down left right home end pageup pagedown f10 menu,
@@ -172,6 +177,9 @@ def start(args):
     if running():
         raise SystemExit('A UI session is already running; stop it first.')
     width, height = map(int, args.size.split('x'))
+    if args.desktop:
+        # Room around the window for Weston's panel and for moving it.
+        width, height = width + 240, height + 160
     if STATE.exists():
         for entry in STATE.iterdir():
             if entry.name not in ('yapfast', 'tray-host', 'record-host', 'build.log', 'videos'):
@@ -204,7 +212,7 @@ def start(args):
               '--record', str(STATE / 'record-host'),
               *(['--cursor', str(args.cursor)] if args.cursor else []), '--', *yapfast_args]
     display = (f'scripts/run-framework-isolated --audio --alsa-plugins "$YAPFAST_FRAMEWORK_ALSA_PLUGINS" '
-               f'--no-services --kiosk --width {width} --height {height} --repaint-window 17 '
+               f'--no-services {"" if args.desktop else "--kiosk "}--width {width} --height {height} --repaint-window 17 '
                f'--compositor-log {shlex.quote(str(STATE / "weston.log"))} -- {shlex.join(driver)}')
     session = subprocess.Popen(['nix-shell', '--impure', 'testing/display/shell.nix', '--run', display],
                                cwd=ROOT, stdin=subprocess.DEVNULL, stdout=(STATE / 'session.log').open('wb'),
@@ -219,7 +227,7 @@ def start(args):
             stop()
             raise SystemExit('The UI session did not start.')
         time.sleep(.2)
-    print(f'Yapfast is running on a private {args.size} display, PID {(STATE / "yapfast.pid").read_text().strip()}.')
+    print(f'Yapfast is running on a private {width}x{height} display, PID {(STATE / "yapfast.pid").read_text().strip()}.')
     print('Drive it with scripts/ui-session do; shots go to .local/ui-session/shots/, videos to videos/.')
 
 
@@ -260,6 +268,7 @@ starting.add_argument('--fake-args', default='', help="arguments for testing/fak
 starting.add_argument('--size', default='1120x760')
 starting.add_argument('--renderer', choices=['software', 'gpu'], default='software')
 starting.add_argument('--tray', action='store_true', help='run a stand-in tray on the private bus')
+starting.add_argument('--desktop', action='store_true', help="Weston's desktop shell rather than kiosk: the window isn't full screen")
 starting.add_argument('--zoom', type=zoom_level, help="open Yapfast zoomed to this level, such as 1.2")
 starting.add_argument('--cursor', type=int, nargs='?', const=24, metavar='SIZE',
                       help='show the pointer, this many pixels tall (24)')

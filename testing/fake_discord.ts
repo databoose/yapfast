@@ -109,6 +109,13 @@
 // a MESSAGE_UPDATE and a "poll closed" notice (type 46).
 // GET /users/{id}/profile answers for everyone: Bob has a bio, pronouns, a
 // banner and a server bio, Carol a banner colour, and the rest nothing more.
+// POST /_control/components makes Discord's own account write Alice a
+// notice made of components (IS_COMPONENTS_V2), as it writes its notices:
+// a container with a heading, a picture, sections beside a thumbnail and a
+// link button, gaps and buttons. Status Bot posts in #general a message with
+// buttons and a menu under its text, and one of components outside a
+// container, with a gallery of its attachments and a file. It answers with
+// the notice's id.
 // POST /_control/embeds makes Bob post an article link, whose preview arrives
 // a moment later in a MESSAGE_UPDATE as Discord's does, a YouTube link and a
 // GIF link, and a bot post a card with fields; their pictures come from
@@ -895,6 +902,10 @@ type Message = {
   edited?: number;
   /** Its embeds, given the server's address for their pictures. */
   embeds?: (origin: string) => unknown[];
+  /** Its components, given the same; see /_control/components. */
+  components?: (origin: string) => unknown[];
+  /** Message flags it's sent with, such as IS_COMPONENTS_V2. */
+  flags?: number;
   /** A DM call's message: who took part, and when it ended. */
   call?: { participants: Set<string>; ended?: number };
   stickers?: { id: string; name: string; format_type: number }[];
@@ -982,8 +993,8 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
     edited_timestamp: message.edited ? iso(message.edited) : null,
     // HAS_THREAD, once a thread started from it; a forum post's first
     // message has the post's id, and isn't one.
-    flags: threads.has(message.id) && message.channel !== message.id ? 1 << 5 : 0,
-    components: [],
+    flags: (threads.has(message.id) && message.channel !== message.id ? 1 << 5 : 0) | (message.flags ?? 0),
+    components: message.components?.(origin) ?? [],
   };
   if (message.nonce) wire.nonce = message.nonce;
   if (message.stickers) wire.sticker_items = message.stickers;
@@ -1036,8 +1047,8 @@ function wireMessage(message: Message, origin: string, nested = false): Record<s
         mention_roles: original.mention_roles,
         attachments: original.attachments,
         embeds: original.embeds,
-        flags: 0,
-        components: [],
+        flags: (original.flags as number) & IS_COMPONENTS_V2,
+        components: original.components,
         ...(original.sticker_items ? { sticker_items: original.sticker_items } : {}),
       },
     }];
@@ -6075,6 +6086,111 @@ function postVideo(origin: string) {
   dispatch("MESSAGE_CREATE", dispatched(linked, origin));
 }
 
+// --- Components --------------------------------------------------------------
+
+/** The message flag of a message made of components alone. */
+const IS_COMPONENTS_V2 = 1 << 15;
+// Discord's own account, which writes notices in a DM of its own.
+const discordSystem: User = { id: "643945264868098049", username: "discord", global_name: "Discord", avatar: null, bot: true };
+const DM_SYSTEM = "1400000000000000127";
+
+/** An attachment as a component's unfurled media item refers to it. */
+function unfurled(file: File, origin: string) {
+  const attachment = wireAttachment(file, origin);
+  return {
+    url: attachment.url,
+    proxy_url: attachment.proxy_url,
+    content_type: file.contentType,
+    attachment_id: file.id,
+    ...(file.width ? { width: file.width, height: file.height } : {}),
+    loading_state: 2,
+  };
+}
+
+function postComponents(origin: string): string {
+  const now = Date.now();
+  if (!privates.has(DM_SYSTEM)) {
+    const channel: Private = { type: 1, recipients: [discordSystem] };
+    privates.set(DM_SYSTEM, channel);
+    messages.set(DM_SYSTEM, []);
+    dispatch("CHANNEL_CREATE", wirePrivate(DM_SYSTEM, channel, "objects"));
+  }
+  const notice = post(DM_SYSTEM, discordSystem, "", now, {
+    flags: IS_COMPONENTS_V2,
+    components: (origin) => [
+      {
+        type: 17, id: 1, accent_color: 0x5865f2,
+        components: [
+          { type: 10, id: 2, content: "# A new sign-in to your account\nWe noticed a sign-in from a new device. If it was you, there's nothing to do." },
+          { type: 12, id: 3, items: [{ media: { ...proxied(origin, "notice-banner", 1200, 480), loading_state: 2 } }] },
+          { type: 14, id: 4, divider: true, spacing: 1 },
+          {
+            type: 9, id: 5,
+            components: [{ type: 10, id: 6, content: "**Linux · Yapfast**" }, { type: 10, id: 7, content: "Prague, Czechia" }],
+            accessory: { type: 11, id: 8, media: { ...proxied(origin, "device", 160, 160), loading_state: 2 } },
+          },
+          {
+            type: 9, id: 9,
+            components: [{ type: 10, id: 10, content: "Not you? Change your password and turn on two-factor authentication." }],
+            accessory: { type: 2, id: 11, style: 5, label: "Secure account", url: "https://discord.com/settings/account" },
+          },
+          { type: 14, id: 12, divider: false, spacing: 2 },
+          { type: 10, id: 13, content: "-# Sent by Discord. We'll never ask for your password." },
+          {
+            type: 1, id: 14,
+            components: [
+              { type: 2, id: 15, style: 5, label: "Learn more", url: "https://support.discord.com/" },
+              { type: 2, id: 16, style: 2, label: "It was me", custom_id: "dismiss", emoji: { name: "👍" } },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  dispatch("MESSAGE_CREATE", dispatched(notice, origin));
+  const deployed = post(GENERAL, statusBot, "Deploy **v2.4** finished.", now + 1, {
+    components: () => [
+      {
+        type: 1, id: 1,
+        components: [
+          { type: 2, id: 2, style: 3, label: "Approve", custom_id: "approve" },
+          { type: 2, id: 3, style: 4, label: "Roll back", custom_id: "rollback" },
+          { type: 2, id: 4, style: 2, label: "Retry", custom_id: "retry", disabled: true },
+          { type: 2, id: 5, style: 5, label: "Logs", url: "https://example.com/logs" },
+        ],
+      },
+      {
+        type: 1, id: 6,
+        components: [{
+          type: 3, id: 7, custom_id: "environment", placeholder: "Pick an environment",
+          options: [{ label: "Staging", value: "staging" }, { label: "Production", value: "production" }],
+        }],
+      },
+    ],
+  });
+  dispatch("MESSAGE_CREATE", dispatched(deployed, origin));
+  const shots = (["before.png", "after.png"] as const).map((filename, index) => {
+    const tint = index ? [90, 200, 140] : [220, 110, 90];
+    const draw = (w: number, h: number) => png(w, h, (x, y) => [tint[0]! * x / w, tint[1]!, tint[2]! * y / h, 255].map(Math.round));
+    return addFile({ id: snowflake(now + 2, 1 + index), channel: GENERAL, filename, contentType: "image/png", data: draw(640, 400), width: 640, height: 400, draw });
+  });
+  const notes = addFile({
+    id: snowflake(now + 2, 3), channel: GENERAL, filename: "release-notes.txt", contentType: "text/plain",
+    data: new TextEncoder().encode("Faster start, fewer bugs.\n"),
+  });
+  const report = post(GENERAL, statusBot, "", now + 2, {
+    files: [...shots, notes],
+    flags: IS_COMPONENTS_V2,
+    components: (origin) => [
+      { type: 10, id: 1, content: "## Release report\nScreens before and after, and the notes." },
+      { type: 12, id: 2, items: shots.map((shot) => ({ media: unfurled(shot, origin) })) },
+      { type: 13, id: 3, file: unfurled(notes, origin), name: notes.filename, size: notes.data.length },
+    ],
+  });
+  dispatch("MESSAGE_CREATE", dispatched(report, origin));
+  return notice.id;
+}
+
 // --- Environments -------------------------------------------------------------
 // With --env, the fixture made above is emptied and the env's content fills
 // the same stores: people in userById, history through post(), DMs in
@@ -6928,6 +7044,9 @@ const server = Bun.serve<SocketData>({
     if (req.method === "POST" && path === "/_control/clip") {
       postVideo(origin);
       return new Response("video posted\n");
+    }
+    if (req.method === "POST" && path === "/_control/components") {
+      return new Response(`${postComponents(origin)}\n`);
     }
     if (req.method === "POST" && path === "/_control/embeds") {
       postEmbeds(origin);

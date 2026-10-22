@@ -1844,6 +1844,99 @@ fn a_wheel_spun_fast_scrolls_farther_for_each_notch() {
 }
 
 #[test]
+fn a_middle_click_scrolls_towards_the_pointer_until_the_next_press() {
+    use slint::platform::{PointerEventButton, WindowEvent};
+    i_slint_backend_testing::init_no_event_loop();
+    let window = YapfastWindow::new().unwrap();
+    mark_autoscrolls(&window);
+    window.set_workspace(true);
+    window.set_room_selected(true);
+    window.set_room_ready(true);
+    window.set_history_start(true);
+    let rows: Vec<MessageRow> = (0..300)
+        .map(|index| {
+            let mut row = message_row_plain(&ChatMessage {
+                id: format!("m{index}"),
+                item: format!("i{index}"),
+                author: "Bob".into(),
+                body: format!("Message {index}"),
+                formatted: true,
+                ..Default::default()
+            });
+            row.first = true;
+            row
+        })
+        .collect();
+    window.set_messages(ModelRc::new(VecModel::from(rows)));
+    window.show().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1120., 760.));
+    let send = |event| window.window().dispatch_event(event);
+    let at = |y| slint::LogicalPosition::new(700., y);
+    let press = |y, button| {
+        send(WindowEvent::PointerPressed {
+            position: at(y),
+            button,
+        })
+    };
+    let release = |y, button| {
+        send(WindowEvent::PointerReleased {
+            position: at(y),
+            button,
+        })
+    };
+    let point = |y| send(WindowEvent::PointerMoved { position: at(y) });
+    let pass = |frames| {
+        for _ in 0..frames {
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(16));
+        }
+    };
+    let shown = || window.global::<Autoscroll>().get_shown();
+    window.invoke_scroll_to_latest();
+    pass(60);
+    let latest = window.get_top_index();
+
+    // A click starts it, and the pointer above where it clicked scrolls up.
+    press(380., PointerEventButton::Middle);
+    release(380., PointerEventButton::Middle);
+    assert!(shown());
+    let marker = window.global::<Autoscroll>();
+    assert_eq!((marker.get_x(), marker.get_y()), (700., 380.));
+    assert!(marker.get_vertical() && !marker.get_horizontal());
+    point(375.);
+    pass(30);
+    assert_eq!(
+        window.get_top_index(),
+        latest,
+        "near where it clicked, it stays"
+    );
+    point(180.);
+    pass(30);
+    let scrolled = window.get_top_index();
+    assert!(scrolled < latest, "went from {latest} to {scrolled}");
+
+    // The next press ends it, and goes no further.
+    press(180., PointerEventButton::Left);
+    assert!(!shown());
+    release(180., PointerEventButton::Left);
+    pass(30);
+    assert_eq!(window.get_top_index(), scrolled);
+
+    // Held and moved away, it scrolls until it's let go.
+    press(380., PointerEventButton::Middle);
+    point(600.);
+    pass(30);
+    let held = window.get_top_index();
+    assert!(held > scrolled, "went from {scrolled} to {held}");
+    release(600., PointerEventButton::Middle);
+    assert!(!shown());
+    pass(30);
+    assert_eq!(window.get_top_index(), held);
+    window.hide().unwrap();
+}
+
+#[test]
 fn older_messages_go_in_above_without_moving_those_shown() {
     i_slint_backend_testing::init_no_event_loop();
     let window = YapfastWindow::new().unwrap();
@@ -5741,4 +5834,77 @@ fn join_a_server_shows_the_invites_server_and_a_link_opens_it() {
     );
     assert_eq!(prompt.detail, "7 online, 42 members");
     assert_eq!(prompt.confirm, "Join Server");
+}
+
+#[test]
+fn a_card_of_components_shows_headings_files_and_only_link_buttons_working() {
+    use yapfast_core::chat::{
+        Attachment, ButtonStyle, Card, CardButton as Button, CardRow as Row, Placement,
+    };
+    i_slint_backend_testing::init_no_event_loop();
+    let button = |style, url: Option<&str>| Button {
+        label: "Go".into(),
+        style,
+        url: url.map(str::to_owned),
+        disabled: false,
+    };
+    let message = ChatMessage {
+        item: "d:1".into(),
+        attachments: vec![Attachment {
+            name: "notes.txt".into(),
+            size: Some(10),
+            image: false,
+            dimensions: None,
+            preview: None,
+            preview_failed: false,
+            placement: Placement::Component(0),
+            spoiler: false,
+            video: false,
+            gif: None,
+            url: None,
+        }],
+        cards: vec![Card {
+            framed: true,
+            color: Some(0x5865f2),
+            rows: vec![
+                Row::Text {
+                    text: "# Hello\nThere\n-# small print".into(),
+                    beside: None,
+                },
+                Row::Media(0),
+                Row::Buttons(vec![
+                    button(ButtonStyle::Link, Some("https://example.com")),
+                    button(ButtonStyle::Primary, None),
+                ]),
+            ],
+        }],
+        ..Default::default()
+    };
+    let row = message_row_plain(&message);
+    // The file shows in its card, not under the message.
+    assert_eq!(row.files.row_count(), 0);
+    let card = row.cards.row_data(0).unwrap();
+    assert!(card.framed && card.has_color);
+    let rows: Vec<_> = card.rows.iter().collect();
+    let levels: Vec<_> = rows[0].blocks.iter().map(|block| block.level).collect();
+    assert_eq!(levels, [1, 0, 4]);
+    assert_eq!(rows[1].files.row_data(0).unwrap().name, "notes.txt");
+    let enabled: Vec<_> = rows[2]
+        .buttons
+        .iter()
+        .map(|button| button.enabled)
+        .collect();
+    assert_eq!(enabled, [true, false], "only a link's button works");
+    let text = message_text(&MessageRow {
+        first: false,
+        ..row
+    });
+    assert_eq!(text, "Hello\nThere\nsmall print\nnotes.txt\nGo Go");
+}
+
+#[test]
+fn headings_in_fenced_code_stay_as_typed() {
+    let blocks = text_blocks("```\n# not a heading\n```\n## Two");
+    let levels: Vec<_> = blocks.iter().map(|block| block.level).collect();
+    assert_eq!(levels, [0, 2]);
 }

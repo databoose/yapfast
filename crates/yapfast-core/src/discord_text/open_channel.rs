@@ -7,7 +7,9 @@ use crate::chat::SendOptions;
 
 use super::{
     channels::SharedPreviews,
-    render::{chat_embed, chat_notice, chat_poll, custom_emoji, rendered, sent_id, system_body},
+    render::{
+        chat_card, chat_embed, chat_notice, chat_poll, custom_emoji, rendered, sent_id, system_body,
+    },
     *,
 };
 
@@ -1451,6 +1453,7 @@ impl OpenChannel {
                         Shown::Embed(index) | Shown::Poster(index) => Placement::Embed(index),
                         Shown::Thumbnail(index) => Placement::Thumbnail(index),
                         Shown::Sticker => Placement::Sticker,
+                        Shown::Component(slot) => Placement::Component(slot),
                     },
                     spoiler: attachment.spoiler,
                     video: attachment.video_url.is_some(),
@@ -1468,6 +1471,11 @@ impl OpenChannel {
             .embeds
             .iter()
             .map(|embed| chat_embed(discord, server, embed))
+            .collect();
+        let cards = message
+            .components
+            .iter()
+            .map(|card| chat_card(discord, server, card))
             .collect();
         let reply = message.reply.as_ref().map(|reply| match reply {
             DiscordReply::Message {
@@ -1523,6 +1531,7 @@ impl OpenChannel {
                 .collect(),
             attachments,
             embeds,
+            cards,
             mentions,
             emoji: custom_emoji(message),
             can_reply: ordinary,

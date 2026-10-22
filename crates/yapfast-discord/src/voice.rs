@@ -41,6 +41,51 @@ pub trait Listener: Send + Sync + 'static {
     fn disconnected(&self, reason: &str);
 }
 
+/// Watches a queue of audio filled on one clock and played on another,
+/// which never run quite together: a sender's sound card and the call's
+/// ticks, or the ticks and the speakers. When the filling one runs fast the
+/// queue grows a frame at a time, and the delay with it; this says when a
+/// frame can go, once the queue has had frames to spare for a whole window.
+#[derive(Default)]
+pub struct Surplus {
+    /// The fewest frames that waited as one was taken, in this window.
+    fewest: Option<usize>,
+    /// Frames taken in this window.
+    counted: u8,
+    /// The fewest that waited in the last whole window.
+    spare: usize,
+}
+
+/// Frames are counted in windows of this many: 1 s.
+const SURPLUS_WINDOW: u8 = 50;
+/// When this many frames waited throughout a window, more than the
+/// lateness of their arrivals needed, a quiet one goes.
+const SURPLUS: usize = 2;
+/// With this many to spare a frame goes quiet or not.
+const SURPLUS_MOST: usize = 5;
+
+impl Surplus {
+    /// Notes how many frames wait as one is taken to play.
+    pub fn note(&mut self, waiting: usize) {
+        self.fewest = Some(self.fewest.map_or(waiting, |fewest| fewest.min(waiting)));
+        self.counted += 1;
+        if self.counted == SURPLUS_WINDOW {
+            self.spare = self.fewest.take().unwrap_or(0);
+            self.counted = 0;
+        }
+    }
+
+    /// Whether to skip the frame just taken, for the next: at most one a
+    /// window, and only a `quiet` one unless the queue is long.
+    pub fn skips(&mut self, quiet: impl FnOnce() -> bool) -> bool {
+        let skips = self.spare >= SURPLUS_MOST || (self.spare >= SURPLUS && quiet());
+        if skips {
+            self.spare = 0;
+        }
+        skips
+    }
+}
+
 pub struct Call {
     orders: mpsc::UnboundedSender<Order>,
     /// The microphone, once it plays.

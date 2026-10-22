@@ -7,8 +7,8 @@ Original source: https://lucide.dev/ and https://github.com/lucide-icons/lucide.
   phone, phone-off, pin, pin-off, refresh-cw, reply, screen-share, screen-share-off, send-horizontal,
   palette, scissors, smile-plus, square-pen, sticky-note, text-select, trash-2, triangle-alert, user, user-minus, user-pen, user-plus, users and x come unmodified from
   lucide-static 1.51.0.
-- at-sign, chevron-left, chevron-right, clock, ellipsis, forward, gavel, search,
-  shield, slash, smile, user-x, video and video-off follow
+- at-sign, chevron-left, chevron-right, clock, ellipsis, forward, gavel, minus,
+  search, shield, slash, smile, square, user-x, video and video-off follow
   lucide-static 1.51.0's paths in the same wrapper.
 - maximize, minimize, pause, play, signal-high, signal-low, signal-medium and
   volume-x follow Lucide's paths in the same wrapper.

@@ -858,6 +858,26 @@ impl WindowInner {
             crate::yapfast_selection::pressed();
         }
 
+        // Yapfast: an autoscroll takes the pointer's events until it ends; see
+        // `crate::yapfast_autoscroll`.
+        match crate::yapfast_autoscroll::handle(&event) {
+            crate::yapfast_autoscroll::Handling::Dispatch => {}
+            crate::yapfast_autoscroll::Handling::Take(cursor) => {
+                self.show_cursor(cursor);
+                return Some(MouseDispatchResult { drag_action: None, accepted: true });
+            }
+            crate::yapfast_autoscroll::Handling::Ended => {
+                self.show_cursor(BuiltInMouseCursor::Default)
+            }
+        }
+        let middle_press = match event {
+            MouseEvent::Pressed { position, button: PointerEventButton::Middle, .. } => {
+                crate::yapfast_autoscroll::pressing();
+                Some(position)
+            }
+            _ => None,
+        };
+
         let window_adapter = self.window_adapter();
         let mut mouse_input_state = self.mouse_input_state.take();
 
@@ -1092,6 +1112,22 @@ impl WindowInner {
 
         let accepted = dispatch_accepted | grab_accepted;
 
+        // Yapfast: a middle press that a flickable can autoscroll for starts it there, and the
+        // items it reached let go of it.
+        if let Some(position) = middle_press
+            && let Some(cursor) = crate::yapfast_autoscroll::start(&window_adapter, position)
+        {
+            let mut released = MouseInputState::default();
+            crate::input::send_exit_events(
+                &mouse_input_state,
+                &mut released,
+                None,
+                &window_adapter,
+            );
+            released.cursor = MouseCursorInner::BuiltIn(cursor);
+            mouse_input_state = released;
+        }
+
         if last_top_item != mouse_input_state.top_item_including_delayed() {
             self.click_state.reset();
             self.click_state.check_repeat(event, self.context());
@@ -1310,7 +1346,15 @@ impl WindowInner {
                 return crate::input::KeyEventResult::EventAccepted;
             }
             let escape = char::from(crate::input::key_codes::Key::Escape);
-            if internal_key_event.key_event.text.chars().eq([escape]) {
+            let escaped = internal_key_event.key_event.text.chars().eq([escape]);
+            // Yapfast: a key ends an autoscroll, and Escape does nothing else.
+            if crate::yapfast_autoscroll::stop() {
+                self.show_cursor(BuiltInMouseCursor::Default);
+                if escaped {
+                    return crate::input::KeyEventResult::EventAccepted;
+                }
+            }
+            if escaped {
                 crate::yapfast_selection::clear();
             }
         }
@@ -1717,7 +1761,24 @@ impl WindowInner {
         // should not assume that the modifiers are in the same state.
         if !have_focus {
             self.context().0.modifiers.take();
+            // Yapfast: an autoscroll ends with the window's focus.
+            if crate::yapfast_autoscroll::stop() {
+                self.show_cursor(BuiltInMouseCursor::Default);
+            }
         }
+    }
+
+    /// Yapfast: shows the pointer as `cursor` until the items under it show it otherwise.
+    fn show_cursor(&self, cursor: BuiltInMouseCursor) {
+        let mut state = self.mouse_input_state.take();
+        let cursor = MouseCursorInner::BuiltIn(cursor);
+        if state.cursor != cursor {
+            state.cursor = cursor.clone();
+            if let Some(window_adapter) = self.window_adapter().internal(crate::InternalToken) {
+                window_adapter.set_mouse_cursor(cursor);
+            }
+        }
+        self.mouse_input_state.set(state);
     }
 
     /// Returns true of the window is the active window. That typically implies having the

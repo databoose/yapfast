@@ -1,5 +1,5 @@
 import { Palette } from "std-widgets.slint";
-import { ListView } from "scrollview.slint";
+import { ListView, Autoscroll, AutoscrollMarker } from "scrollview.slint";
 // The UI's typeface, Atkinson Hyperlegible Next; ExtraBold serves weight 900.
 import "fonts/AtkinsonHyperlegibleNext-Regular.ttf";
 import "fonts/AtkinsonHyperlegibleNext-Italic.ttf";
@@ -22,6 +22,7 @@ import "fonts/AtkinsonHyperlegibleNext-ExtraBold.ttf";
 // discord.slint, voice.slint, rail.slint, composer.slint, messages.slint,
 // settings.slint, people.slint, friends.slint, dialogs.slint and sign-in.slint.
 import { Theme, Tip, ReactionHover, Middle } from "theme.slint";
+import { TitleBar, ResizeEdges } from "title_bar.slint";
 import { GifPicker, GifTile, PickerTab } from "gifs.slint";
 import { ActionButton, IconButton, PingToggle, DeviceToggle, Avatar, TextField, MessagesSkeleton, ContextMenu, MenuItem, MenuRow, DeviceMenu, HeaderToggle, Banner, StatusText } from "controls.slint";
 import { PersonRow, CallLink, CallLinkCard, LinkTouch, SignalIcon, VoiceDock, StreamPip, CallInvite, JoinVoice, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, ShareScreen, VolumeMenu } from "voice.slint";
@@ -46,11 +47,12 @@ import { BrowseRow, BrowseScreen } from "browse.slint";
 
 // Rust sees these, besides YapfastWindow.
 export { Theme, Badges } from "theme.slint";
+export { Autoscroll } from "scrollview.slint";
 export { PersonRow, CallLink, ShareScreen } from "voice.slint";
 export { ServerRow, RoomRow, FolderServer } from "rail.slint";
 export { PictureStore, Motion } from "controls.slint";
 export { StagedFile, MentionRow } from "composer.slint";
-export { EmojiCell, EmojiRow, EmojiSection, ReactionChip, ImageCell, FileCell, EmbedField, EmbedFieldRow, EmbedCard, MessageRow, VideoPlayer, PollAction, PollAnswerRow, PollCard, Polls } from "messages.slint";
+export { EmojiCell, EmojiRow, EmojiSection, ReactionChip, ImageCell, FileCell, EmbedField, EmbedFieldRow, EmbedCard, CardButtonStyle, CardButton, TextBlock, CardRowKind, CardRow, ComponentCard, MessageRow, VideoPlayer, PollAction, PollAnswerRow, PollCard, Polls } from "messages.slint";
 export { MemberRow, ProfileRole, ProfileRoleRow, ProfileServerRow, ProfileFriendRow, ProfileData, ActivityRow, ActivityClock } from "people.slint";
 export { RequestRow, FriendRow } from "friends.slint";
 export { ContactRow, ForwardRow, ReactionPill, ReactorRow, PollAnswerDraft } from "dialogs.slint";
@@ -64,6 +66,19 @@ export component YapfastWindow inherits Window {
     title: root.window-title;
     preferred-width: 1120px; preferred-height: 760px;
     min-width: 800px; min-height: 560px;
+    /// Yapfast draws the title bar and the edges that resize the window,
+    /// rather than the desktop; see docs/chat-ui.md.
+    in property <bool> own-title-bar;
+    in property <bool> window-maximized;
+    no-frame: root.own-title-bar;
+    /// How far the title bar moves the window's content down: nothing while
+    /// the desktop draws it, or in full screen.
+    property <length> title-height: root.own-title-bar && !root.full-screen ? 32px : 0px;
+    callback move-window();
+    callback resize-window(int);
+    callback minimize-window();
+    callback maximize-window();
+    callback close-window();
     background: Theme.chat;
     default-font-family: "Atkinson Hyperlegible Next";
     // default-font-family: "Satoshi";
@@ -954,6 +969,11 @@ export component YapfastWindow inherits Window {
     /// Closing the window leaves Yapfast in the system tray, when there's one.
     in-out property <bool> close-to-tray: true;
     in property <bool> tray-available;
+    /// The desktop draws the title bar, as set; offered where Yapfast can
+    /// draw its own.
+    in-out property <bool> system-title-bar: true;
+    in property <bool> title-bar-choice;
+    callback title-bar-toggled();
     /// Yapfast starts in the tray when the person signs in to their computer,
     /// where the platform can, outside the preview.
     in-out property <bool> start-on-sign-in;
@@ -1751,6 +1771,7 @@ export component YapfastWindow inherits Window {
 
     // Sign in; see SignInScreen.
     SignInScreen {
+        y: root.title-height; height: root.height - root.title-height;
         visible: !root.workspace;
         busy: root.busy; notice: root.notice; restore-available: root.restore-available; matrix-build: root.matrix-build;
         link-phase: root.link-phase; link-code: root.link-code; link-name: root.link-name; link-note: root.link-note;
@@ -1766,6 +1787,7 @@ export component YapfastWindow inherits Window {
     }
 
     HorizontalLayout {
+        y: root.title-height; height: root.height - root.title-height;
         visible: root.workspace;
         spacing: 0px;
         // Navigation: the rail and the sidebar, with the voice and account dock across both.
@@ -2913,7 +2935,7 @@ export component YapfastWindow inherits Window {
     // The edge between sidebar and conversation resizes the sidebar. A double-click
     // restores the default width.
     if root.workspace: TouchArea {
-        x: 72px + root.sidebar-shown - 4px; y: 0px; width: 8px; height: root.height;
+        x: 72px + root.sidebar-shown - 4px; y: root.title-height; width: 8px; height: root.height - root.title-height;
         mouse-cursor: ew-resize;
         moved => {
             if self.pressed {
@@ -2933,7 +2955,7 @@ export component YapfastWindow inherits Window {
     }
     // So does the edge of the thread beside the conversation, below the header.
     if root.workspace && root.aside-docked: TouchArea {
-        x: root.width - root.aside-shown - 4px; y: 48px; width: 8px; height: root.height - 48px;
+        x: root.width - root.aside-shown - 4px; y: root.title-height + 48px; width: 8px; height: root.height - root.title-height - 48px;
         mouse-cursor: ew-resize;
         moved => {
             if self.pressed {
@@ -2961,7 +2983,7 @@ export component YapfastWindow inherits Window {
     if root.pip-shown: StreamPip {
         property <length> left: 72px + root.sidebar-shown + 16px;
         property <length> right: root.width - self.width - 16px;
-        property <length> top: 48px + 16px;
+        property <length> top: root.title-height + 48px + 16px;
         property <length> bottom: root.height - self.height - 16px;
         x: (root.pip-left ? self.left : self.right) + self.drag-x;
         y: (root.pip-bottom ? self.bottom : self.top) + self.drag-y;
@@ -3021,7 +3043,7 @@ export component YapfastWindow inherits Window {
 
     // A call ringing this account elsewhere, at the top until it's answered or stops.
     if root.incoming-open: IncomingCall {
-        x: (root.width - self.width) / 2; y: 64px;
+        x: (root.width - self.width) / 2; y: root.title-height + 64px;
         incoming-room: root.incoming-room; incoming-name: root.incoming-name; incoming-detail: root.incoming-detail;
         incoming-initial: root.incoming-initial; incoming-tint: root.incoming-tint; incoming-picture: root.incoming-picture;
         answer-call(room, accept) => { root.answer-call(room, accept); }
@@ -3057,6 +3079,7 @@ export component YapfastWindow inherits Window {
     }
     // Settings cover the window, showing one section.
     if root.settings-open: SettingsScreen {
+        y: root.title-height; height: root.height - root.title-height;
         settings-section <=> root.settings-section;
         discord-build: root.discord-build; preview: root.preview;
         close => { root.settings-open = false; }
@@ -3077,6 +3100,8 @@ export component YapfastWindow inherits Window {
             theme-name <=> root.theme-name; theme-dark <=> root.theme-dark;
             editing-saved: root.theme-editing-saved; starts: root.theme-starts; start-index: root.theme-start;
             can-save: root.theme-can-save;
+            system-title-bar <=> root.system-title-bar; title-bar-choice: root.title-bar-choice;
+            title-bar-toggled => { root.title-bar-toggled(); }
             choose-theme(id) => { root.choose-theme(id); }
             new-theme => { root.new-theme(); }
             edit-theme(id) => { root.edit-theme(id); }
@@ -3159,6 +3184,7 @@ export component YapfastWindow inherits Window {
     }
     // A Discord server's settings cover the window too.
     if root.server-settings-open: ServerSettingsScreen {
+        y: root.title-height; height: root.height - root.title-height;
         prompt: root.server-settings-prompt;
         name <=> root.server-settings-name; description <=> root.server-settings-description;
         role-name <=> root.server-settings-role-name;
@@ -3182,6 +3208,7 @@ export component YapfastWindow inherits Window {
         close => { root.close-server-settings(); }
     }
     if root.channel-settings-open: ChannelSettingsScreen {
+        y: root.title-height; height: root.height - root.title-height;
         prompt: root.channel-settings-prompt; channel: root.channel-settings-channel;
         name <=> root.channel-settings-name; topic <=> root.channel-settings-topic;
         input(what, text, number) => { root.channel-settings-input(what, text, number); }
@@ -3287,8 +3314,8 @@ export component YapfastWindow inherits Window {
         }
         RoleCard {
             x: root.beside(root.role-x, root.role-width, self.width);
-            y: max(8px, min(root.height - self.height - 8px, root.role-y - 8px));
-            limit: root.height - 16px;
+            y: max(root.title-height + 8px, min(root.height - self.height - 8px, root.role-y - 8px));
+            limit: root.height - root.title-height - 16px;
             role-name: root.role-name; role-color: root.role-color; role-has-color: root.role-has-color;
             role-members: root.role-members; role-note: root.role-note;
             open-member(id, x, y, width, height) => {
@@ -3310,11 +3337,11 @@ export component YapfastWindow inherits Window {
             }
         }
         ProfileCard {
-            width: 300px; limit: root.height - 16px;
+            width: 300px; limit: root.height - root.title-height - 16px;
             x: root.profile-at-pointer
                 ? root.beside(root.anchor-x, root.anchor-width, self.width)
                 : root.width - 240px - 8px - self.width;
-            y: max(8px, min(root.height - self.height - 8px, (root.profile-at-pointer ? root.anchor-y - 8px : root.profile-y - 16px)));
+            y: max(root.title-height + 8px, min(root.height - self.height - 8px, (root.profile-at-pointer ? root.anchor-y - 8px : root.profile-y - 16px)));
             data: root.profile;
             enlarge => { root.enlarge-profile(); }
             close => { root.close-profile(); }
@@ -3361,7 +3388,7 @@ export component YapfastWindow inherits Window {
         ServerCard {
             width: 300px;
             x: root.beside(root.anchor-x, root.anchor-width, self.width);
-            y: max(8px, min(root.height - self.height - 8px, root.anchor-y - 8px));
+            y: max(root.title-height + 8px, min(root.height - self.height - 8px, root.anchor-y - 8px));
             server: root.server-card;
             open => {
                 root.server-card-open = false;
@@ -3372,6 +3399,7 @@ export component YapfastWindow inherits Window {
     }
     // An image shown large over everything; see ImageViewer.
     if root.viewer-open: ImageViewer {
+        y: root.title-height; height: root.height - root.title-height;
         viewer-image: root.viewer-image; viewer-frames: root.viewer-frames; viewer-delays: root.viewer-delays;
         viewer-width: root.viewer-width; viewer-height: root.viewer-height; viewer-name: root.viewer-name;
         viewer-position: root.viewer-position; viewer-note: root.viewer-note;
@@ -3382,6 +3410,7 @@ export component YapfastWindow inherits Window {
     }
     // The video playing, shown large over everything; see VideoViewer.
     if VideoPlayer.expanded && VideoPlayer.item != "": VideoViewer {
+        y: root.title-height; height: root.height - root.title-height;
         preview: root.preview;
         save-attachment(item, index) => { root.save-attachment(item, index); }
     }
@@ -3510,7 +3539,7 @@ export component YapfastWindow inherits Window {
     }
     // The zoom level, for a moment after it changes.
     if root.zoom-note != "": Rectangle {
-        x: (root.width - self.width) / 2; y: 12px;
+        x: (root.width - self.width) / 2; y: root.title-height + 12px;
         width: zoom-text.preferred-width + 28px; height: 36px;
         border-radius: 18px; background: Theme.tooltip;
         drop-shadow-blur: 12px; drop-shadow-color: #00000080; drop-shadow-offset-y: 3px;
@@ -3616,6 +3645,20 @@ export component YapfastWindow inherits Window {
         confirm => { root.confirm-mfa(); }
         cancel => { root.cancel-mfa(); }
     }
+    // The title bar and the edges that resize the window, above all but the
+    // tooltips, while Yapfast draws them.
+    if root.title-height > 0: TitleBar {
+        x: 0px; y: 0px; width: root.width;
+        place: root.workspace ? root.sidebar-title : "Yapfast";
+        focused: root.window-focused; maximized: root.window-maximized;
+        move-window => { root.move-window(); }
+        minimize-window => { root.minimize-window(); }
+        maximize-window => { root.maximize-window(); }
+        close-window => { root.close-window(); }
+    }
+    if root.title-height > 0 && !root.window-maximized: ResizeEdges {
+        resize-window(direction) => { root.resize-window(direction); }
+    }
     if Tip.text != "": Rectangle {
         property <length> w: tip-text.preferred-width + 20px;
         property <length> h: 32px;
@@ -3626,4 +3669,5 @@ export component YapfastWindow inherits Window {
         drop-shadow-blur: 12px; drop-shadow-color: #00000080; drop-shadow-offset-y: 3px;
         tip-text := Text { text: Tip.text; color: Theme.text; font-size: 14px; font-weight: 700; }
     }
+    if Autoscroll.shown: AutoscrollMarker {}
 }

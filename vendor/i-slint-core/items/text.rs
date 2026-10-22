@@ -1054,6 +1054,8 @@ impl Item for TextInput {
                 return InputEventResult::GrabMouse;
             }
             MouseEvent::Pressed { button: PointerEventButton::Middle, .. } => {
+                // Yapfast: the press pastes here rather than autoscrolling what's around.
+                crate::yapfast_autoscroll::decline();
                 #[cfg(not(any(target_os = "android", target_os = "ios")))]
                 self.ensure_focus_and_ime(window_adapter, self_rc);
             }

@@ -13,6 +13,7 @@ use std::{
 use serde_json::Value;
 
 use crate::{
+    components::{self, Card},
     embed::{self, Embed},
     ready::{self, Server},
 };
@@ -67,7 +68,7 @@ const STICKER_GIF: u64 = 4;
 const STICKER_SIZE: u32 = 160;
 
 /// The attachment flag that marks a spoiler.
-const IS_SPOILER: u64 = 1 << 3;
+pub(crate) const IS_SPOILER: u64 = 1 << 3;
 /// The flag of an attachment, or an embed's picture, that moves.
 const IS_ANIMATED: u64 = 1 << 5;
 
@@ -116,6 +117,10 @@ pub struct Message {
     /// Its files, then its embeds' pictures.
     pub attachments: Vec<Attachment>,
     pub embeds: Vec<Embed>,
+    /// Its buttons and menus, or for a message of components alone, all it
+    /// shows; their pictures and files are among `attachments`.
+    #[serde(default)]
+    pub components: Vec<Card>,
     pub reactions: Vec<Reaction>,
     /// Content can be edited by its author: an ordinary message or reply.
     pub editable: bool,
@@ -318,6 +323,9 @@ pub enum Shown {
     Poster(usize),
     /// On its own, without a frame: a sticker.
     Sticker,
+    /// In the component row with this slot: [`crate::components::Row::Media`]
+    /// or a section's thumbnail.
+    Component(usize),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -645,7 +653,15 @@ pub fn parse(value: &Value) -> Option<Message> {
     if embeds.hides.iter().any(|link| link == content.trim()) {
         content.clear();
     }
-    let mut attachments = attachments;
+    // A message of components alone shows its files only where its
+    // components place them.
+    let components = components::parse(&shown["components"]);
+    let mut attachments =
+        if shown["flags"].as_u64().unwrap_or_default() & components::IS_COMPONENTS_V2 == 0 {
+            attachments
+        } else {
+            Vec::new()
+        };
     // A link in a spoiler spoils its preview too.
     let spoiled = spoils_links(&content);
     attachments.extend(embeds.pictures.into_iter().map(|mut picture| {
@@ -683,6 +699,7 @@ pub fn parse(value: &Value) -> Option<Message> {
             spoiler: false,
         });
     }
+    attachments.extend(components.media);
     Some(Message {
         id: value["id"].as_str()?.into(),
         channel_id: value["channel_id"].as_str().unwrap_or_default().into(),
@@ -712,6 +729,7 @@ pub fn parse(value: &Value) -> Option<Message> {
         reply,
         attachments,
         embeds: embeds.embeds,
+        components: components.cards,
         reactions,
         // A poll's question and answers stay as they were sent.
         editable: matches!(kind, DEFAULT | REPLY) && !forwarded && value["poll"].is_null(),
@@ -1788,6 +1806,39 @@ mod tests {
             "{}",
             message.content
         );
+    }
+
+    #[test]
+    fn a_message_of_components_shows_its_files_only_through_them() {
+        let file = |name: &str| {
+            json!({"url": format!("https://cdn/{name}"), "proxy_url": format!("https://media/{name}"),
+                   "width": 10, "height": 10, "content_type": "image/png"})
+        };
+        let message = parse(&json!({
+            "id": "1", "channel_id": "2", "author": {"id": "3", "username": "discord"},
+            "content": "", "flags": 1 << 15,
+            "attachments": [{"filename": "a.png", "size": 1, "url": "https://cdn/a.png",
+                             "proxy_url": "https://media/a.png", "content_type": "image/png"}],
+            "components": [{"type": 17, "components": [
+                {"type": 10, "content": "Hi"},
+                {"type": 12, "items": [{"media": file("a.png")}]},
+            ]}],
+        }))
+        .unwrap();
+        assert_eq!(message.components.len(), 1);
+        let shown: Vec<_> = message.attachments.iter().map(|a| a.shown).collect();
+        assert_eq!(shown, [Shown::Component(0)]);
+        // An older message's buttons show under its own files.
+        let message = parse(&json!({
+            "id": "1", "channel_id": "2", "author": {"id": "3", "username": "bot"},
+            "content": "Done",
+            "attachments": [{"filename": "a.txt", "size": 1, "url": "https://cdn/a.txt"}],
+            "components": [{"type": 1, "components": [
+                {"type": 2, "style": 5, "label": "Open", "url": "https://example.com"}]}],
+        }))
+        .unwrap();
+        assert_eq!(message.attachments.len(), 1);
+        assert_eq!(message.components[0].rows.len(), 1);
     }
 
     #[test]

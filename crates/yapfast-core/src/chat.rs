@@ -1180,6 +1180,9 @@ pub enum Placement {
     Thumbnail(usize),
     /// On its own, without a frame: a Discord sticker.
     Sticker,
+    /// In the Discord component row with this slot: [`CardRow::Media`], or
+    /// beside a section's text, [`Beside::Thumbnail`].
+    Component(usize),
 }
 
 /// A Discord link preview or bot card. Empty texts are left out.
@@ -1208,6 +1211,70 @@ pub struct EmbedField {
     pub value: String,
     /// Shares a row with the inline fields beside it.
     pub inline: bool,
+}
+
+/// A Discord message's container of components, or a run of components
+/// outside one, which shows without a frame.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Card {
+    pub framed: bool,
+    /// The RGB colour of a container's accent bar.
+    pub color: Option<u32>,
+    pub rows: Vec<CardRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CardRow {
+    /// Markdown, and what a section shows beside it.
+    Text {
+        text: String,
+        beside: Option<Beside>,
+    },
+    /// The attachments placed [`Placement::Component`] with this slot: a
+    /// gallery's pictures, or a file.
+    Media(usize),
+    /// A gap, and with `divider` a line across it.
+    Separator {
+        divider: bool,
+        large: bool,
+    },
+    Buttons(Vec<CardButton>),
+    /// A menu, by what it shows before it's opened.
+    Select {
+        text: String,
+        disabled: bool,
+    },
+    /// Components of a kind Yapfast can't show.
+    Unknown,
+}
+
+/// What a section shows beside its text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Beside {
+    /// The picture placed [`Placement::Component`] with this slot.
+    Thumbnail(usize),
+    Button(CardButton),
+}
+
+/// An app's button. Only a link's does anything in Yapfast: the others
+/// would ask the app, which Yapfast can't yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardButton {
+    /// Its emoji, a custom one by `:name:`, then its label.
+    pub label: String,
+    pub style: ButtonStyle,
+    /// Where a link button leads.
+    pub url: Option<String>,
+    pub disabled: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ButtonStyle {
+    Primary,
+    Secondary,
+    Success,
+    Danger,
+    Link,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1254,6 +1321,9 @@ pub struct ChatMessage {
     /// pictures of `embeds`. Matrix messages carry at most one.
     pub attachments: Vec<Attachment>,
     pub embeds: Vec<Embed>,
+    /// A Discord app's buttons and menus, or for a message made of
+    /// components, all it shows.
+    pub cards: Vec<Card>,
     /// Who and what the body mentions, which it links to.
     pub mentions: Vec<crate::mention::Mentioned>,
     /// The Discord custom emoji its body and reactions show.

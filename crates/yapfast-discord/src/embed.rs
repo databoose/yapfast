@@ -104,7 +104,7 @@ fn gif(picture: &mut Attachment, embed: &Value) {
 }
 
 /// The last part of an address's path, such as `cat.png`.
-fn file_name(url: &str) -> Option<&str> {
+pub(crate) fn file_name(url: &str) -> Option<&str> {
     url.split(['?', '#'])
         .next()
         .and_then(|path| path.rsplit('/').next())

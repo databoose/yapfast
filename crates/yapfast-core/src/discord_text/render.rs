@@ -21,9 +21,18 @@ pub(super) fn notification(
             &message.author_id,
         )
         .unwrap_or_else(|| message.author.clone());
-    let mut body = crate::chat::notification_text(&crate::spoiler::hide(
-        &discord.render(server, &message.content),
-    ));
+    // A message of components says what its first text does.
+    let text = match message.content.as_str() {
+        "" => message
+            .components
+            .iter()
+            .flat_map(yapfast_discord::components::Card::texts)
+            .next()
+            .unwrap_or_default(),
+        content => content,
+    };
+    let mut body =
+        crate::chat::notification_text(&crate::spoiler::hide(&discord.render(server, text)));
     if body.is_empty() {
         body = if message
             .attachments
@@ -286,6 +295,15 @@ pub(super) fn hits_in(discord: &Discord, guild: &str, messages: &[Message]) -> V
 /// The custom emoji in a message's text and reactions.
 pub(super) fn custom_emoji(message: &Message) -> Vec<CustomEmoji> {
     let mut found = emoji_in(&message.content);
+    for card in &message.components {
+        for text in card.texts().chain(card.rows.iter().flat_map(button_emoji)) {
+            for emoji in emoji_in(text) {
+                if !found.iter().any(|known| known.id == emoji.id) {
+                    found.push(emoji);
+                }
+            }
+        }
+    }
     let reactions = message.reactions.iter().filter_map(|reaction| {
         let (_, id) = reaction.emoji.split_once(':')?;
         Some((&reaction.key, id))
@@ -537,6 +555,78 @@ pub(super) fn chat_profile(
         presence: None,
         activity: None,
         activities: Default::default(),
+    }
+}
+
+/// The emoji of a row's buttons, in Discord's markup.
+fn button_emoji(row: &yapfast_discord::components::Row) -> Vec<&str> {
+    use yapfast_discord::components::{Beside, Row};
+    let buttons = match row {
+        Row::Buttons(buttons) => buttons.iter().collect(),
+        Row::Text {
+            beside: Some(Beside::Button(button)),
+            ..
+        } => vec![button],
+        _ => Vec::new(),
+    };
+    buttons
+        .into_iter()
+        .filter_map(|button| button.emoji.as_deref())
+        .collect()
+}
+
+/// A message's components as Yapfast shows them, their mentions written as
+/// names.
+pub(super) fn chat_card(
+    discord: &Discord,
+    server: Option<&yapfast_discord::ready::Server>,
+    card: &yapfast_discord::components::Card,
+) -> Card {
+    use yapfast_discord::components::{Beside as DiscordBeside, Row, Style};
+    let button = |button: &yapfast_discord::components::Button| CardButton {
+        label: match &button.emoji {
+            Some(emoji) => format!("{} {}", discord.render(server, emoji), button.label)
+                .trim_end()
+                .to_owned(),
+            None => button.label.clone(),
+        },
+        style: match button.style {
+            Style::Primary => ButtonStyle::Primary,
+            Style::Secondary => ButtonStyle::Secondary,
+            Style::Success => ButtonStyle::Success,
+            Style::Danger => ButtonStyle::Danger,
+            Style::Link => ButtonStyle::Link,
+        },
+        url: button.url.clone(),
+        disabled: button.disabled,
+    };
+    Card {
+        framed: card.framed,
+        color: card.color,
+        rows: card
+            .rows
+            .iter()
+            .map(|row| match row {
+                Row::Text { text, beside } => CardRow::Text {
+                    text: discord.render(server, text),
+                    beside: beside.as_ref().map(|beside| match beside {
+                        DiscordBeside::Thumbnail(slot) => Beside::Thumbnail(*slot),
+                        DiscordBeside::Button(each) => Beside::Button(button(each)),
+                    }),
+                },
+                Row::Media(slot) => CardRow::Media(*slot),
+                Row::Separator { divider, large } => CardRow::Separator {
+                    divider: *divider,
+                    large: *large,
+                },
+                Row::Buttons(buttons) => CardRow::Buttons(buttons.iter().map(button).collect()),
+                Row::Select { text, disabled } => CardRow::Select {
+                    text: text.clone(),
+                    disabled: *disabled,
+                },
+                Row::Unknown => CardRow::Unknown,
+            })
+            .collect(),
     }
 }
 
