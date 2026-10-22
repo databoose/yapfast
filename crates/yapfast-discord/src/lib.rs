@@ -2,7 +2,6 @@
 //! See docs/discord.md. Everything Discord-specific stays in this crate.
 
 pub mod activity;
-mod own_activity;
 pub mod api;
 pub mod cache;
 mod call_connection;
@@ -27,6 +26,7 @@ pub mod message;
 pub mod mfa;
 pub mod notifications;
 pub mod opus;
+mod own_activity;
 pub mod profile;
 pub mod ready;
 pub mod remote_auth;
