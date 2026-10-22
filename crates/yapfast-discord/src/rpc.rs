@@ -93,11 +93,11 @@ impl Socket {
             {
                 Ok(lock) => lock,
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                    // Linux O_NOFOLLOW | O_NONBLOCK: a replaced lock must
-                    // neither follow a symlink nor block opening a FIFO.
+                    // A replaced lock must neither follow a symlink nor
+                    // block opening a FIFO.
                     let Ok(lock) = File::options()
                         .write(true)
-                        .custom_flags(0o400000 | 0o4000)
+                        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
                         .open(&lock_path)
                     else {
                         continue;

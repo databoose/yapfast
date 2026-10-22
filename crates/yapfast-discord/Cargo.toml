@@ -46,6 +46,11 @@ url.workspace = true
 # Links Yapfast's libwebrtc archive, whose libopus calls use.
 webrtc-sys = "=0.3.35"
 
+# The Rich Presence socket's lock opens with O_NOFOLLOW, whose value differs
+# from one processor to another.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.189"
+
 [dev-dependencies]
 # Building DAVE handshake messages in tests, at the versions davey uses.
 openmls = "0.8.1"

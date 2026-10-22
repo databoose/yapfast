@@ -11284,6 +11284,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "keyring",
+ "libc",
  "openmls",
  "openmls_basic_credential",
  "openmls_rust_crypto",
