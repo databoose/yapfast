@@ -262,9 +262,12 @@ impl Shell {
     fn make(self: &Rc<Self>) -> Result<YapfastWindow, slint::PlatformError> {
         let window = YapfastWindow::new()?;
         let view = self.view.borrow_mut().take();
-        if let Some(placement) = &self.adapter.borrow().layout.window {
+        let adapter = self.adapter.borrow();
+        title_bar::show(&window, adapter.layout.system_title_bar);
+        if let Some(placement) = &adapter.layout.window {
             placement::place(&window, placement);
         }
+        drop(adapter);
         window.show()?;
         self.confirm_gpu(&window);
         prepare(&window);
@@ -305,6 +308,19 @@ impl Shell {
                 adapter.show_tray();
             }
         }
+    }
+}
+
+/// Makes the window again where it was, on Appearance as the setting that
+/// asked for it, for a change Slint can't make to the shown window.
+pub(super) fn remake_window() {
+    let Some(shell) = SHELL.with(|shell| shell.borrow().upgrade()) else {
+        return;
+    };
+    shell.drop_window();
+    if let Some(window) = shell.open() {
+        window.set_settings_section(7);
+        window.set_settings_open(true);
     }
 }
 

@@ -57,6 +57,7 @@ mod server_settings;
 mod shell;
 mod theme;
 mod tiles;
+mod title_bar;
 
 use callbacks::bind_callbacks;
 use messages::*;
@@ -90,14 +91,15 @@ pub fn run(
     gpu_failure: Option<String>,
     background: bool,
 ) -> Result<Exit> {
-    let (plan, placement) = {
+    let (plan, placement, system_title_bar) = {
         let mut layout = Layout::read(&root);
         let plan = graphics::plan(renderer, layout.gpu_rendering, gpu_failure);
         if plan.forget_gpu {
             layout.gpu_rendering = false;
             layout.write(&root);
         }
-        (plan, layout.window)
+        title_bar::choose(layout.system_title_bar);
+        (plan, layout.window, layout.system_title_bar)
     };
     decode_into_slint_buffers();
     pictures::make_frames_in_slint_buffers();
@@ -110,7 +112,9 @@ pub fn run(
     slint::BackendSelector::new()
         .backend_name("winit".into())
         .renderer_name(renderer.into())
-        .with_winit_window_attributes_hook(crate::icon::attributes)
+        .with_winit_window_attributes_hook(|attributes| {
+            title_bar::attributes(crate::icon::attributes(attributes))
+        })
         .select()
         .context("could not select the Slint desktop backend")?;
     slint::set_xdg_app_id(crate::icon::APP_ID).context("could not set Yapfast's app ID")?;
@@ -136,6 +140,7 @@ pub fn run(
         Ok(window) => window,
         Err(error) => return failed(error, "could not create the Yapfast window"),
     };
+    title_bar::show(&window, system_title_bar);
     if let Some(placement) = &placement {
         placement::place(&window, placement);
     }
@@ -375,6 +380,7 @@ fn watch_window(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
                             if let (Some(adapter), Some(window)) =
                                 (adapter.upgrade(), weak.upgrade())
                             {
+                                window.set_window_maximized(window.window().is_maximized());
                                 placement::moved(&mut adapter.borrow_mut(), &window);
                             }
                         });
@@ -867,6 +873,9 @@ struct Layout {
     custom_themes: Vec<theme::Custom>,
     /// Closing the window leaves Yapfast in the system tray; on unless turned off.
     close_to_tray: Option<bool>,
+    /// The desktop draws the window's title bar; unset, Yapfast draws its own
+    /// on desktops that give windows one. See [`title_bar`].
+    system_title_bar: Option<bool>,
     /// Where the window was when Yapfast last ran, and how big.
     window: Option<placement::Placement>,
 }
@@ -1060,6 +1069,7 @@ impl Layout {
         window.set_adjust_each_sound(self.adjust_each_sound);
         window.set_gpu_rendering(self.gpu_rendering);
         window.set_close_to_tray(self.close_to_tray.unwrap_or(true));
+        title_bar::show(window, self.system_title_bar);
         let each: Vec<i32> = Sound::ALL
             .iter()
             .map(|sound| self.each_sound.get(sound).copied().unwrap_or(100).into())

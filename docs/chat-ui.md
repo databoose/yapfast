@@ -240,6 +240,34 @@ the size: Wayland doesn't let a window choose its place, and an X11 place could
 be on a monitor that's gone. A window made again from the tray comes back
 from the same record.
 
+On Linux desktops that give their windows title bars, Yapfast draws its own
+in place of the desktop's, as Discord does (`src/ui/title_bar.rs`,
+`ui/title_bar.slint`): a 32px bar on the rail's ground across the top, with
+the server's name, "Direct messages" or "Yapfast" in the middle and
+minimize, maximize or restore, and close at the right. Pressing on it and
+moving moves the window, a double click maximizes it, and close does what
+the desktop's close button did. Without the desktop's frame, the window's
+outer 5px resize it, its 8px corners both ways, except while maximized. The
+desktop doesn't say whether it would draw a title bar: KWin and Hyprland
+both answer xdg-decoration with server-side, and only KWin draws one. So
+`XDG_CURRENT_DESKTOP` decides: KDE, GNOME, Cinnamon, XFCE, MATE, LXQt, LXDE,
+Budgie, Pantheon, Deepin, COSMIC, Unity and Enlightenment get Yapfast's bar,
+and a tiling compositor such as Hyprland, sway or niri, or any desktop not
+listed, keeps whatever the desktop draws, which may be nothing. "Use the
+system title bar" in Appearance overrides it either way
+(`system_title_bar` in `layout.json`) and applies at once. Each window is
+made with the desktop's frame or without it, through Slint's winit
+attributes hook, and a maximized one is made again when the setting changes,
+reopening on Appearance: where the desktop draws no frame, as on GNOME and
+Weston, winit draws one, and adding it to a maximized window or taking it
+off makes the window larger or smaller than maximized, for which Weston ends
+the connection. To try the bar, `scripts/ui-session start --desktop` runs
+Weston's desktop shell, whose windows move and resize, where its kiosk shell
+makes the window full screen, which hides the bar. A window
+without the desktop's frame gets no shadow from KWin or Mutter, and the
+desktop's title bar menu isn't offered: winit can't show it on Linux. In
+full screen, as a call's stage is, the bar goes. Windows keeps its own frame.
+
 The window follows Discord's arrangement:
 
 - A 72px server rail. Each server is a circle that becomes a rounded square,
