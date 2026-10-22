@@ -17,7 +17,7 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use livekit::webrtc::native::apm::AudioProcessingModule;
 use tokio::sync::mpsc::UnboundedSender;
-use yapfast_discord::voice::{CHANNELS, FRAME, Listener, Microphone, SAMPLE_RATE, Track};
+use yapfast_discord::voice::{CHANNELS, FRAME, Listener, Microphone, SAMPLE_RATE, Surplus, Track};
 
 use crate::{
     audio_io::{Input, Output},
@@ -406,12 +406,35 @@ pub fn speakers(
                     return;
                 }
             };
+            // The call's ticks run on the system's clock and the speakers
+            // on their own, so frames come a little faster or slower than
+            // they play: 50 ppm adds 90 ms in half an hour. What came while
+            // the last frame was written waits here, and a quiet frame goes
+            // while more wait than the ticks' unevenness needs.
+            let mut waiting = VecDeque::with_capacity(QUEUE + 1);
+            let mut surplus = Surplus::default();
             while !stopped.load(Ordering::Relaxed) {
-                let frame = match queue.recv_timeout(Duration::from_millis(100)) {
-                    Ok(frame) => frame,
-                    Err(RecvTimeoutError::Timeout) => continue,
-                    Err(RecvTimeoutError::Disconnected) => break,
+                while let Ok(frame) = queue.try_recv() {
+                    waiting.push_back(frame);
+                    if waiting.len() > QUEUE
+                        && let Some(oldest) = waiting.pop_front()
+                    {
+                        recycle(oldest);
+                    }
+                }
+                let frame = match waiting.pop_front() {
+                    Some(frame) => frame,
+                    None => match queue.recv_timeout(Duration::from_millis(100)) {
+                        Ok(frame) => frame,
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    },
                 };
+                surplus.note(waiting.len());
+                if surplus.skips(|| decibels(&frame) < SPEAKING_FLOOR) {
+                    recycle(frame);
+                    continue;
+                }
                 if let Err(error) = stream.write(&frame) {
                     tracing::warn!(
                         error = format!("{error:#}"),

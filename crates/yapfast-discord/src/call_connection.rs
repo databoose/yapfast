@@ -26,7 +26,7 @@ use crate::{
     call_video::{self, Camera, Receiving, VideoFrame},
     dave::Dave,
     opus, rtp,
-    voice::{FRAME, Listener},
+    voice::{FRAME, Listener, Surplus},
     voice_connection::{Closed, Connection, Identity, lock, receive, send_json},
 };
 
@@ -50,6 +50,9 @@ const START: usize = 3;
 const MOST: usize = 20;
 /// A speaker missing this many packets in a row has stopped: 100 ms.
 const GONE: u8 = 5;
+/// A decoded frame quieter than this, in mean square of full scale, can be
+/// skipped unheard: -40 dBFS.
+const QUIET: f32 = 1e-4;
 /// A speaker heard from no more in this long gives up their decoder.
 const FORGET: Duration = Duration::from_secs(10);
 /// A tick this late means the call stalled rather than woke late: its
@@ -643,6 +646,9 @@ struct Speaker {
     next: Option<u16>,
     /// Packets missing in a row.
     missing: u8,
+    /// Whether the packets wait longer than their lateness needs, as a
+    /// sender whose clock runs fast makes them.
+    surplus: Surplus,
     /// The last packet decoded, interleaved stereo: room for the longest an
     /// Opus packet can be, 120 ms. Voice comes in 20 ms packets, but music
     /// bots that pass a source's Opus through can send 40 or 60 ms ones.
@@ -668,6 +674,7 @@ impl Speaker {
             waiting: VecDeque::with_capacity(MOST + 1),
             next: None,
             missing: 0,
+            surplus: Surplus::default(),
             pcm: vec![0; LONGEST * usize::from(crate::voice::CHANNELS)],
             left: 0..0,
             heard: std::time::Instant::now(),
@@ -725,20 +732,15 @@ impl Speaker {
         {
             self.waiting.pop_front();
         }
-        self.next = Some(next.wrapping_add(1));
+        self.next = Some(next);
         let decoded = match self.waiting.front() {
             Some((sequence, _)) if *sequence == next => {
-                let (_, opus) = self.waiting.pop_front()?;
                 self.missing = 0;
-                let decoded = self.decoder.decode(&opus, &mut self.pcm, false);
-                if decoded.is_err() {
-                    tracing::debug!(
-                        sequence = next,
-                        length = opus.len(),
-                        head = ?&opus[..opus.len().min(12)],
-                        tail = ?&opus[opus.len().saturating_sub(4)..],
-                        "an undecodable call audio packet"
-                    );
+                let mut decoded = self.decode(next);
+                if let Ok(samples) = decoded
+                    && self.skips(samples)
+                {
+                    decoded = self.decode(next.wrapping_add(1));
                 }
                 decoded
             }
@@ -748,15 +750,25 @@ impl Speaker {
                     // Stopped talking: wait for them to start again.
                     self.next = None;
                     self.missing = 0;
+                    self.surplus = Surplus::default();
                     return None;
                 }
                 match waiting {
+                    // Nothing after it has come either: it's late rather
+                    // than lost, so it plays next. Each frame concealed so
+                    // makes the queue a frame longer, as far as the packets'
+                    // lateness, or the sender's slow clock, needs.
+                    None => self.decoder.conceal(&mut self.pcm[..frame]),
                     // The next packet carries this one's forward error
                     // correction.
                     Some((sequence, opus)) if *sequence == next.wrapping_add(1) => {
+                        self.next = Some(next.wrapping_add(1));
                         self.decoder.decode(opus, &mut self.pcm[..frame], true)
                     }
-                    _ => self.decoder.conceal(&mut self.pcm[..frame]),
+                    Some(_) => {
+                        self.next = Some(next.wrapping_add(1));
+                        self.decoder.conceal(&mut self.pcm[..frame])
+                    }
                 }
             }
         };
@@ -767,6 +779,47 @@ impl Speaker {
                 None
             }
         }
+    }
+
+    /// Decodes packet `sequence`, the first waiting, into `pcm`.
+    fn decode(&mut self, sequence: u16) -> Result<usize> {
+        let (_, opus) = self.waiting.pop_front().expect("a waiting packet");
+        self.next = Some(sequence.wrapping_add(1));
+        let decoded = self.decoder.decode(&opus, &mut self.pcm, false);
+        if decoded.is_err() {
+            tracing::debug!(
+                sequence,
+                length = opus.len(),
+                head = ?&opus[..opus.len().min(12)],
+                tail = ?&opus[opus.len().saturating_sub(4)..],
+                "an undecodable call audio packet"
+            );
+        }
+        decoded
+    }
+
+    /// Counts what waits after a packet was taken, and says whether to skip
+    /// the frame it decoded to, `samples` long, for the one after.
+    fn skips(&mut self, samples: usize) -> bool {
+        self.surplus.note(self.waiting.len());
+        let following = self.next.is_some_and(|next| {
+            self.waiting
+                .front()
+                .is_some_and(|(sequence, _)| *sequence == next)
+        });
+        // A long packet, as music bots send, would skip more than a frame.
+        if !following || samples != FRAME {
+            return false;
+        }
+        let played = &self.pcm[..samples * usize::from(crate::voice::CHANNELS)];
+        self.surplus.skips(|| {
+            let power = played
+                .iter()
+                .map(|sample| (f32::from(*sample) / 32768.0).powi(2))
+                .sum::<f32>()
+                / played.len() as f32;
+            power < QUIET
+        })
     }
 }
 
@@ -855,6 +908,67 @@ mod tests {
             &json!({"user_id": "9", "audio_ssrc": 0, "video_ssrc": 0}),
         );
         assert_eq!(media.users, HashMap::from([(100, 7), (200, 8)]));
+    }
+
+    /// Plays `seconds` of someone talking without a pause, their packets
+    /// sent `ppm` slower than the ticks (faster if negative) and each
+    /// arriving up to `jitter` ms late, and returns how many came too late
+    /// to play and the most that waited.
+    fn talk_without_a_pause(ppm: f64, jitter: u64, seconds: u64) -> (usize, usize) {
+        let mut encoder = opus::Encoder::new(1, opus::Application::Voice, BITRATE).unwrap();
+        let mut speaker = Speaker::new(7).unwrap();
+        // Speech has quiet moments: 60 ms in every 200 here.
+        let packets: Vec<Vec<u8>> = (0..50)
+            .map(|frame| {
+                if frame % 10 >= 7 {
+                    let mut packet = vec![0; 1500];
+                    let length = encoder.encode_float(&[0.0; FRAME], &mut packet).unwrap();
+                    packet.truncate(length);
+                    packet
+                } else {
+                    tone(&mut encoder, frame)
+                }
+            })
+            .collect();
+        let mut random = 12_345u64;
+        let mut arrivals: Vec<(u64, u16)> = (0..seconds * 50)
+            .map(|index| {
+                random = random
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
+                let late = (random >> 33) % (jitter * 1000 + 1);
+                let sent = (index as f64 * 20_000.0 * (1.0 + ppm * 1e-6)) as u64;
+                (sent + late, index as u16)
+            })
+            .collect();
+        arrivals.sort();
+        let (mut late, mut most) = (0, 0);
+        let mut arrivals = arrivals.into_iter().peekable();
+        for tick in 0..seconds * 50 {
+            while let Some((_, sequence)) = arrivals.next_if(|(at, _)| *at <= tick * 20_000) {
+                if speaker.next.is_some_and(|next| before(sequence, next)) {
+                    late += 1;
+                }
+                speaker.push(sequence, packets[usize::from(sequence) % 50].clone());
+            }
+            most = most.max(speaker.waiting.len());
+            speaker.next();
+        }
+        (late, most)
+    }
+
+    #[test]
+    fn a_slow_senders_clock_doesnt_make_them_choppy() {
+        // A sound card 50 ppm slow takes 90 ms in 30 minutes; 2000 ppm
+        // takes as much in 45 s.
+        let (late, _) = talk_without_a_pause(2000.0, 15, 120);
+        assert!(late < 10, "{late} packets came too late to play");
+    }
+
+    #[test]
+    fn a_fast_senders_clock_doesnt_build_up_delay() {
+        let (_, most) = talk_without_a_pause(-2000.0, 15, 120);
+        assert!(most <= START + 2, "{most} packets waited");
     }
 
     #[test]
