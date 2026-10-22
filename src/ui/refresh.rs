@@ -2488,11 +2488,15 @@ impl Adapter {
             }
         }
         let state = &self.app.state;
-        // A poll's time left counts down by the minute.
+        // A poll's time left counts down by the minute, and at midnight
+        // today's times become yesterday's.
         let minute = yapfast_core::clock::now_ms() / 60_000;
-        if self.poll_minute != minute {
-            self.poll_minute = minute;
-            self.restyle |= polls::open_poll(&state.messages, minute * 60);
+        if self.clock_minute != minute {
+            let date = yapfast_core::clock::date;
+            let new_day =
+                self.clock_minute != 0 && date(self.clock_minute * 60) != date(minute * 60);
+            self.clock_minute = minute;
+            self.restyle |= polls::open_poll(&state.messages, minute * 60) | new_day;
         }
         let restyle = std::mem::take(&mut self.restyle);
         // The thread beside builds its rows again with the timeline's.

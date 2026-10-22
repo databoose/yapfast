@@ -347,10 +347,16 @@ fn preferences_set_the_clock_text_size_previews_and_unmuting() {
         yapfast_core::noise::Suppressor::DeepFilterNet
     );
     let row = defaults.restyle(&message, message_row(&message, &HashSet::new()));
+    // A message from another day shows its date before its time, but beside
+    // a grouped message only the time.
+    let now = yapfast_core::clock::now_ms() / 1000;
+    let time = yapfast_core::clock::time_on(message.timestamp, false);
     assert_eq!(
         row.time,
-        yapfast_core::clock::time_on(message.timestamp, false)
+        yapfast_core::clock::sent(message.timestamp, now, false, false)
     );
+    assert!(row.time.contains('/') && row.time.ends_with(&format!(" {time}")));
+    assert_eq!(row.short_time, time);
     assert_eq!(row.embeds.row_count(), 1);
     let layout = Layout {
         twelve_hour_clock: true,
@@ -366,8 +372,10 @@ fn preferences_set_the_clock_text_size_previews_and_unmuting() {
     let row = layout.restyle(&message, message_row(&message, &HashSet::new()));
     let time = yapfast_core::clock::time_on(message.timestamp, true);
     assert!(time.ends_with(" AM") || time.ends_with(" PM"));
-    assert_eq!(row.time, time);
-    assert_eq!(row.time_styled, slint::StyledText::from_plain_text(&time));
+    let sent = yapfast_core::clock::sent(message.timestamp, now, true, false);
+    assert!(sent.ends_with(&time));
+    assert_eq!(row.time, sent);
+    assert_eq!(row.time_styled, slint::StyledText::from_plain_text(&sent));
     assert_eq!(row.short_time, time.split(' ').next().unwrap());
     assert_eq!(row.embeds.row_count(), 0);
     // A message that is only a card says it's hidden; one with text doesn't.

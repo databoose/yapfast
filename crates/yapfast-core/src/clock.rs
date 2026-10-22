@@ -74,6 +74,37 @@ where
     }
 }
 
+/// When a message was sent, as Discord's client stamps it from `now`: its
+/// time today, such as `21:41`, `Yesterday at …` or `Tomorrow at …`, and
+/// the date before the time on other days, `20/10/2026 21:41` on a 24-hour
+/// clock and `10/20/2026 9:41 PM` on a 12-hour one, as British and American
+/// English write it.
+pub fn sent(seconds: u64, now: u64, twelve_hour: bool, with_seconds: bool) -> String {
+    sent_in(&Local, seconds, now, twelve_hour, with_seconds)
+}
+
+fn sent_in<Tz: TimeZone>(
+    zone: &Tz,
+    seconds: u64,
+    now: u64,
+    twelve_hour: bool,
+    with_seconds: bool,
+) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let then = at(zone, seconds);
+    let days = (then.date_naive() - at(zone, now).date_naive()).num_days();
+    let time = time_in(zone, seconds, twelve_hour, with_seconds);
+    match days {
+        0 => time,
+        -1 => format!("Yesterday at {time}"),
+        1 => format!("Tomorrow at {time}"),
+        _ if twelve_hour => format!("{} {time}", then.format("%m/%d/%Y")),
+        _ => format!("{} {time}", then.format("%d/%m/%Y")),
+    }
+}
+
 /// The local calendar date of a Unix time, which [`day`] names; none when unknown.
 pub fn date(seconds: u64) -> Option<chrono::NaiveDate> {
     (seconds != 0).then(|| at(&Local, seconds).date_naive())
@@ -141,6 +172,39 @@ mod tests {
         assert_eq!(
             calendar_in(&utc, now + 4 * day, now, false),
             "Saturday at 23:30"
+        );
+    }
+
+    #[test]
+    fn sent_times_show_the_date_on_other_days_as_discords_client_does() {
+        // Tuesday 2026-10-06 23:30 UTC.
+        let now = 1_791_329_400;
+        let utc = FixedOffset::east_opt(0).unwrap();
+        let day = 86_400;
+        assert_eq!(sent_in(&utc, now - 60, now, false, false), "23:29");
+        assert_eq!(sent_in(&utc, now - 55, now, true, true), "11:29:05 PM");
+        assert_eq!(
+            sent_in(&utc, now - day, now, true, false),
+            "Yesterday at 11:30 PM"
+        );
+        assert_eq!(
+            sent_in(&utc, now - 2 * day, now, false, false),
+            "04/10/2026 23:30"
+        );
+        assert_eq!(
+            sent_in(&utc, now - 2 * day, now, true, false),
+            "10/04/2026 11:30 PM"
+        );
+        assert_eq!(
+            sent_in(&utc, now + day, now, false, false),
+            "Tomorrow at 23:30"
+        );
+        // Days turn at local midnight: two hours east, two hours ago was yesterday.
+        let plus_two = FixedOffset::east_opt(2 * 3600).unwrap();
+        assert_eq!(sent_in(&utc, now - 7200, now, false, false), "21:30");
+        assert_eq!(
+            sent_in(&plus_two, now - 7200, now, false, false),
+            "Yesterday at 23:30"
         );
     }
 }

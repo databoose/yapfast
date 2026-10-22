@@ -1046,19 +1046,24 @@ impl Layout {
         window.set_each_sound(ModelRc::new(VecModel::from(each)));
     }
 
-    /// A message's row as these preferences show it: its time on the chosen clock, and its
-    /// link previews only when they're on.
+    /// A message's row as these preferences show it: its time on the chosen clock, with its
+    /// date when it's from another day, and its link previews only when they're on.
     fn restyle(&self, message: &ChatMessage, mut row: MessageRow) -> MessageRow {
         if message.timestamp != 0 {
-            let time = yapfast_core::clock::time_with(
-                message.timestamp,
-                self.twelve_hour_clock,
-                self.clock_seconds,
-            );
-            // The gutter beside a grouped message is narrow, so it leaves out AM and PM.
+            let (twelve_hour, with_seconds) = (self.twelve_hour_clock, self.clock_seconds);
+            let now = yapfast_core::clock::now_ms() / 1000;
+            let sent = yapfast_core::clock::sent(message.timestamp, now, twelve_hour, with_seconds);
+            // The gutter beside a grouped message is narrow, so it shows only the clock time,
+            // without AM and PM.
+            let time = yapfast_core::clock::time_with(message.timestamp, twelve_hour, with_seconds);
             row.short_time = time.split_whitespace().next().unwrap_or_default().into();
-            row.time_styled = slint::StyledText::from_plain_text(&time);
-            row.time = time.into();
+            if let Some(notice) = &message.notice
+                && !message.blocked
+            {
+                row.styled = notice_text(message, notice, &sent);
+            }
+            row.time_styled = slint::StyledText::from_plain_text(&sent);
+            row.time = sent.into();
         }
         if !self.link_previews.unwrap_or(true) {
             row.embeds = ModelRc::default();
@@ -1342,8 +1347,9 @@ struct Adapter {
     /// Spoilers clicked, and what was picked or shown on polls; see
     /// `message_row`.
     revealed: HashSet<String>,
-    /// The minute the timeline was last checked for a poll's time left.
-    poll_minute: u64,
+    /// The minute the timeline was last checked for a poll's time left, and
+    /// for a new day, which moves its messages' times to yesterday.
+    clock_minute: u64,
     /// The preferences that shape message rows changed, so they're built again.
     restyle: bool,
     /// Appearance's theme editor, while it's open.
@@ -1540,7 +1546,7 @@ impl Adapter {
                 unread_jumped: 0,
                 latest_due: false,
                 revealed: HashSet::new(),
-                poll_minute: 0,
+                clock_minute: 0,
                 restyle: false,
                 theme_editor: None,
                 aside_messages: Arc::new(Vec::new()),

@@ -278,7 +278,11 @@ pub(super) fn escape_markdown(text: &str) -> String {
 /// A notice as Discord's client words it: its author's name in bold, in
 /// their role colour, opening their card; what it tells of, a pin's with
 /// links to the message and to the pinned messages; then when.
-fn notice_text(message: &ChatMessage, notice: &yapfast_core::chat::Notice) -> slint::StyledText {
+pub(super) fn notice_text(
+    message: &ChatMessage,
+    notice: &yapfast_core::chat::Notice,
+    time: &str,
+) -> slint::StyledText {
     use yapfast_core::chat::NoticeKind;
     let hex = |rgb: u32| format!("#{:06x}", rgb & 0xff_ffff);
     let strong = |text: &str, rgb: u32, link: Option<&str>| {
@@ -312,7 +316,7 @@ fn notice_text(message: &ChatMessage, notice: &yapfast_core::chat::Notice) -> sl
     let time = format!(
         "<font color=\"{}\">{}</font>",
         hex(theme::muted_color()),
-        escape_markdown(&message.time)
+        escape_markdown(time)
     );
     slint::StyledText::from_markdown(&format!("{author}{text}  {time}"))
         .unwrap_or_else(|_| slint::StyledText::from_plain_text(&message.body))
@@ -415,7 +419,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
     let body = custom_emoji::text(&message.body, &message.emoji);
     let jumbo = message.formatted && custom_emoji::only_emoji(&body);
     let styled = if let Some(notice) = &message.notice {
-        notice_text(message, notice)
+        notice_text(message, notice, &message.time)
     } else if message.formatted {
         let linked = with_mentions(&body, &message.mentions);
         if message.spoilers {
@@ -744,9 +748,9 @@ fn thread_detail(thread: &yapfast_core::chat::ThreadLink) -> String {
 /// messages' and search's 420px, less the card's padding and avatar.
 const FOUND_GALLERY_WIDTH: i32 = 300;
 
-/// A pinned message or a search result as its card shows it, sent at a
-/// time on the chosen clock, its spoilers hidden, its first pictures shown
-/// and its other files named.
+/// A pinned message or a search result as its card shows it, stamped as the
+/// timeline stamps it on the chosen clock, its spoilers hidden, its first
+/// pictures shown and its other files named.
 pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
     let styled = if message.formatted {
         let body = spoiler::hide(&custom_emoji::text(&message.body, &message.emoji));
@@ -755,7 +759,8 @@ pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
         plain_with_links(&message.body)
             .unwrap_or_else(|| slint::StyledText::from_plain_text(&message.body))
     };
-    let time = yapfast_core::clock::time_on(message.timestamp, twelve_hour);
+    let now = yapfast_core::clock::now_ms() / 1000;
+    let time = yapfast_core::clock::sent(message.timestamp, now, twelve_hour, false);
     let pictures: Vec<Preview<'_>> = message
         .attachments
         .iter()
@@ -788,9 +793,10 @@ pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
         picture_url: message.avatar.clone().unwrap_or_default().into(),
         color: role_color(message.color),
         has_color: message.color.is_some(),
-        when: match day(message.timestamp) {
-            day if day.is_empty() => time.into(),
-            day => format!("{day} {time}").into(),
+        when: if message.timestamp == 0 {
+            SharedString::default()
+        } else {
+            time.into()
         },
         styled,
         has_body: !message.body.trim().is_empty(),
