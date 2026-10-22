@@ -2767,11 +2767,13 @@ fn clicked_mentions_show_people_and_roles() {
                     text: "@Riley".into(),
                     target: Target::User("@riley:test".into()),
                     color: None,
+                    at: vec![0],
                 },
                 Mentioned {
                     text: "@Mods".into(),
                     target: Target::Role("30".into()),
                     color: Some(0x3498db),
+                    at: vec![11],
                 },
             ],
             ..message("e:$bob", false)

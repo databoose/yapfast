@@ -196,9 +196,11 @@ pub(super) fn markdown(body: &str) -> slint::StyledText {
 }
 
 /// Someone's Markdown with its mentions linked, ready for [`styled`]. Its
-/// HTML is escaped first, so the only HTML left is the mentions' own.
+/// HTML is escaped, so the only HTML left is the mentions' own. The
+/// mentions are where the body as rendered has them, so this comes before
+/// anything else changes it.
 fn with_mentions(body: &str, mentions: &[yapfast_core::mention::Mentioned]) -> String {
-    mention::linked(&links::escape_html(body), mentions, theme::mention_color())
+    mention::linked(body, mentions, theme::mention_color())
 }
 
 /// Markdown as styled text, with web addresses linked. Slint's Markdown
@@ -416,12 +418,16 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
     // Plain text shows as typed, its web addresses linked.
     // Mentions link to who they mention, which opens their card.
     // Custom emoji show as their glyphs once they have them.
-    let body = custom_emoji::text(&message.body, &message.emoji);
-    let jumbo = message.formatted && custom_emoji::only_emoji(&body);
+    let linked = if message.formatted {
+        let linked = with_mentions(&message.body, &message.mentions);
+        custom_emoji::text(&linked, &message.emoji)
+    } else {
+        String::new()
+    };
+    let jumbo = message.formatted && custom_emoji::only_emoji(&linked);
     let styled = if let Some(notice) = &message.notice {
         notice_text(message, notice, &message.time)
     } else if message.formatted {
-        let linked = with_mentions(&body, &message.mentions);
         if message.spoilers {
             styled(&spoiler::mark(&linked, &message.item, |index| {
                 revealed.contains(&format!("{}/{index}", message.item))
@@ -753,8 +759,8 @@ const FOUND_GALLERY_WIDTH: i32 = 300;
 /// pictures shown and its other files named.
 pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
     let styled = if message.formatted {
-        let body = spoiler::hide(&custom_emoji::text(&message.body, &message.emoji));
-        styled(&with_mentions(&body, &message.mentions))
+        let linked = with_mentions(&message.body, &message.mentions);
+        styled(&spoiler::hide(&custom_emoji::text(&linked, &message.emoji)))
     } else {
         plain_with_links(&message.body)
             .unwrap_or_else(|| slint::StyledText::from_plain_text(&message.body))
@@ -827,13 +833,14 @@ pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
 /// A Discord channel's topic, as its header shows it: on one line, or in
 /// full.
 pub(super) fn topic_text(topic: &yapfast_core::chat::Topic, one_line: bool) -> slint::StyledText {
-    let body = custom_emoji::text(&topic.body, &topic.emoji);
+    let linked = with_mentions(&topic.body, &topic.mentions);
+    let body = custom_emoji::text(&linked, &topic.emoji);
     let body = if one_line {
         body.split_whitespace().collect::<Vec<_>>().join(" ")
     } else {
         body
     };
-    styled(&with_mentions(&body, &topic.mentions))
+    styled(&body)
 }
 
 /// Whether a message shows collapsed, being from someone blocked.

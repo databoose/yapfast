@@ -5099,6 +5099,7 @@ fn a_theme_paints_the_window_and_the_mentions_in_its_rows() {
             text: "@Bob".into(),
             target: yapfast_core::mention::Target::User("2".into()),
             color: None,
+            at: vec![3],
         }],
         ..Default::default()
     };

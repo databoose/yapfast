@@ -77,6 +77,11 @@ pub(super) fn found(
         .unwrap_or_else(|| message.author.clone());
     let ordinary = message.system.is_none();
     let timestamp = message.timestamp();
+    let (body, mentions) = rendered(discord, server, &message.content);
+    let body = match &message.system {
+        Some(system) => system_body(&author, system),
+        None => body,
+    };
     ChatMessage {
         id: format!("d:{}", message.id),
         item: format!("d:{}", message.id),
@@ -85,10 +90,7 @@ pub(super) fn found(
         avatar: Some(discord.avatar(guild, &message.author_id)),
         color: server.and_then(|server| discord.color(server, &message.author_id)),
         bot: message.bot,
-        body: match &message.system {
-            Some(system) => system_body(&author, system),
-            None => discord.render(server, &message.content),
-        },
+        body,
         author,
         formatted: ordinary,
         time: crate::clock::time(timestamp),
@@ -117,7 +119,7 @@ pub(super) fn found(
                 ),
             })
             .collect(),
-        mentions: mentions(discord, server, &message.content),
+        mentions,
         emoji: custom_emoji(message),
         // Shown, not voted in: its author can't end it from here either.
         poll: message.poll.as_ref().map(|poll| chat_poll(poll, false)),
@@ -377,9 +379,10 @@ fn topic(
     server: Option<&yapfast_discord::ready::Server>,
     raw: &str,
 ) -> Arc<Topic> {
+    let (body, mentions) = rendered(discord, server, raw);
     Arc::new(Topic {
-        body: discord.render(server, raw),
-        mentions: mentions(discord, server, raw),
+        body,
+        mentions,
         emoji: emoji_in(raw),
     })
 }
@@ -396,34 +399,36 @@ pub(super) fn forum_topic(discord: &Discord, guild: &str, forum: &str) -> Option
     Some(topic(discord, Some(server), &raw))
 }
 
-/// Who and what a message mentions, as its rendered body shows them.
-pub(super) fn mentions(
+/// A message's body as Yapfast shows it, and who and what it mentions there.
+pub(super) fn rendered(
     discord: &Discord,
     server: Option<&yapfast_discord::ready::Server>,
     content: &str,
-) -> Vec<Mentioned> {
-    discord
-        .mentions(server, content)
+) -> (String, Vec<Mentioned>) {
+    let (body, mentions) = discord.render_mentions(server, content);
+    let mentions = mentions
         .into_iter()
-        .map(|(text, role, id)| {
+        .map(|mention| {
             let color = server.and_then(|server| {
-                if role {
-                    server.role_colors.get(&id).map(|(_, color)| *color)
+                if mention.role {
+                    server.role_colors.get(&mention.id).map(|(_, color)| *color)
                 } else {
-                    discord.color(server, &id)
+                    discord.color(server, &mention.id)
                 }
             });
             Mentioned {
-                text,
-                target: if role {
-                    Target::Role(id)
+                text: mention.text,
+                target: if mention.role {
+                    Target::Role(mention.id)
                 } else {
-                    Target::User(id)
+                    Target::User(mention.id)
                 },
                 color,
+                at: mention.at,
             }
         })
-        .collect()
+        .collect();
+    (body, mentions)
 }
 
 /// The roles a message in a server channel may mention, after @everyone and @here

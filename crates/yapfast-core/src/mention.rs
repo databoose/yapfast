@@ -28,6 +28,9 @@ pub struct Mentioned {
     pub target: Target,
     /// The RGB colour of the role, or of the person's name.
     pub color: Option<u32>,
+    /// Where the text starts in the message's body, a byte offset each time
+    /// it mentions them.
+    pub at: Vec<usize>,
 }
 
 /// Who a mention points at: a user, by Discord or Matrix id, or a Discord role.
@@ -66,38 +69,84 @@ pub fn target(link: &str) -> Option<Target> {
     (user.starts_with('@') && user.contains(':')).then_some(Target::User(user))
 }
 
-/// Markdown with each mention's text, outside code, linked to its target and in
-/// its colour, which the message draws behind it too. A mention without a
-/// colour of its own takes `link_color`, `0xrrggbb`: the theme's for links.
+/// Someone's Markdown with its HTML escaped, as [`crate::links::escape_html`]
+/// does, and each mention outside code linked to its target and in its
+/// colour, which the message draws behind it too. A mention is only where
+/// the message's tag for it was, at its offsets, as Discord's client shows
+/// them: `@Bobby` typed as text isn't Bob's. A mention without a colour of
+/// its own takes `link_color`, `0xrrggbb`: the theme's for links.
 pub fn linked(markdown: &str, mentions: &[Mentioned], link_color: u32) -> String {
-    if mentions.is_empty() {
-        return markdown.to_owned();
+    let escaped = crate::links::escape_html(markdown);
+    let mut found: Vec<(usize, &Mentioned)> = mentions
+        .iter()
+        .filter(|mention| !mention.text.is_empty())
+        .flat_map(|mention| mention.at.iter().map(move |&at| (at, mention)))
+        .collect();
+    if found.is_empty() {
+        return escaped.into_owned();
     }
-    let mut sorted: Vec<&Mentioned> = mentions.iter().filter(|m| !m.text.is_empty()).collect();
-    sorted.sort_by_key(|mention| std::cmp::Reverse(mention.text.len()));
-    let mut out = String::with_capacity(markdown.len() + 32 * mentions.len());
+    found.sort_by_key(|(at, _)| *at);
+    shift(markdown, &escaped, &mut found);
+    let mut out = String::with_capacity(escaped.len() + 64 * found.len());
     let mut code = false;
-    let mut rest = markdown;
-    while let Some(next) = rest.chars().next() {
-        if next == '`' {
-            code = !code;
-        }
-        if !code && let Some(mention) = sorted.iter().find(|m| rest.starts_with(&m.text)) {
-            // A name is shown as typed: one such as `[x](https://…)` would
-            // otherwise be a link of its own.
-            let text = crate::links::escape_markdown(&mention.text);
-            let color = mention.color.unwrap_or(link_color) & 0xff_ffff;
-            out.push_str(&format!(
-                "<font color=\"#{color:06x}\">[{text}](<{}>)</font>",
-                link(&mention.target)
-            ));
-            rest = &rest[mention.text.len()..];
+    let mut last = 0;
+    for (at, mention) in found {
+        if at < last
+            || !escaped
+                .get(at..)
+                .is_some_and(|rest| rest.starts_with(&mention.text))
+        {
             continue;
         }
-        out.push(next);
-        rest = &rest[next.len_utf8()..];
+        let before = &escaped[last..at];
+        code ^= before.matches('`').count() % 2 == 1;
+        out.push_str(before);
+        last = at;
+        if code {
+            continue;
+        }
+        // A name is shown as typed: one such as `[x](https://…)` would
+        // otherwise be a link of its own.
+        let text = crate::links::escape_markdown(&mention.text);
+        let color = mention.color.unwrap_or(link_color) & 0xff_ffff;
+        out.push_str(&format!(
+            "<font color=\"#{color:06x}\">[{text}](<{}>)</font>",
+            link(&mention.target)
+        ));
+        last = at + mention.text.len();
     }
+    out.push_str(&escaped[last..]);
     out
+}
+
+/// Moves each offset into `original` to the same place in `escaped`, which
+/// is `original` with backslashes put in before some of its `<`. The
+/// offsets are in order.
+fn shift(original: &str, escaped: &str, offsets: &mut [(usize, &Mentioned)]) {
+    if original.len() == escaped.len() {
+        return;
+    }
+    let (original, escaped) = (original.as_bytes(), escaped.as_bytes());
+    let (mut from, mut to) = (0, 0);
+    for (at, _) in offsets {
+        while from < *at && from < original.len() {
+            if escaped[to] == original[from] {
+                from += 1;
+            }
+            to += 1;
+        }
+        *at = to;
+    }
+}
+
+/// Whether a name followed by `after` ends there, rather than going on into a
+/// longer word.
+fn ends_name(after: &str) -> bool {
+    !after.starts_with(is_name_char)
+}
+
+fn is_name_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
 /// Names longer than this aren't looked up while typing.
@@ -202,10 +251,7 @@ fn found<'a>(text: &str, candidates: &'a [Candidate]) -> Vec<(Range<usize>, &'a 
                 after
                     .get(..name.len())
                     .is_some_and(|head| head.eq_ignore_ascii_case(name))
-                    && after[name.len()..]
-                        .chars()
-                        .next()
-                        .is_none_or(|end| !end.is_alphanumeric() && end != '_')
+                    && ends_name(&after[name.len()..])
             });
             if let Some(candidate) = candidate {
                 let end = at + 1 + candidate.name.len();
@@ -238,27 +284,45 @@ mod tests {
 
     #[test]
     fn mentions_link_to_who_they_mention() {
-        let mentions = [
-            Mentioned {
-                text: "@Bob".into(),
-                target: Target::User("2".into()),
-                color: None,
-            },
-            Mentioned {
-                text: "@Mods".into(),
-                target: Target::Role("30".into()),
-                color: Some(0x3498db),
-            },
-        ];
+        let bob = |at: &[usize]| Mentioned {
+            text: "@Bob".into(),
+            target: Target::User("2".into()),
+            color: None,
+            at: at.to_vec(),
+        };
+        let mods = Mentioned {
+            text: "@Mods".into(),
+            target: Target::Role("30".into()),
+            color: Some(0x3498db),
+            at: vec![13],
+        };
+        let pill = "<font color=\"#7cc4ff\">[\\@Bob](<yapfast:user/2>)</font>";
         assert_eq!(
-            linked("hi @Bob, ask @Mods but not `@Bob`", &mentions, 0x7cc4ff),
-            "hi <font color=\"#7cc4ff\">[\\@Bob](<yapfast:user/2>)</font>, \
-             ask <font color=\"#3498db\">[\\@Mods](<yapfast:role/30>)</font> but not `@Bob`"
+            linked(
+                "hi @Bob, ask @Mods but not `@Bob`",
+                &[bob(&[3, 28]), mods],
+                0x7cc4ff
+            ),
+            format!(
+                "hi {pill}, ask <font color=\"#3498db\">[\\@Mods](<yapfast:role/30>)</font> \
+                 but not `@Bob`"
+            )
+        );
+        // Only where the message's tag was: `<@2>by`, not `@Bob` typed.
+        assert_eq!(
+            linked("@Bobby and @Bob", &[bob(&[0])], 0x7cc4ff),
+            format!("{pill}by and @Bob")
+        );
+        assert_eq!(
+            linked("<b>x</b> @Bob", &[bob(&[9])], 0x7cc4ff),
+            format!("\\<b>x\\</b> {pill}"),
+            "escaping the HTML moves the mention"
         );
         let named = [Mentioned {
             text: "@[Support](https://evil.example)".into(),
             target: Target::User("3".into()),
             color: None,
+            at: vec![0],
         }];
         assert!(
             linked("@[Support](https://evil.example)", &named, 0)

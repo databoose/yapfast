@@ -1322,32 +1322,6 @@ impl Names {
         members
     }
 
-    /// The users and roles a message mentions, each with the text [`Names::render`]
-    /// shows for it: `(text, role, id)`.
-    pub fn mentions(&self, server: Option<&Server>, content: &str) -> Vec<(String, bool, String)> {
-        let guild = server.map_or("", |server| server.id.as_str());
-        let mut found: Vec<(String, bool, String)> = Vec::new();
-        let mut rest = content;
-        while let Some(start) = rest.find("<@") {
-            rest = &rest[start..];
-            let Some(end) = rest.find('>') else {
-                break;
-            };
-            let tag = &rest[1..end];
-            let (role, id) = match tag.strip_prefix("@&") {
-                Some(id) => (true, id),
-                None => (false, tag.strip_prefix("@!").unwrap_or(&tag[1..])),
-            };
-            if let Some(text) = self.tag(server, guild, tag)
-                && !found.iter().any(|(_, _, known)| known == id)
-            {
-                found.push((text, role, id.to_owned()));
-            }
-            rest = &rest[end + 1..];
-        }
-        found
-    }
-
     /// A member's roles in a server, as far as they're known.
     pub fn roles(&self, guild: &str, user: &str) -> &[String] {
         self.shared(guild, user).map_or(&[], |roles| roles)
@@ -1466,6 +1440,47 @@ impl Names {
     /// Discord Markdown for Yapfast: mentions, custom emoji and timestamps
     /// become text.
     pub fn render(&self, server: Option<&Server>, content: &str) -> String {
+        self.render_tags(server, content, |_, _, _| {})
+    }
+
+    /// [`Names::render`], with the users and roles the message mentions:
+    /// each with the text it shows for them and where that text starts, each
+    /// time, as Discord's client draws a mention where its tag was.
+    pub fn render_mentions(
+        &self,
+        server: Option<&Server>,
+        content: &str,
+    ) -> (String, Vec<Mention>) {
+        let mut mentions: Vec<Mention> = Vec::new();
+        let rendered = self.render_tags(server, content, |tag, at, text| {
+            let (role, id) = match tag.strip_prefix("@&") {
+                Some(id) => (true, id),
+                None => match tag.strip_prefix("@!").or_else(|| tag.strip_prefix('@')) {
+                    Some(id) => (false, id),
+                    None => return,
+                },
+            };
+            match mentions.iter_mut().find(|known| known.id == id) {
+                Some(known) => known.at.push(at),
+                None => mentions.push(Mention {
+                    text: text.to_owned(),
+                    role,
+                    id: id.to_owned(),
+                    at: vec![at],
+                }),
+            }
+        });
+        (rendered, mentions)
+    }
+
+    /// [`Names::render`], telling `rendered` of each tag shown as text: the
+    /// tag, where its text starts and the text.
+    fn render_tags(
+        &self,
+        server: Option<&Server>,
+        content: &str,
+        mut rendered_tag: impl FnMut(&str, usize, &str),
+    ) -> String {
         let guild = server.map_or("", |server| server.id.as_str());
         let mut rendered = String::with_capacity(content.len());
         let mut rest = content;
@@ -1478,6 +1493,7 @@ impl Names {
             let tag = &rest[1..end];
             match self.tag(server, guild, tag) {
                 Some(text) => {
+                    rendered_tag(tag, rendered.len(), &text);
                     rendered.push_str(&text);
                     rest = &rest[end + 1..];
                 }
@@ -1518,6 +1534,19 @@ impl Names {
             None
         }
     }
+}
+
+/// A user or role a message mentions, as [`Names::render_mentions`] finds them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mention {
+    /// The text the message shows for them, such as `@Ann`.
+    pub text: String,
+    pub role: bool,
+    /// The user's or role's id.
+    pub id: String,
+    /// Where the text starts in the rendered message, a byte offset each
+    /// time it mentions them.
+    pub at: Vec<usize>,
 }
 
 /// `text` with Markdown's punctuation escaped by backslashes.
@@ -2063,12 +2092,21 @@ mod tests {
             ]
         );
         assert!(names.knows_member("10", "2") && !names.knows_member("10", "1"));
+        let mention = |text: &str, role, id: &str, at: &[usize]| Mention {
+            text: text.into(),
+            role,
+            id: id.into(),
+            at: at.to_vec(),
+        };
         assert_eq!(
-            names.mentions(Some(&server), "<@2> and <@!2>, <@&30>, <#11> <@x"),
-            [
-                ("@Annie".to_owned(), false, "2".to_owned()),
-                ("@Mods".to_owned(), true, "30".to_owned())
-            ]
+            names.render_mentions(Some(&server), "<@2> and <@!2>, <@&30>, <#11> <@x"),
+            (
+                "@Annie and @Annie, @Mods, #general <@x".to_owned(),
+                vec![
+                    mention("@Annie", false, "2", &[0, 11]),
+                    mention("@Mods", true, "30", &[19])
+                ]
+            )
         );
         names.learn_member("10", &json!({"user_id": "2", "roles": ["30"]}));
         names.learn_member("10", &json!({"user_id": "3", "roles": ["31"]}));

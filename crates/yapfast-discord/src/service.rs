@@ -2644,9 +2644,14 @@ impl Discord {
         server.color(self.read_names().roles(&server.id, user))
     }
 
-    /// The users and roles a message mentions: `(text, role, id)`.
-    pub fn mentions(&self, server: Option<&Server>, content: &str) -> Vec<(String, bool, String)> {
-        self.read_names().mentions(server, content)
+    /// [`Discord::render`], with the users and roles the message mentions and
+    /// where.
+    pub fn render_mentions(
+        &self,
+        server: Option<&Server>,
+        content: &str,
+    ) -> (String, Vec<message::Mention>) {
+        self.read_names().render_mentions(server, content)
     }
 
     /// The members known to hold `role` in a server, by user id.

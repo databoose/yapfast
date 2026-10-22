@@ -7,7 +7,7 @@ use crate::chat::SendOptions;
 
 use super::{
     channels::SharedPreviews,
-    render::{chat_embed, chat_notice, chat_poll, custom_emoji, mentions, sent_id, system_body},
+    render::{chat_embed, chat_notice, chat_poll, custom_emoji, rendered, sent_id, system_body},
     *,
 };
 
@@ -1330,6 +1330,7 @@ impl OpenChannel {
         let me_avatar = discord.avatar(Some(&self.guild), &me);
         let me_color = server.and_then(|server| discord.color(server, &me));
         for pending in pending {
+            let (body, mentions) = rendered(discord, server, &pending.body);
             rows.push(Arc::new(ChatMessage {
                 id: format!("n:{}", pending.nonce),
                 item: format!("n:{}", pending.nonce),
@@ -1339,8 +1340,8 @@ impl OpenChannel {
                 avatar: Some(me_avatar.clone()),
                 color: me_color,
                 // Sent with its mentions in Discord's form, shown with their names.
-                body: discord.render(server, &pending.body),
-                mentions: mentions(discord, server, &pending.body),
+                body,
+                mentions,
                 formatted: true,
                 own: true,
                 delivery: if pending.failed {
@@ -1404,9 +1405,10 @@ impl OpenChannel {
         };
         let own = message.author_id == me;
         let author = name(&message.author_id, &message.author);
+        let (body, mentions) = rendered(discord, server, &message.content);
         let body = match &message.system {
             Some(system) => system_body(&author, system),
-            None => discord.render(server, &message.content),
+            None => body,
         };
         let attachments = message
             .attachments
@@ -1521,7 +1523,7 @@ impl OpenChannel {
                 .collect(),
             attachments,
             embeds,
-            mentions: mentions(discord, server, &message.content),
+            mentions,
             emoji: custom_emoji(message),
             can_reply: ordinary,
             can_edit: own && message.editable,
