@@ -263,8 +263,11 @@ export component YapfastWindow inherits Window {
     /// The account is speaking in the call, unmuted, as its own row there shows.
     in property <bool> account-speaking;
     in property <string> account-status;
+    /// The game the Discord account shows it plays, and for how long, which
+    /// the window asks for with `game-duration-due` while the menu shows it.
     in property <string> game-activity-name;
     in property <string> game-activity-duration;
+    callback game-duration-due();
     /// The address of the picture of the custom emoji in the account's status.
     in property <string> account-status-emoji;
     in property <string> storage;
@@ -343,9 +346,10 @@ export component YapfastWindow inherits Window {
     callback sync-discord-reads-toggled(bool);
     in-out property <bool> show-idle: true;
     callback show-idle-toggled(bool);
-    in-out property <bool> game-activity-enabled: true;
+    /// The Discord account shares the game it plays, as its settings say.
+    in property <bool> show-game;
     in property <[GameExecutable]> game-executables;
-    callback game-activity-toggled(bool);
+    callback show-game-toggled(bool);
     callback save-game-executable(int, string, string) -> bool;
     callback remove-game-executable(int);
     in-out property <bool> hide-blocked;
@@ -1525,6 +1529,7 @@ export component YapfastWindow inherits Window {
     function open-status-menu() {
         root.menu-x = account-panel.absolute-position.x + 8px;
         root.menu-y = account-panel.absolute-position.y;
+        root.game-duration-due();
         status-menu.show();
     }
     // The composer's +, where threads can start: upload a file or start one.
@@ -1562,6 +1567,7 @@ export component YapfastWindow inherits Window {
         status-menu-content := StatusMenu {
             status: root.discord-status; has-custom-status: root.has-custom-status;
             game-name: root.game-activity-name; game-duration: root.game-activity-duration;
+            game-duration-due => { root.game-duration-due(); }
             choose(status) => { root.set-status(status); status-menu.close(); }
             custom-status => { root.open-status(); status-menu.close(); }
             edit-profile => { root.edit-profile(); status-menu.close(); }
@@ -3159,8 +3165,8 @@ export component YapfastWindow inherits Window {
             restart => { root.restart(); }
         }
         if root.settings-section == 8: GameActivitySettings {
-            enabled: root.game-activity-enabled; executables: root.game-executables;
-            toggled(enabled) => { root.game-activity-toggled(enabled); }
+            shown: root.show-game; linked: root.discord-linked; executables: root.game-executables;
+            toggled(shown) => { root.show-game-toggled(shown); }
             save(index, executable, text) => { return root.save-game-executable(index, executable, text); }
             remove(index) => { root.remove-game-executable(index); }
         }

@@ -473,7 +473,7 @@ async fn live_where<T>(
 /// Alice has a custom status. The normal service runner opts in with a private
 /// directory so this test never takes the desktop's Discord IPC socket.
 #[cfg(target_os = "linux")]
-async fn plays_through_rpc(server: &str, directory: &std::path::Path) {
+async fn plays_through_rpc(discord: &Discord, server: &str, directory: &std::path::Path) {
     use serde_json::{Value, json};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -639,13 +639,23 @@ async fn plays_through_rpc(server: &str, directory: &std::path::Path) {
     // Disconnect without a clear must remove the game, preserving custom status.
     drop(first);
     if detected.is_some() {
-        use yapfast_discord::game_detection::preferences;
-        let custom = vec![("yapfast_detected_game".into(), "My custom game".into())];
-        preferences::set(true, custom.clone());
+        use yapfast_discord::game_detection::custom_games::{self, CustomGame};
+        custom_games::set(vec![CustomGame {
+            executable: "yapfast_detected_game".into(),
+            name: "My custom game".into(),
+        }]);
         presence_where(server, |p| {
             p["activities"]
                 .as_array()
                 .is_some_and(|a| a.iter().any(|a| a["name"] == "My custom game"))
+        })
+        .await;
+        // The account's menu shows the same game.
+        snapshot_where(discord, |snapshot| {
+            snapshot
+                .playing
+                .as_ref()
+                .is_some_and(|playing| playing.name == "My custom game")
         })
         .await;
         let mut disabled_client = connect(directory).await;
@@ -657,7 +667,7 @@ async fn plays_through_rpc(server: &str, directory: &std::path::Path) {
                 .is_some_and(|a| a.iter().any(|a| a["details"] == "Before disabling"))
         })
         .await;
-        preferences::set(false, custom.clone());
+        discord.set_show_game(false).await.unwrap();
         presence_where(server, |p| {
             p["activities"]
                 .as_array()
@@ -680,14 +690,18 @@ async fn plays_through_rpc(server: &str, directory: &std::path::Path) {
                 .unwrap(),
             0
         );
-        preferences::set(true, custom);
+        snapshot_where(discord, |snapshot| {
+            !snapshot.show_game && snapshot.playing.is_none()
+        })
+        .await;
+        discord.set_show_game(true).await.unwrap();
         presence_where(server, |p| {
             p["activities"]
                 .as_array()
                 .is_some_and(|a| a.iter().any(|a| a["name"] == "My custom game"))
         })
         .await;
-        preferences::set(true, Vec::new());
+        custom_games::set(Vec::new());
         drop(connect(directory).await);
         presence_where(server, |p| {
             p["activities"]
@@ -2419,7 +2433,7 @@ async fn talks_to_the_fake_server() {
     .await;
     #[cfg(target_os = "linux")]
     if let Some(directory) = std::env::var_os("YAPFAST_DISCORD_RPC_DIR") {
-        plays_through_rpc(server, std::path::Path::new(&directory)).await;
+        plays_through_rpc(&discord, server, std::path::Path::new(&directory)).await;
     }
     let away = CustomStatus {
         text: "Fixing the bridge".into(),

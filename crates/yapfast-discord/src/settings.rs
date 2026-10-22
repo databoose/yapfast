@@ -3,7 +3,7 @@
 //! folders.
 //! The settings are a protobuf message, `PreloadedUserSettings`, in base64;
 //! Yapfast reads its `status` and `guild_folders` fields and writes only `status`,
-//! by hand.
+//! by hand. `status` also says whether the account shares the game it plays.
 //!
 //! Each session tells the gateway its presence, so Yapfast sends the status the
 //! settings hold once connected, and again when they change.
@@ -19,6 +19,9 @@ const VOICE_AFK_TIMEOUT: u64 = 6;
 /// `StatusSettings.status`, a `StringValue`, and `StatusSettings.custom_status`.
 const STATUS_STATUS: u64 = 1;
 const STATUS_CUSTOM: u64 = 2;
+/// `StatusSettings.show_current_game`, a `BoolValue`: whether the account
+/// shares the game it plays and the Rich Presence games send.
+const STATUS_SHOW_GAME: u64 = 3;
 /// `CustomStatus`'s fields.
 const CUSTOM_TEXT: u64 = 1;
 const CUSTOM_EMOJI_ID: u64 = 2;
@@ -77,6 +80,8 @@ pub struct StatusSettings {
     /// How long, in seconds, nobody uses a client before it tells Discord
     /// it's away from the keyboard.
     pub afk_timeout: Option<u64>,
+    /// Whether the account shares the game it plays.
+    pub show_game: Option<bool>,
 }
 
 /// The status in base64 settings, as READY's `user_settings_proto` or a
@@ -133,6 +138,12 @@ pub fn read(encoded: &str) -> StatusSettings {
                     }
                 }
                 settings.custom = Some((!status.is_empty()).then_some(status));
+            }
+            // A BoolValue leaves out a false value.
+            (STATUS_SHOW_GAME, Field::Bytes(wrapper)) => {
+                settings.show_game = Some(fields(wrapper).any(|(number, value)| {
+                    number == 1 && matches!(value, Field::Varint(shown) if shown != 0)
+                }));
             }
             _ => {}
         }
@@ -340,6 +351,20 @@ pub fn write_status(status: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(settings)
 }
 
+/// Base64 settings that share the game the account plays, or stop sharing it.
+pub fn write_show_game(shown: bool) -> String {
+    let mut wrapper = Vec::new();
+    if shown {
+        put_varint(&mut wrapper, 1 << 3 | VARINT);
+        put_varint(&mut wrapper, 1);
+    }
+    let mut inner = Vec::new();
+    put_bytes(&mut inner, STATUS_SHOW_GAME, &wrapper);
+    let mut settings = Vec::new();
+    put_bytes(&mut settings, STATUS, &inner);
+    base64::engine::general_purpose::STANDARD.encode(settings)
+}
+
 /// The presence a session sends the gateway, in IDENTIFY or opcode 3: the
 /// status, and the custom status as an activity unless it has ended.
 /// `away` marks the session AFK, so Discord sends this account's
@@ -534,6 +559,7 @@ mod tests {
                 status: None,
                 custom: Some(Some(status.clone())),
                 afk_timeout: None,
+                show_game: None,
             }
         );
         assert_eq!(read(&write_custom(None)).custom, Some(None));
@@ -543,6 +569,7 @@ mod tests {
                 status: Some("idle".into()),
                 custom: None,
                 afk_timeout: None,
+                show_game: None,
             },
             "setting the status leaves the custom status as it was"
         );
@@ -561,6 +588,13 @@ mod tests {
         assert_eq!(read.status.as_deref(), Some("dnd"));
         assert_eq!(read.custom, None, "a partial update leaves it as it was");
         assert_eq!(super::read("not base64!"), StatusSettings::default());
+    }
+
+    #[test]
+    fn reads_and_writes_whether_the_game_shows() {
+        assert_eq!(read(&write_show_game(false)).show_game, Some(false));
+        assert_eq!(read(&write_show_game(true)).show_game, Some(true));
+        assert_eq!(read(&write_status("idle")).show_game, None);
     }
 
     #[test]

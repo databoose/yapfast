@@ -435,6 +435,8 @@ export component StatusMenu inherits Rectangle {
     in property <bool> has-custom-status;
     in property <string> game-name;
     in property <string> game-duration;
+    /// Asks for `game-duration` again; it changes by the minute.
+    callback game-duration-due;
     callback choose(string);
     callback custom-status;
     callback edit-profile;
@@ -449,6 +451,7 @@ export component StatusMenu inherits Rectangle {
             Text { text: root.game-name; color: Theme.text; font-size: 14px; font-weight: 700; overflow: elide; }
             Text { text: root.game-duration == "" ? "Playing now" : "Playing for " + root.game-duration; color: Theme.secondary; font-size: 12px; }
             Rectangle { height: 1px; background: Theme.line; }
+            Timer { interval: 20s; running: root.game-duration != ""; triggered => { root.game-duration-due(); } }
         }
         for option in [
             { key: "online", name: "Online", note: "" },

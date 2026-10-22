@@ -16,17 +16,14 @@ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tokio::sync::watch;
 
 mod catalog;
-pub mod preferences;
+pub mod custom_games;
 mod steam;
 use catalog::{Catalog, GameInfo};
 
 const INTERVAL: Duration = Duration::from_secs(15);
 const STEAM_INTERVAL: Duration = Duration::from_secs(60);
 
-pub(crate) fn start(
-    api: Arc<Api>,
-    settings: watch::Receiver<preferences::Preferences>,
-) -> watch::Receiver<Option<Arc<Value>>> {
+pub(crate) fn start(api: Arc<Api>) -> watch::Receiver<Option<Arc<Value>>> {
     let (shown, receiver) = watch::channel(None);
     tokio::spawn(async move {
         let custom = std::env::var_os("YAPFAST_DISCORD_GAMES_FILE").map(PathBuf::from);
@@ -37,7 +34,7 @@ pub(crate) fn start(
             shown.closed().await;
             return;
         }
-        if let Err(error) = run(api, custom, &shown, settings).await {
+        if let Err(error) = run(api, custom, &shown, custom_games::subscribe()).await {
             tracing::warn!(%error, "automatic game detection stopped");
         }
         shown.send_replace(None);
@@ -49,7 +46,7 @@ async fn run(
     api: Arc<Api>,
     custom: Option<PathBuf>,
     shown: &watch::Sender<Option<Arc<Value>>>,
-    mut settings: watch::Receiver<preferences::Preferences>,
+    mut custom_games: watch::Receiver<Vec<custom_games::CustomGame>>,
 ) -> Result<()> {
     let cache = std::env::var_os("YAPFAST_DISCORD_GAMES_CACHE")
         .map(PathBuf::from)
@@ -69,7 +66,7 @@ async fn run(
     })
     .await?;
     let mut detector = Detector::new(initial, steam::roots());
-    detector.set_executables(&settings.borrow_and_update().executables);
+    detector.set_executables(&custom_games.borrow_and_update());
     let mut ticks = tokio::time::interval(INTERVAL);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut due = !fresh && custom.is_none();
@@ -79,9 +76,9 @@ async fn run(
         tokio::select! {
             biased;
             () = shown.closed() => return Ok(()),
-            result = settings.changed() => {
-                if result.is_err() || !settings.borrow().enabled { return Ok(()); }
-                detector.set_executables(&settings.borrow_and_update().executables);
+            result = custom_games.changed() => {
+                if result.is_err() { return Ok(()); }
+                detector.set_executables(&custom_games.borrow_and_update());
                 ticks.reset_immediately();
             }
             result = &mut refresh, if due => {
@@ -327,16 +324,16 @@ impl Detector {
         self.next_steam = Instant::now();
     }
 
-    fn set_executables(&mut self, entries: &[(String, String)]) {
+    fn set_executables(&mut self, entries: &[custom_games::CustomGame]) {
         self.executables = entries
             .iter()
-            .filter(|(path, name)| !path.trim().is_empty() && !name.trim().is_empty())
-            .map(|(path, name)| {
+            .filter(|game| !game.executable.trim().is_empty() && !game.name.trim().is_empty())
+            .map(|game| {
                 (
-                    path.trim().to_owned(),
+                    game.executable.trim().to_owned(),
                     Arc::new(GameInfo {
                         id: None,
-                        name: name.trim().into(),
+                        name: game.name.trim().into(),
                     }),
                 )
             })
@@ -674,6 +671,13 @@ mod tests {
         }
     }
 
+    fn custom(executable: &str, name: &str) -> custom_games::CustomGame {
+        custom_games::CustomGame {
+            executable: executable.into(),
+            name: name.into(),
+        }
+    }
+
     #[test]
     fn scans_an_actual_game_process() {
         // Hard-link the test binary so no shell, external game or duplicate
@@ -713,11 +717,11 @@ mod tests {
         assert_eq!(shown["name"], "Native Fixture");
         assert_eq!(shown["application_id"], "42");
         assert!(detector.system.cpus().is_empty(), "no CPU sampling");
-        detector.set_executables(&[(name.into(), "My custom title".into())]);
+        detector.set_executables(&[custom(name, "My custom title")]);
         let shown = detector.scan(crate::service::now_ms()).unwrap();
         assert_eq!(shown["name"], "My custom title");
         assert!(shown.get("application_id").is_none());
-        detector.set_executables(&[(game.to_string_lossy().into_owned(), "Renamed live".into())]);
+        detector.set_executables(&[custom(&game.to_string_lossy(), "Renamed live")]);
         assert_eq!(
             detector.scan(crate::service::now_ms()).unwrap()["name"],
             "Renamed live"

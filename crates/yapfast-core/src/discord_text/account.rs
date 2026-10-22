@@ -285,6 +285,27 @@ pub(super) fn command(
         }
         return None;
     }
+    if let Command::Discord(DiscordCommand::ShowGame(shown)) = command {
+        match discord {
+            Ok(discord) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = discord.set_show_game(shown).await.map_err(|error| {
+                        tracing::warn!(
+                            error = format!("{error:#}"),
+                            "could not change sharing the game played"
+                        );
+                        error.to_string()
+                    });
+                    let _ = events.send(Event::ShowGameSet(result));
+                });
+            }
+            Err(why) => {
+                let _ = events.send(Event::ShowGameSet(Err(why.into())));
+            }
+        }
+        return None;
+    }
     if let Command::Discord(DiscordCommand::SetStatus(status)) = command {
         match discord {
             Ok(discord) => {

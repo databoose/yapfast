@@ -426,6 +426,10 @@ pub struct AppState {
     pub friend_requests: Vec<chat::FriendRequest>,
     /// The Discord account's custom status, while it lasts.
     pub custom_status: Option<chat::CustomStatus>,
+    /// Whether the Discord account shares the game it plays, and the game
+    /// it shows.
+    pub discord_show_game: bool,
+    pub discord_playing: Option<chat::Playing>,
     /// A Discord account is linked on this device, whether or not it's
     /// connected, and linking one, while that's under way.
     pub discord_linked: bool,
@@ -1652,6 +1656,8 @@ pub enum Action {
     CloseStatusEditor,
     /// Set the Discord status: `online`, `idle`, `dnd` or `invisible`.
     SetStatus(String),
+    /// Share the game the Discord account plays, or stop.
+    ShowGame(bool),
     /// Nobody has used Yapfast since then, in Unix milliseconds, or someone is
     /// using it again; and whether that may show Discord idle.
     Inactive {
@@ -2747,6 +2753,19 @@ impl Application {
                     DiscordCommand::SetStatus(status),
                 ))]
             }
+            Action::ShowGame(shown) => {
+                if self.state.preview
+                    || self.state.discord_user.is_none()
+                    || self.state.discord_show_game == shown
+                {
+                    return vec![];
+                }
+                // The switch moves at once; a refusal moves it back.
+                self.state.discord_show_game = shown;
+                vec![Effect::Backend(Command::Discord(DiscordCommand::ShowGame(
+                    shown,
+                )))]
+            }
             Action::Inactive { since, show_idle } => {
                 // Discord keeps it through reconnecting, so it goes even
                 // before Discord connects. On the sign-in screen nothing
@@ -3227,6 +3246,14 @@ impl Application {
             Event::StatusSet(result) => {
                 if let Err(error) = result {
                     self.state.notice = Some(format!("Couldn't change your status: {error}"));
+                }
+            }
+            Event::ShowGameSet(result) => {
+                if let Err(error) = result {
+                    self.state.discord_show_game = !self.state.discord_show_game;
+                    self.state.notice = Some(format!(
+                        "Couldn't change sharing the game you play: {error}"
+                    ));
                 }
             }
             Event::CustomStatusSet(Err(error)) => {

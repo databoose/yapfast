@@ -1122,7 +1122,9 @@ export struct GameExecutable { executable: string, text: string }
 
 // Settings: detected games and Rich Presence.
 export component GameActivitySettings inherits VerticalLayout {
-    in property <bool> enabled;
+    /// The Discord account shares the game it plays, as its settings say.
+    in property <bool> shown;
+    in property <bool> linked;
     in property <[GameExecutable]> executables;
     callback toggled(bool);
     callback save(int, string, string) -> bool;
@@ -1134,13 +1136,16 @@ export component GameActivitySettings inherits VerticalLayout {
     spacing: 16px;
     SettingsTitle { text: "Game activity"; }
     SettingsSwitch {
-        text: "Share game activity";
-        description: "Show what you're playing. Detects running games and accepts Rich Presence from games on Linux. Turning this off stops detection and RPC.";
-        checked: root.enabled;
-        toggled(enabled) => { root.toggled(enabled); }
+        text: "Share the game you play";
+        description: "Yapfast looks for games among the programs running, and on Linux takes the Rich Presence games send. Your Discord account keeps this setting, so it's the same in Discord's apps.";
+        checked: root.shown;
+        controlled: true;
+        enabled: root.linked;
+        locked-tip: "Link a Discord account first.";
+        toggled(shown) => { root.toggled(shown); }
     }
     SettingsHeading { text: "CUSTOM GAMES"; }
-    Label { text: "Add an executable name or full path and the text to show after Playing. Custom names take priority over automatic detection. Changes apply immediately."; }
+    Label { text: "Name a game by its executable, a file name or a full path, and what to show after Playing. These come before the games Yapfast knows, but a game's Rich Presence comes first."; }
     for game[index] in root.executables: VerticalLayout {
         spacing: 4px;
         HorizontalLayout {

@@ -278,6 +278,13 @@ pub struct Snapshot {
     pub presence: String,
     /// This account's custom status, until it ends.
     pub custom_status: Option<CustomStatus>,
+    /// Whether this account shares the game it plays, as its settings say:
+    /// not before Discord has said.
+    #[serde(default)]
+    pub show_game: bool,
+    /// The game this account shows it plays now.
+    #[serde(skip)]
+    pub playing: Option<Arc<crate::own_activity::Playing>>,
     /// Friend requests waiting for an answer: those sent to this account
     /// first, then those it sent, the newest first in each.
     pub friend_requests: Vec<FriendRequest>,
@@ -542,6 +549,8 @@ enum Request {
     CustomStatus(Option<CustomStatus>),
     /// The status changed in the settings; this session shows it.
     Status(String),
+    /// Sharing the game played changed in the settings.
+    ShowGame(bool),
     /// Nobody has used Yapfast since then, in Unix milliseconds, or someone
     /// is using it again; and whether it may show idle.
     Inactive(Option<u64>, bool),
@@ -644,7 +653,9 @@ impl Discord {
         cached.names = SharedNames::new(names.clone());
         let (snapshots, watcher) = watch::channel(Arc::new(cached));
         let (live, _) = broadcast::channel(LIVE_BACKLOG);
-        let activity = crate::own_activity::start(api.clone(), watcher.clone());
+        // Sharing waits for READY unless an earlier session's settings said.
+        let (show_game, shown) = watch::channel(watcher.borrow().show_game);
+        let activity = crate::own_activity::start(api.clone(), watcher.clone(), shown);
         tokio::spawn(cache::keep(watcher.clone(), names.clone()));
         tokio::spawn(session::run(
             token,
@@ -662,6 +673,7 @@ impl Discord {
                 ),
                 presence,
                 activity,
+                show_game,
                 inactive: None,
                 viewing: None,
                 beside: None,
@@ -1699,6 +1711,14 @@ impl Discord {
     pub async fn set_status(&self, status: &str) -> Result<()> {
         self.api.set_status(status).await?;
         let _ = self.requests.send(Request::Status(status.to_owned()));
+        Ok(())
+    }
+
+    /// Shares the game this account plays, everywhere it's signed in, or
+    /// stops sharing it. Stopping ends game detection and Rich Presence.
+    pub async fn set_show_game(&self, shown: bool) -> Result<()> {
+        self.api.set_show_game(shown).await?;
+        let _ = self.requests.send(Request::ShowGame(shown));
         Ok(())
     }
 

@@ -1,78 +1,78 @@
-//! One activity for the Gateway on every platform. Rich Presence takes
-//! precedence over automatic detection, while custom status stays independent.
+//! The game this account shares: what a game says over Rich Presence, or
+//! else the game detection finds. The account's `show_current_game` setting
+//! turns both on and off; the custom status stays apart from them.
 
 use crate::{api::Api, service::Snapshot};
 use serde_json::Value;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::Arc;
 use tokio::sync::watch;
 
 type Activity = Option<Arc<Value>>;
-type Current = Option<(String, Option<u64>)>;
 
-fn current_slot() -> &'static RwLock<Current> {
-    static CURRENT: OnceLock<RwLock<Current>> = OnceLock::new();
-    CURRENT.get_or_init(|| RwLock::new(None))
+/// The game the account shows it plays.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Playing {
+    pub name: String,
+    /// When it started, in Unix milliseconds, when the game says.
+    pub started_ms: Option<u64>,
 }
 
-pub(crate) fn current() -> Option<(String, Option<u64>)> {
-    current_slot()
-        .read()
-        .unwrap_or_else(|error| error.into_inner())
-        .clone()
-}
-
-fn publish(activity: Option<&Value>) {
-    let current = activity.and_then(|activity| {
-        let name = activity.get("name")?.as_str()?.trim();
-        (!name.is_empty()).then(|| {
-            (
-                name.to_owned(),
-                activity
-                    .pointer("/timestamps/start")
-                    .and_then(Value::as_u64),
-            )
+impl Playing {
+    /// The game an activity names, if it names one.
+    pub(crate) fn of(activity: &Value) -> Option<Self> {
+        let name = activity["name"].as_str()?.trim();
+        (!name.is_empty()).then(|| Self {
+            name: name.to_owned(),
+            started_ms: activity
+                .pointer("/timestamps/start")
+                .and_then(Value::as_u64),
         })
-    });
-    *current_slot()
-        .write()
-        .unwrap_or_else(|error| error.into_inner()) = current;
+    }
 }
 
+/// Runs detection and Rich Presence while `shown` holds, and gives the
+/// activity they make, until the receiver goes.
 pub(crate) fn start(
     api: Arc<Api>,
     snapshots: watch::Receiver<Arc<Snapshot>>,
+    mut shown: watch::Receiver<bool>,
 ) -> watch::Receiver<Activity> {
     #[cfg(not(target_os = "linux"))]
     let _ = snapshots;
-    let (shown, receiver) = watch::channel(None);
+    let (activity, receiver) = watch::channel(None);
     tokio::spawn(async move {
-        let mut settings = crate::game_detection::preferences::subscribe();
         loop {
-            if settings.borrow_and_update().enabled {
-                let detected = crate::game_detection::start(api.clone(), settings.clone());
+            if *shown.borrow_and_update() {
+                let detected = crate::game_detection::start(api.clone());
                 #[cfg(target_os = "linux")]
                 let rpc = crate::rpc::start(api.clone(), snapshots.clone());
                 #[cfg(not(target_os = "linux"))]
                 let rpc = watch::channel(None).1;
                 tokio::select! {
-                    () = combine(rpc, detected, shown.clone()) => return,
-                    _ = async {
-                        loop {
-                            if settings.changed().await.is_err() || !settings.borrow().enabled { break; }
-                        }
-                    } => {}
+                    () = combine(rpc, detected, activity.clone()) => return,
+                    () = hidden(&mut shown) => {}
                 }
-                shown.send_replace(None);
-                publish(None);
+                activity.send_replace(None);
             } else {
                 tokio::select! {
-                    () = shown.closed() => return,
-                    result = settings.changed() => if result.is_err() { return; },
+                    () = activity.closed() => return,
+                    result = shown.changed() => if result.is_err() { return; },
                 }
             }
         }
     });
     receiver
+}
+
+/// Waits for sharing to stop. Once the session is gone, the activity's
+/// receiver goes with it, which ends [`combine`] instead.
+async fn hidden(shown: &mut watch::Receiver<bool>) {
+    while shown.changed().await.is_ok() {
+        if !*shown.borrow_and_update() {
+            return;
+        }
+    }
+    std::future::pending().await
 }
 
 async fn combine(
@@ -87,7 +87,6 @@ async fn combine(
             .then(|| rpc.borrow().clone())
             .flatten()
             .or_else(|| detection_open.then(|| detected.borrow().clone()).flatten());
-        publish(next.as_deref());
         shown.send_if_modified(|old| {
             if *old == next {
                 false
@@ -97,7 +96,7 @@ async fn combine(
             }
         });
         tokio::select! {
-            () = shown.closed() => { publish(None); return; },
+            () = shown.closed() => return,
             result = rpc.changed(), if rpc_open => rpc_open = result.is_ok(),
             result = detected.changed(), if detection_open => detection_open = result.is_ok(),
         }
@@ -140,5 +139,17 @@ mod tests {
         drop(receiver);
         worker.await.unwrap();
         assert!(detected.is_closed());
+    }
+
+    #[test]
+    fn names_the_game_an_activity_plays() {
+        assert_eq!(
+            Playing::of(&json!({"type":0,"name":" Game ","timestamps":{"start":5}})),
+            Some(Playing {
+                name: "Game".into(),
+                started_ms: Some(5)
+            })
+        );
+        assert_eq!(Playing::of(&json!({"type":0,"name":" "})), None);
     }
 }

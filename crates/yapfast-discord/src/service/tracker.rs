@@ -102,6 +102,10 @@ pub(super) struct Tracker {
     /// How long nobody uses Yapfast before it's away, in seconds, from the
     /// settings.
     pub(super) afk_timeout: u64,
+    /// Whether the account shares the game it plays, from the settings, and
+    /// the game it shows.
+    pub(super) show_game: bool,
+    pub(super) playing: Option<Arc<crate::own_activity::Playing>>,
     /// Friend requests by user id: whether each came to this account, whether
     /// Discord took it for spam, and when it was sent.
     requests: HashMap<String, (bool, bool, String)>,
@@ -151,6 +155,9 @@ impl Tracker {
             status: "online".into(),
             custom_status: None,
             afk_timeout: settings::AFK_TIMEOUT,
+            // As in Discord's apps, until the settings say otherwise.
+            show_game: true,
+            playing: None,
             requests: HashMap::new(),
             previews: HashMap::new(),
             previews_asked: HashSet::new(),
@@ -1037,6 +1044,9 @@ impl Tracker {
         if let Some(timeout) = read.afk_timeout {
             self.afk_timeout = timeout;
         }
+        if let Some(shown) = read.show_game {
+            self.show_game = shown;
+        }
         if let Some(list) = settings::server_list(encoded) {
             self.order = list.order;
             self.folders = list.folders;
@@ -1479,6 +1489,8 @@ impl Tracker {
                 .custom_status
                 .clone()
                 .filter(|custom| !custom.expired(now_ms())),
+            show_game: self.show_game,
+            playing: self.playing.clone(),
             friend_requests: self.friend_requests(&names),
             voice,
             listed: None,

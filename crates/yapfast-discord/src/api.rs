@@ -1035,6 +1035,18 @@ impl Api {
         .map(drop)
     }
 
+    /// Shares the game this account plays, everywhere it's signed in, or
+    /// stops sharing it.
+    pub async fn set_show_game(&self, shown: bool) -> Result<()> {
+        let body = json!({"settings": settings::write_show_game(shown)});
+        self.json(with_json(
+            self.request(Method::PATCH, "/users/@me/settings-proto/1"),
+            &body,
+        ))
+        .await
+        .map(drop)
+    }
+
     /// Ignores a friend request, cancels one, or ends a friendship.
     pub async fn remove_relationship(&self, user: &str, place: &str) -> Result<()> {
         let path = format!("/users/@me/relationships/{user}");

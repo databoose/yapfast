@@ -26,7 +26,7 @@ pub mod message;
 pub mod mfa;
 pub mod notifications;
 pub mod opus;
-mod own_activity;
+pub mod own_activity;
 pub mod profile;
 pub mod ready;
 pub mod remote_auth;
@@ -43,9 +43,3 @@ pub mod token;
 pub mod unread;
 pub mod voice;
 mod voice_connection;
-
-/// The activity currently shared by this account and its start time in Unix
-/// milliseconds, when the activity provides one.
-pub fn current_game_activity() -> Option<(String, Option<u64>)> {
-    own_activity::current()
-}

@@ -549,7 +549,7 @@ fn the_renderer_setting_is_remembered() {
 }
 
 #[test]
-fn game_activity_settings_are_remembered_and_editable() {
+fn custom_games_are_remembered_and_edited_in_place() {
     i_slint_backend_testing::init_no_event_loop();
     let directory = tempfile::tempdir().unwrap();
     let window = YapfastWindow::new().unwrap();
@@ -560,29 +560,38 @@ fn game_activity_settings_are_remembered_and_editable() {
     )
     .unwrap();
     bind_callbacks(&window, &adapter);
-    assert!(window.get_game_activity_enabled());
     assert!(!window.invoke_save_game_executable(-1, "".into(), "Game".into()));
     assert!(!window.invoke_save_game_executable(-1, "game".into(), "a".repeat(129).into()));
     assert!(window.invoke_save_game_executable(-1, " /opt/my-game ".into(), " My game ".into()));
+    assert!(window.invoke_save_game_executable(-1, "other".into(), "Other".into()));
+    // Editing keeps the game where it was.
     assert!(window.invoke_save_game_executable(0, "/opt/my-game".into(), "New title".into()));
-    assert_eq!(window.get_game_executables().row_count(), 1);
-    assert_eq!(
-        window.get_game_executables().row_data(0).unwrap().text,
-        "New title"
-    );
-    window.invoke_game_activity_toggled(false);
+    // Saving an executable already listed renames that entry.
+    assert!(window.invoke_save_game_executable(-1, "other".into(), "Renamed".into()));
     let saved = Layout::read(directory.path());
-    assert_eq!(saved.game_activity, Some(false));
     assert_eq!(
         saved.game_executables,
-        vec![("/opt/my-game".into(), "New title".into())]
+        vec![
+            ("/opt/my-game".into(), "New title".into()),
+            ("other".into(), "Renamed".into())
+        ]
     );
-    saved.apply(&window);
-    assert!(!window.get_game_activity_enabled());
+    assert_eq!(window.get_game_executables().row_count(), 2);
     window.invoke_remove_game_executable(0);
-    assert!(Layout::read(directory.path()).game_executables.is_empty());
-    assert_eq!(window.get_game_executables().row_count(), 0);
-    window.invoke_game_activity_toggled(true);
+    assert_eq!(
+        Layout::read(directory.path()).game_executables,
+        vec![("other".into(), "Renamed".into())]
+    );
+    assert_eq!(window.get_game_executables().row_count(), 1);
+    window.invoke_remove_game_executable(0);
+}
+
+#[test]
+fn says_how_long_a_game_has_run() {
+    assert_eq!(games::played_for(59_000), "less than a minute");
+    assert_eq!(games::played_for(5 * 60_000), "5 min");
+    assert_eq!(games::played_for(120 * 60_000), "2 hr");
+    assert_eq!(games::played_for(125 * 60_000), "2 hr 5 min");
 }
 
 #[test]

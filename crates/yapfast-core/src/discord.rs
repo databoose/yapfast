@@ -33,24 +33,23 @@ pub(crate) const PREFIX: &str = "discord:";
 pub const KEPT_CHANNELS: usize = 40;
 pub const KEPT_MESSAGES: usize = 200;
 
-/// Device-wide game sharing preferences. Updates active Discord sessions too.
-pub fn set_game_activity(enabled: bool, executables: Vec<(String, String)>) {
+/// The games this device names itself: an executable, by file name or full
+/// path, and the game to show for it. Detection running takes them at once.
+pub fn set_custom_games(games: &[(String, String)]) {
     #[cfg(feature = "discord")]
-    yapfast_discord::game_detection::preferences::set(enabled, executables);
+    yapfast_discord::game_detection::custom_games::set(
+        games
+            .iter()
+            .map(
+                |(executable, name)| yapfast_discord::game_detection::custom_games::CustomGame {
+                    executable: executable.clone(),
+                    name: name.clone(),
+                },
+            )
+            .collect(),
+    );
     #[cfg(not(feature = "discord"))]
-    let _ = (enabled, executables);
-}
-
-/// The current game activity and its start time in Unix milliseconds.
-pub fn game_activity() -> Option<(String, Option<u64>)> {
-    #[cfg(feature = "discord")]
-    {
-        yapfast_discord::current_game_activity()
-    }
-    #[cfg(not(feature = "discord"))]
-    {
-        None
-    }
+    let _ = games;
 }
 
 /// The categories message requests are listed under in the DM list.
