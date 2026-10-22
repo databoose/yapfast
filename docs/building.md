@@ -94,6 +94,15 @@ row is no longer shown or goes. A wheel scroll animates
 animation when rows go in above inside `hold`. This is `yapfast_anchor.rs` and the
 changes marked `Yapfast:` in `model/repeater.rs`.
 
+A `TextInput` draws parts of its text as a `StyledText` draws a mention, in
+a colour on a pill of it, so the composer shows whom its message will
+mention. Yapfast marks a text's byte ranges with
+`yapfast_marks::mark`, and a `TextInput` showing that text, not a password
+or one composing with an input method, shapes them as links in a colour span.
+Upstream, a `TextInput` has one colour. This is `yapfast_marks.rs` and the
+changes marked `Yapfast:` about marks in `item_rendering.rs`, `items/text.rs`
+and `textlayout/sharedparley/shaping.rs`.
+
 A mouse wheel spun fast scrolls farther for each notch. Upstream, each notch
 scrolls 60 pixels however fast the notches come, so a hard spin through a long
 history crawls. Yapfast weighs the recent notches, each counting less with time,
@@ -160,8 +169,8 @@ Yapfast patches these crates in `vendor/`, through `[patch.crates-io]` or a path
 dependency in Cargo.toml:
 
 - `i-slint-core`: Slint's core 1.18.1 with selectable `StyledText`,
-  timelines that keep their place as older messages load, and a wheel that
-  speeds up when spun fast, above.
+  mentions coloured in a `TextInput`, timelines that keep their place as
+  older messages load, and a wheel that speeds up when spun fast, above.
 - `i-slint-renderer-skia`: Slint's Skia renderer 1.18.1 with slight hinting,
   mipmapped pictures, and uncopied fonts and pictures, above, and a whole
   frame after every resize: Windows restores a minimized window at its old

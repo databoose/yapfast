@@ -1458,6 +1458,14 @@ impl RenderString for TextInput {
         let text = self.text_with_preedit().0;
         PlainOrStyledText::Plain(if self.is_password() { mask_password(&text) } else { text })
     }
+
+    // Yapfast: an input method's text, inserted while composing, moves the marked bytes.
+    fn marks(self: Pin<&Self>) -> Option<crate::yapfast_marks::Marks> {
+        if self.is_password() || !self.preedit_text().is_empty() {
+            return None;
+        }
+        crate::yapfast_marks::marks_of(&self.text())
+    }
 }
 
 pub enum TextCursorDirection {

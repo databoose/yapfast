@@ -1,6 +1,8 @@
 //! Mentioning people and roles from the composer: the `@` word being typed, who
 //! it may mean, and the message text that mentions them on its network.
 
+use std::ops::Range;
+
 /// Someone or something a message can mention.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
@@ -152,25 +154,50 @@ pub fn matching<'a>(candidates: &'a [Candidate], query: &str, limit: usize) -> V
 }
 
 /// `text` with each `@name` of a candidate, outside code, in its network's form.
-/// The longest name that fits wins, so `@Ann Lee` isn't taken for `@Ann`.
 pub fn wire(text: &str, candidates: &[Candidate]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut end = 0;
+    for (range, candidate) in found(text, candidates) {
+        out.push_str(&text[end..range.start]);
+        out.push_str(&candidate.mention);
+        end = range.end;
+    }
+    out.push_str(&text[end..]);
+    out
+}
+
+/// Where `text` mentions a candidate, as [`wire`] finds them, each with the
+/// candidate's colour: the composer shows them as the message will.
+pub fn marks(text: &str, candidates: &[Candidate]) -> Vec<(Range<usize>, Option<u32>)> {
+    found(text, candidates)
+        .into_iter()
+        .map(|(range, candidate)| (range, candidate.color))
+        .collect()
+}
+
+/// Each `@name` of a candidate in `text`, outside code, and whom it names.
+/// The longest name that fits wins, so `@Ann Lee` isn't taken for `@Ann`.
+fn found<'a>(text: &str, candidates: &'a [Candidate]) -> Vec<(Range<usize>, &'a Candidate)> {
+    if !text.contains('@') {
+        return Vec::new();
+    }
     let mut sorted: Vec<&Candidate> = candidates
         .iter()
         .filter(|candidate| !candidate.name.is_empty())
         .collect();
     sorted.sort_by_key(|candidate| std::cmp::Reverse(candidate.name.len()));
-    let mut out = String::with_capacity(text.len());
+    let mut found = Vec::new();
     let mut code = false;
-    let mut rest = text;
+    let mut at = 0;
     let mut previous: Option<char> = None;
-    while let Some(next) = rest.chars().next() {
+    while let Some(next) = text[at..].chars().next() {
         if next == '`' {
             code = !code;
         }
         let starts_word = previous.is_none_or(|previous| !previous.is_alphanumeric());
         if next == '@' && !code && starts_word {
-            let after = &rest[1..];
-            let found = sorted.iter().find(|candidate| {
+            let after = &text[at + 1..];
+            let candidate = sorted.iter().find(|candidate| {
                 let name = &candidate.name;
                 after
                     .get(..name.len())
@@ -180,18 +207,18 @@ pub fn wire(text: &str, candidates: &[Candidate]) -> String {
                         .next()
                         .is_none_or(|end| !end.is_alphanumeric() && end != '_')
             });
-            if let Some(candidate) = found {
-                out.push_str(&candidate.mention);
-                rest = &after[candidate.name.len()..];
+            if let Some(candidate) = candidate {
+                let end = at + 1 + candidate.name.len();
+                found.push((at..end, *candidate));
                 previous = candidate.name.chars().next_back();
+                at = end;
                 continue;
             }
         }
-        out.push(next);
-        rest = &rest[next.len_utf8()..];
+        at += next.len_utf8();
         previous = Some(next);
     }
-    out
+    found
 }
 
 #[cfg(test)]
@@ -310,5 +337,22 @@ mod tests {
         assert_eq!(wire("me@Ann.com", &candidates), "me@Ann.com");
         assert_eq!(wire("`@Ann` but @Ann", &candidates), "`@Ann` but <@1>");
         assert_eq!(wire("café @Ann", &candidates), "café <@1>");
+    }
+
+    #[test]
+    fn marks_what_goes_out_as_a_mention() {
+        let candidates = [
+            person("Ann", "<@1>"),
+            Candidate {
+                color: Some(0x3498db),
+                group: true,
+                ..person("Mods", "<@&20>")
+            },
+        ];
+        assert_eq!(
+            marks("café @ann, ask @Mods but `@Ann` or @Annie", &candidates),
+            [(6..10, None), (16..21, Some(0x3498db))]
+        );
+        assert!(marks("no one", &candidates).is_empty());
     }
 }

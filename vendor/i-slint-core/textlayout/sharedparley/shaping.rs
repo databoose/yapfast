@@ -293,6 +293,7 @@ pub(super) fn create_text_paragraphs(
     font_context: &mut parley::FontContext,
     text: PlainOrStyledText,
     link_color: Color,
+    marks: Option<crate::yapfast_marks::Marks>,
 ) -> Vec<TextParagraph> {
     let paragraph_from_text =
         |font_context: &mut parley::FontContext,
@@ -324,11 +325,28 @@ pub(super) fn create_text_paragraphs(
     match text {
         PlainOrStyledText::Plain(ref text) => {
             for range in paragraph_ranges(text) {
+                // Yapfast: a marked part is drawn as a mention is, a link in a colour span.
+                let formatting = marks
+                    .iter()
+                    .flat_map(|marks| marks.iter())
+                    .filter(|(mark, _)| range.start <= mark.start && mark.end <= range.end)
+                    .flat_map(|(mark, color)| {
+                        let mark = mark.start - range.start..mark.end - range.start;
+                        [
+                            i_slint_common::styled_text::Style::Color(color.as_argb_encoded()),
+                            i_slint_common::styled_text::Style::Link,
+                        ]
+                        .map(|style| i_slint_common::styled_text::FormattedSpan {
+                            range: mark.clone(),
+                            style,
+                        })
+                    })
+                    .collect();
                 paragraphs.push(paragraph_from_text(
                     font_context,
                     &text[range.clone()],
                     range,
-                    Default::default(),
+                    formatting,
                     Default::default(),
                 ));
             }
@@ -417,7 +435,7 @@ pub(super) fn shape_paragraphs(
     font_context: &mut parley::FontContext,
 ) -> Vec<TextParagraph> {
     let builder = shaping_builder(text, item_rc, text_wrap, scale_factor);
-    create_text_paragraphs(&builder, font_context, text.text(), text.link_color())
+    create_text_paragraphs(&builder, font_context, text.text(), text.link_color(), text.marks())
 }
 
 pub(super) struct TextParagraph {

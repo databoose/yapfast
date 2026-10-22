@@ -2257,7 +2257,47 @@ impl Adapter {
         self.aside_messages = aside.messages.clone();
     }
 
+    /// Colours the people and roles the draft mentions, as its message will
+    /// show them. Who it may mention is found again only when the draft or
+    /// what they come from changed.
+    fn mark_mentions(&mut self) {
+        let state = &self.app.state;
+        let draft = state.draft();
+        let sources = MentionSources {
+            messages: Arc::as_ptr(&state.messages) as usize,
+            members: state.members.iter().flatten().map(Vec::len).sum(),
+            found: state.found_members.len(),
+            groups: state.mention_groups.len(),
+            color: theme::mention_color(),
+        };
+        if self
+            .mentions_marked
+            .as_ref()
+            .is_some_and(|marked| marked.draft == draft && marked.sources == sources)
+        {
+            return;
+        }
+        let marks = if draft.contains('@') {
+            yapfast_core::mention::marks(draft, &state.mention_candidates())
+        } else {
+            Vec::new()
+        };
+        let marked = MentionsMarked {
+            draft: draft.to_owned(),
+            sources,
+        };
+        i_slint_core::yapfast_marks::mark(
+            marked.draft.as_str().into(),
+            marks.into_iter().map(|(range, color)| {
+                let rgb = color.unwrap_or(sources.color) & 0xff_ffff;
+                (range, slint::Color::from_argb_encoded(0xff00_0000 | rgb))
+            }),
+        );
+        self.mentions_marked = Some(marked);
+    }
+
     pub(super) fn show_composer(&mut self, window: &YapfastWindow) {
+        self.mark_mentions();
         let state = &self.app.state;
         let room = state.selected_room();
         window.set_voice_room(room.is_some_and(|room| room.voice));
@@ -3928,4 +3968,21 @@ pub(super) fn request_rows(
         }
     }
     rows
+}
+
+/// What the composer's mentions were coloured for: its draft, and what those
+/// it may mention come from.
+pub(super) struct MentionsMarked {
+    draft: String,
+    sources: MentionSources,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct MentionSources {
+    /// The timeline's address, as its authors may be mentioned.
+    messages: usize,
+    members: usize,
+    found: usize,
+    groups: usize,
+    color: u32,
 }

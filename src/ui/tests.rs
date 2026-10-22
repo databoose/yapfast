@@ -1257,6 +1257,12 @@ fn a_server_members_menu_follows_permissions_and_ticks_roles() {
     // Mention puts their name in the composer.
     window.invoke_choose_menu("3".into(), true, "mention".into());
     assert_eq!(adapter.borrow().app.state.draft(), "@Cara ");
+    // The composer colours it as the message will show it.
+    let marks = i_slint_core::yapfast_marks::marks_of("@Cara ").expect("the mention is marked");
+    assert_eq!(marks.len(), 1);
+    assert_eq!(marks[0].0, 0..5);
+    window.invoke_draft_edited("@Carab".into());
+    assert_eq!(i_slint_core::yapfast_marks::marks_of("@Carab"), None);
 }
 
 #[test]

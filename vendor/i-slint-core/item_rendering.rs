@@ -495,6 +495,11 @@ pub trait RenderString: HasFont {
     fn link_color(self: Pin<&Self>) -> Color {
         Default::default()
     }
+    /// Yapfast: parts of a plain text drawn in a colour on a pill of it; see
+    /// [`crate::yapfast_marks`]. Like `link_color`, they're baked into the shaped glyphs.
+    fn marks(self: Pin<&Self>) -> Option<crate::yapfast_marks::Marks> {
+        None
+    }
 }
 
 /// Trait for an item that represents an Text towards the renderer
