@@ -46,7 +46,7 @@ import { PostTag, PostRow, PostTagChoice, ForumPanel } from "forum.slint";
 import { BrowseRow, BrowseScreen } from "browse.slint";
 
 // Rust sees these, besides YapfastWindow.
-export { Theme, Badges } from "theme.slint";
+export { Theme, Badges, Popup } from "theme.slint";
 export { Autoscroll } from "scrollview.slint";
 export { PersonRow, CallLink, ShareScreen } from "voice.slint";
 export { ServerRow, RoomRow, FolderServer } from "rail.slint";
@@ -3238,7 +3238,7 @@ export component YapfastWindow inherits Window {
             }
         }
         TopicPopover {
-            opacity: topic-motion.amount; transform-scale: Popup.scale(topic-motion.amount);
+            opacity: Popup.opacity(topic-motion.amount); transform-scale: Popup.scale(topic-motion.amount);
             x: max(8px, min(root.width - self.width - 8px, root.popover-x));
             y: root.popover-y + 6px;
             most: min(400px, root.height - self.y - 16px);
@@ -3260,7 +3260,7 @@ export component YapfastWindow inherits Window {
             }
         }
         PinsPopover {
-            opacity: pins-motion.amount; transform-scale: Popup.scale(pins-motion.amount);
+            opacity: Popup.opacity(pins-motion.amount); transform-scale: Popup.scale(pins-motion.amount);
             x: max(8px, min(root.width - self.width - 8px, root.popover-x - self.width));
             y: root.popover-y + 6px;
             // As tall as its pins, up to 560px, within the window.
@@ -3283,7 +3283,7 @@ export component YapfastWindow inherits Window {
                 return reject;
             }
             ThreadsPopover {
-                opacity: threads-motion.amount; transform-scale: Popup.scale(threads-motion.amount);
+                opacity: Popup.opacity(threads-motion.amount); transform-scale: Popup.scale(threads-motion.amount);
                 x: max(8px, min(root.width - self.width - 8px, root.popover-x - self.width));
                 y: root.popover-y + 6px;
                 // As Discord's: 35% of the window wide, from 480px to 600px,
@@ -3308,7 +3308,7 @@ export component YapfastWindow inherits Window {
     if add-people-motion.shown: Rectangle {
         TouchArea { clicked => { root.close-add-people(); } }
         AddPeoplePopover {
-            opacity: add-people-motion.amount; transform-scale: Popup.scale(add-people-motion.amount);
+            opacity: Popup.opacity(add-people-motion.amount); transform-scale: Popup.scale(add-people-motion.amount);
             x: max(8px, min(root.width - self.width - 8px, root.popover-x - self.width));
             y: root.popover-y + 6px;
             height: min(520px, root.height - self.y - 16px);
@@ -3334,7 +3334,7 @@ export component YapfastWindow inherits Window {
             }
         }
         RoleCard {
-            opacity: role-motion.amount; transform-scale: Popup.scale(role-motion.amount);
+            opacity: Popup.opacity(role-motion.amount); transform-scale: Popup.scale(role-motion.amount);
             x: root.beside(root.role-x, root.role-width, self.width);
             y: max(root.title-height + 8px, min(root.height - self.height - 8px, root.role-y - 8px));
             limit: root.height - root.title-height - 16px;
@@ -3360,7 +3360,7 @@ export component YapfastWindow inherits Window {
             }
         }
         ProfileCard {
-            opacity: profile-motion.amount; transform-scale: Popup.scale(profile-motion.amount);
+            opacity: Popup.opacity(profile-motion.amount); transform-scale: Popup.scale(profile-motion.amount);
             width: 300px; limit: root.height - root.title-height - 16px;
             x: root.profile-at-pointer
                 ? root.beside(root.anchor-x, root.anchor-width, self.width)
@@ -3377,7 +3377,7 @@ export component YapfastWindow inherits Window {
     // A full profile over the window, as the viewer shows images.
     large-profile-motion := PopupMotion { open: root.profile-open && root.profile-large; }
     if large-profile-motion.shown: Rectangle {
-        background: #000000b3; opacity: large-profile-motion.amount;
+        background: rgba(0, 0, 0, 0.7 * large-profile-motion.amount);
         TouchArea { clicked => { root.close-profile(); } }
         FocusScope {
             init => { self.focus(); }
@@ -3387,7 +3387,7 @@ export component YapfastWindow inherits Window {
             }
         }
         ProfileCard {
-            transform-scale: Popup.scale(large-profile-motion.amount);
+            opacity: Popup.opacity(large-profile-motion.amount); transform-scale: Popup.scale(large-profile-motion.amount);
             large: true;
             width: min(600px, root.width - 64px); limit: root.height - 64px;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
@@ -3413,7 +3413,7 @@ export component YapfastWindow inherits Window {
             }
         }
         ServerCard {
-            opacity: server-card-motion.amount; transform-scale: Popup.scale(server-card-motion.amount);
+            opacity: Popup.opacity(server-card-motion.amount); transform-scale: Popup.scale(server-card-motion.amount);
             width: 300px;
             x: root.beside(root.anchor-x, root.anchor-width, self.width);
             y: max(root.title-height + 8px, min(root.height - self.height - 8px, root.anchor-y - 8px));

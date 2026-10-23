@@ -169,6 +169,7 @@ pub fn run(
     let notice = SharedString::from(plan.notice.unwrap_or_default());
     window.set_graphics_notice(notice.clone());
     window.set_gpu_running(gpu);
+    window.global::<Popup>().set_fade(gpu);
     // Slint 1.18 keeps its event loop running when it creates a window late and
     // the GPU surface fails, leaving no window. Check for the native window.
     let missing_window = Rc::new(Cell::new(false));

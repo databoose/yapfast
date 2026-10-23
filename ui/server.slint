@@ -35,11 +35,10 @@ export component InviteDialog inherits Rectangle {
     property <bool> copied: root.prompt.link != "" && root.copied-link == root.prompt.link;
     /// How far it's open, from 0 to 1; see PopupMotion.
     in property <float> motion: 1;
-    background: #00000099;
-    opacity: root.motion;
+    background: rgba(0, 0, 0, 0.6 * root.motion);
     TouchArea { clicked => { root.close(); } }
     Rectangle {
-        transform-scale: Popup.scale(root.motion);
+        opacity: Popup.opacity(root.motion); transform-scale: Popup.scale(root.motion);
         width: min(460px, root.width - 48px); height: invite-content.preferred-height;
         background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
@@ -141,11 +140,10 @@ export component JoinDialog inherits Rectangle {
     callback close;
     /// How far it's open, from 0 to 1; see PopupMotion.
     in property <float> motion: 1;
-    background: #00000099;
-    opacity: root.motion;
+    background: rgba(0, 0, 0, 0.6 * root.motion);
     TouchArea { clicked => { root.close(); } }
     Rectangle {
-        transform-scale: Popup.scale(root.motion);
+        opacity: Popup.opacity(root.motion); transform-scale: Popup.scale(root.motion);
         width: min(440px, root.width - 48px); height: join-content.preferred-height;
         background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
@@ -238,11 +236,10 @@ export component ChannelDialog inherits Rectangle {
     property <bool> ready: !root.prompt.saving;
     /// How far it's open, from 0 to 1; see PopupMotion.
     in property <float> motion: 1;
-    background: #00000099;
-    opacity: root.motion;
+    background: rgba(0, 0, 0, 0.6 * root.motion);
     TouchArea { clicked => { root.close(); } }
     Rectangle {
-        transform-scale: Popup.scale(root.motion);
+        opacity: Popup.opacity(root.motion); transform-scale: Popup.scale(root.motion);
         width: min(460px, root.width - 48px); height: channel-content.preferred-height;
         background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
@@ -426,15 +423,14 @@ export component ProfileEditorDialog inherits Rectangle {
     }
     /// How far it's open, from 0 to 1; see PopupMotion.
     in property <float> motion: 1;
-    background: #00000099;
-    opacity: root.motion;
+    background: rgba(0, 0, 0, 0.6 * root.motion);
     TouchArea { clicked => { root.close(); } }
     property <length> bar-height: root.prompt.changed || root.prompt.saving ? 60px : 0px;
     // Its top stays where a card of a usual height starts, so what's under
     // the pointer stays put as the bar or the banner colour opens; it rises
     // only to keep its end in the window.
     card := Rectangle {
-        transform-scale: Popup.scale(root.motion);
+        opacity: Popup.opacity(root.motion); transform-scale: Popup.scale(root.motion);
         width: min(600px, root.width - 48px); height: min(card-content.preferred-height, root.height - 48px);
         y: max(24px, min((root.height - 600px) / 2, root.height - 24px - self.height));
         background: Theme.sidebar; border-color: Theme.edge; border-width: 1px; border-radius: 12px;

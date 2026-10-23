@@ -309,9 +309,11 @@ export component SettingsCard inherits Rectangle {
     TouchArea { clicked => { root.close(); } }
     Rectangle {
         width: min(1080px, root.width - 80px); height: min(800px, root.height - 80px);
-        opacity: root.motion; transform-scale: Popup.scale(root.motion);
+        opacity: Popup.opacity(root.motion); transform-scale: Popup.scale(root.motion);
         border-radius: 12px; border-width: 1px; border-color: Theme.edge;
-        drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+        // The shadow shows once the card is open: a card this large costs
+        // a blurred image as large to draw again each frame it grows.
+        drop-shadow-blur: 24px; drop-shadow-color: root.motion == 1 ? #00000080 : transparent; drop-shadow-offset-y: 8px;
         Rectangle {
             border-radius: 12px; clip: true;
             @children

@@ -1033,14 +1033,15 @@ export component SwitchDialog inherits Rectangle {
     /// It takes the keyboard while it asks, and lets it go after.
     public function focus-keys() { switch-keys.focus(); }
     public function release-keys() { switch-keys.clear-focus(); }
-    visible: self.opacity > 0;
-    opacity: root.switching ? 1 : 0;
-    animate opacity { duration: Popup.duration; easing: ease-out-quad; }
-    background: #00000099;
+    // How far it's open, from 0 to 1; see Popup.
+    property <float> motion: root.switching ? 1 : 0;
+    animate motion { duration: Popup.duration; easing: ease-out-quad; }
+    visible: root.motion > 0;
+    background: rgba(0, 0, 0, 0.6 * root.motion);
     TouchArea { enabled: root.switching; clicked => { root.cancel-switch(); } }
     Rectangle {
         width: min(420px, root.width - 48px); height: switch-content.preferred-height;
-        transform-scale: Popup.scale(root.opacity);
+        opacity: Popup.opacity(root.motion); transform-scale: Popup.scale(root.motion);
         background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
         accessible-role: groupbox;
