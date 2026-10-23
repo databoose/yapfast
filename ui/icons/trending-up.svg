@@ -1,14 +1,1 @@
-<svg
-  xmlns="http://www.w3.org/2000/svg"
-  width="24"
-  height="24"
-  viewBox="0 0 24 24"
-  fill="none"
-  stroke="currentColor"
-  stroke-width="2"
-  stroke-linecap="round"
-  stroke-linejoin="round"
->
-  <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
-  <polyline points="16 7 22 7 22 13" />
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M3.46 3.46C2 4.93 2 7.3 2 12s0 7.07 1.46 8.54C4.93 22 7.3 22 12 22s7.07 0 8.54-1.46C22 19.07 22 16.7 22 12s0-7.07-1.46-8.54C19.07 2 16.7 2 12 2S4.93 2 3.46 3.46M13.75 10c0 .41.34.75.75.75h.69l-2.01 2.01c-.1.1-.26.1-.36 0l-1.58-1.58a1.75 1.75 0 0 0-2.48 0l-2.29 2.29a.75.75 0 1 0 1.06 1.06l2.3-2.3c.1-.09.25-.09.35 0l1.58 1.6c.69.68 1.8.68 2.48 0l2.01-2.02v.69a.75.75 0 0 0 1.5 0V10a.75.75 0 0 0-.75-.75h-2.5a.75.75 0 0 0-.75.75" clip-rule="evenodd"/></svg>

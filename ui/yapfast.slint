@@ -1549,7 +1549,7 @@ export component YapfastWindow inherits Window {
                 }
                 // Closing the menu takes these away, so they act first.
                 if root.can-start-threads: MenuItem {
-                    text: "Create Thread"; icon: @image-url("icons/messages-square.svg");
+                    text: "Create Thread"; icon: @image-url("icons/thread.svg");
                     clicked => { root.new-thread("", "plus"); plus-menu.close(); }
                 }
                 if root.can-create-polls: MenuItem {
@@ -2105,7 +2105,7 @@ export component YapfastWindow inherits Window {
                         }
                         if root.can-list-threads: Middle {
                             IconButton {
-                                icon: @image-url("icons/messages-square.svg"); label: "Threads";
+                                icon: @image-url("icons/thread.svg"); label: "Threads";
                                 size: 32px; glyph: 20px; tip-side: 2;
                                 tint: root.threads-open ? Theme.text : Theme.secondary;
                                 clicked => {

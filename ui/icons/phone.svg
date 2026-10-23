@@ -1,15 +1,1 @@
-<!-- @license lucide-static v1.51.0 - ISC -->
-<svg
-  class="lucide lucide-phone"
-  xmlns="http://www.w3.org/2000/svg"
-  width="24"
-  height="24"
-  viewBox="0 0 24 24"
-  fill="none"
-  stroke="currentColor"
-  stroke-width="2"
-  stroke-linecap="round"
-  stroke-linejoin="round"
->
-  <path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384" />
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="m16.56 12.9-.46.46s-1.08 1.08-4.04-1.86-1.87-4.02-1.87-4.02l.29-.28c.7-.7.77-1.83.15-2.66L9.37 2.86a2.1 2.1 0 0 0-3.1-.29L4.68 4.14c-.43.43-.72.99-.69 1.6.1 1.6.81 5 4.82 8.99 4.24 4.22 8.23 4.39 9.86 4.24.51-.05.96-.32 1.32-.67l1.42-1.42c.96-.95.69-2.59-.54-3.25l-1.9-1.04c-.81-.44-1.8-.31-2.42.32"/></svg>

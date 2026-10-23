@@ -1,16 +1,1 @@
-<!-- @license lucide-static v1.51.0 - ISC -->
-<svg
-  class="lucide lucide-circle-stop"
-  xmlns="http://www.w3.org/2000/svg"
-  width="24"
-  height="24"
-  viewBox="0 0 24 24"
-  fill="none"
-  stroke="currentColor"
-  stroke-width="2"
-  stroke-linecap="round"
-  stroke-linejoin="round"
->
-  <circle cx="12" cy="12" r="10" />
-  <rect x="9" y="9" width="6" height="6" rx="1" />
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20M8.59 8.59C8 9.17 8 10.1 8 12s0 2.83.59 3.41C9.17 16 10.1 16 12 16s2.83 0 3.41-.59C16 14.83 16 13.9 16 12s0-2.83-.59-3.41C14.83 8 13.9 8 12 8s-2.83 0-3.41.59" clip-rule="evenodd"/></svg>

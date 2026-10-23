@@ -116,7 +116,7 @@ export component ThreadPanel inherits Rectangle {
             height: 48px;
             HorizontalLayout {
                 padding-left: 16px; padding-right: 10px; spacing: 8px;
-                Middle { Image { source: @image-url("icons/messages-square.svg"); width: 18px; height: 18px; colorize: Theme.muted; } }
+                Middle { Image { source: @image-url("icons/thread.svg"); width: 18px; height: 18px; colorize: Theme.muted; } }
                 Text { text: root.name; color: Theme.text; font-size: 15px; font-weight: 700; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
                 Middle {
                     IconButton {
@@ -336,7 +336,7 @@ export component NewThreadPanel inherits Rectangle {
             height: 48px;
             HorizontalLayout {
                 padding-left: 16px; padding-right: 10px; spacing: 10px;
-                Middle { Image { source: @image-url("icons/messages-square.svg"); width: 18px; height: 18px; colorize: Theme.muted; } }
+                Middle { Image { source: @image-url("icons/thread.svg"); width: 18px; height: 18px; colorize: Theme.muted; } }
                 Text { text: "New Thread"; color: Theme.text; font-size: 15px; font-weight: 700; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
                 Middle { IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; tip-side: 2; clicked => { root.close(); } } }
             }

@@ -242,7 +242,7 @@ component NewPostForm inherits Rectangle {
             height: 48px;
             HorizontalLayout {
                 padding-left: 16px; padding-right: 10px; spacing: 10px;
-                Middle { Image { source: @image-url("icons/messages-square.svg"); width: 18px; height: 18px; colorize: Theme.muted; } }
+                Middle { Image { source: @image-url("icons/thread.svg"); width: 18px; height: 18px; colorize: Theme.muted; } }
                 Text { text: "New Post"; color: Theme.text; font-size: 15px; font-weight: 700; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
                 Middle { IconButton { icon: @image-url("icons/x.svg"); label: "Close"; size: 28px; glyph: 18px; tip-side: 2; clicked => { root.close(); } } }
             }
@@ -527,7 +527,7 @@ export component ForumPanel inherits Rectangle {
                 visible: root.can-post;
                 x: parent.width - 16px - self.width; y: 16px;
                 width: self.min-width; height: 36px;
-                text: "New Post"; icon: @image-url("icons/messages-square.svg"); primary: true;
+                text: "New Post"; icon: @image-url("icons/thread.svg"); primary: true;
                 clicked => { root.new-post(); }
             }
         }
@@ -537,7 +537,7 @@ export component ForumPanel inherits Rectangle {
         }
         if root.note == "" && root.empty: VerticalLayout {
             padding: 32px; spacing: 8px; vertical-stretch: 1; alignment: center;
-            Image { source: @image-url("icons/messages-square.svg"); height: 48px; image-fit: contain; colorize: Theme.faint; }
+            Image { source: @image-url("icons/thread.svg"); height: 48px; image-fit: contain; colorize: Theme.faint; }
             Text {
                 text: root.searching ? "No results found" : "There are no posts yet.";
                 color: Theme.text; font-size: 17px; font-weight: 700; horizontal-alignment: center;

@@ -1,18 +1,1 @@
-<!-- @license lucide-static v1.51.0 - ISC -->
-<svg
-  class="lucide lucide-refresh-cw"
-  xmlns="http://www.w3.org/2000/svg"
-  width="24"
-  height="24"
-  viewBox="0 0 24 24"
-  fill="none"
-  stroke="currentColor"
-  stroke-width="2"
-  stroke-linecap="round"
-  stroke-linejoin="round"
->
-  <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
-  <path d="M21 3v5h-5" />
-  <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
-  <path d="M8 16H3v5" />
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><g fill="currentColor"><path d="M12.08 2.25a9.1 9.1 0 0 0-9.12 8.33H2a.75.75 0 0 0-.53 1.29l1.68 1.66c.3.3.77.3 1.06 0l1.68-1.66a.75.75 0 0 0-.53-1.29h-.9a7.63 7.63 0 0 1 7.62-6.83c2.77 0 5.2 1.46 6.54 3.64a.75.75 0 1 0 1.27-.78 9.2 9.2 0 0 0-7.81-4.36M20.84 10.47a.75.75 0 0 0-1.05 0l-1.69 1.66a.75.75 0 0 0 .53 1.29h.9a7.65 7.65 0 0 1-7.65 6.83 7.7 7.7 0 0 1-6.56-3.64.75.75 0 1 0-1.28.78 9.2 9.2 0 0 0 7.84 4.36c4.81 0 8.77-3.66 9.15-8.33H22a.75.75 0 0 0 .53-1.29z"/></g></svg>

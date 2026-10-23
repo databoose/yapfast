@@ -1,17 +1,1 @@
-<!-- @license lucide-static v1.51.0 - ISC -->
-<svg
-  class="lucide lucide-user-minus"
-  xmlns="http://www.w3.org/2000/svg"
-  width="24"
-  height="24"
-  viewBox="0 0 24 24"
-  fill="none"
-  stroke="currentColor"
-  stroke-width="2"
-  stroke-linecap="round"
-  stroke-linejoin="round"
->
-  <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-  <circle cx="9" cy="7" r="4" />
-  <line x1="22" x2="16" y1="11" y2="11" />
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><mask id="a"><path fill="#fff" d="M0 0h24v24H0z"/><path stroke="#000" stroke-linecap="round" stroke-width="5.5" d="M16.5 10h6"/></mask><g fill="currentColor" mask="url(#a)"><circle cx="9.5" cy="6.5" r="4"/><ellipse cx="9.5" cy="17" rx="7" ry="4.5"/></g><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2" d="M16.5 10h6"/></svg>

@@ -1,16 +1,1 @@
-<svg
-  xmlns="http://www.w3.org/2000/svg"
-  width="24"
-  height="24"
-  viewBox="0 0 24 24"
-  fill="none"
-  stroke="currentColor"
-  stroke-width="2"
-  stroke-linecap="round"
-  stroke-linejoin="round"
->
-  <rect x="2" y="4.5" width="20" height="15" rx="3" />
-  <path d="M10 9.5H8.25A1.75 1.75 0 0 0 6.5 11.25v1.5A1.75 1.75 0 0 0 8.25 14.5h.25A1.5 1.5 0 0 0 10 13v-1H8.5" stroke-width="1.6" />
-  <path d="M12.75 9.5v5" stroke-width="1.6" />
-  <path d="M15.5 14.5v-5h2.75M15.5 12h2.25" stroke-width="1.6" />
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><mask id="a"><path fill="#fff" d="M0 0h24v24H0z"/><g fill="none" stroke="#000" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7"><path d="M10 9.5H8.25a1.75 1.75 0 0 0-1.75 1.75v1.5a1.75 1.75 0 0 0 1.75 1.75h.25A1.5 1.5 0 0 0 10 13v-1H8.5M12.75 9.5v5M15.5 14.5v-5h2.75M15.5 12h2.25"/></g></mask><rect width="20" height="16" x="2" y="4" fill="currentColor" mask="url(#a)" rx="4"/></svg>

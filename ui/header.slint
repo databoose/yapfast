@@ -314,7 +314,7 @@ component ThreadEntry inherits Rectangle {
                 HorizontalLayout {
                     spacing: 0px;
                     if root.entry.person != "": Middle { Avatar { size: 16px; initial: root.entry.initial; tint: root.entry.tint; picture-url: root.entry.picture-url; } }
-                    if root.entry.person == "" && root.entry.archived: Middle { Image { source: @image-url("icons/messages-square.svg"); width: 14px; height: 14px; colorize: Theme.muted; } }
+                    if root.entry.person == "" && root.entry.archived: Middle { Image { source: @image-url("icons/thread.svg"); width: 14px; height: 14px; colorize: Theme.muted; } }
                     if root.entry.person != "" || root.entry.archived: Rectangle { width: 6px; }
                     if root.entry.lead != "": Text { text: root.entry.lead; color: Theme.muted; font-size: 13px; vertical-alignment: center; horizontal-stretch: 0; }
                     if root.entry.person != "": Text {
@@ -400,7 +400,7 @@ export component ThreadsPopover inherits Rectangle {
             height: 48px; background: Theme.panel;
             HorizontalLayout {
                 padding-left: 16px; padding-right: 10px; spacing: 10px;
-                Middle { Image { source: @image-url("icons/messages-square.svg"); width: 20px; height: 20px; colorize: Theme.secondary; } }
+                Middle { Image { source: @image-url("icons/thread.svg"); width: 20px; height: 20px; colorize: Theme.secondary; } }
                 Middle { Text { text: "Threads"; color: Theme.text; font-size: 16px; font-weight: 700; } }
                 if root.searchable: Middle { Rectangle { width: 1px; height: 24px; background: Theme.line; } }
                 if root.searchable: Middle {
@@ -425,7 +425,7 @@ export component ThreadsPopover inherits Rectangle {
         }
         if root.note == "" && root.empty: VerticalLayout {
             padding: 32px; spacing: 8px; vertical-stretch: 1; alignment: center;
-            Image { source: @image-url("icons/messages-square.svg"); height: 48px; image-fit: contain; colorize: Theme.faint; }
+            Image { source: @image-url("icons/thread.svg"); height: 48px; image-fit: contain; colorize: Theme.faint; }
             Text { text: "There are no threads."; color: Theme.text; font-size: 17px; font-weight: 700; horizontal-alignment: center; }
             Text {
                 text: "Stay focused on a conversation with a thread - a temporary text channel.";

@@ -68,7 +68,7 @@ export component TitleBar inherits Rectangle {
             clicked => { root.minimize-window(); }
         }
         WindowButton {
-            icon: root.maximized ? @image-url("icons/copy.svg") : @image-url("icons/square.svg");
+            icon: root.maximized ? @image-url("icons/restore.svg") : @image-url("icons/square.svg");
             label: root.maximized ? "Restore" : "Maximize"; dim: !root.focused;
             clicked => { root.maximize-window(); }
         }

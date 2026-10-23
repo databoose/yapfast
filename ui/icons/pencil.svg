@@ -1,16 +1,1 @@
-<!-- @license lucide-static v1.51.0 - ISC -->
-<svg
-  class="lucide lucide-pencil"
-  xmlns="http://www.w3.org/2000/svg"
-  width="24"
-  height="24"
-  viewBox="0 0 24 24"
-  fill="none"
-  stroke="currentColor"
-  stroke-width="2"
-  stroke-linecap="round"
-  stroke-linejoin="round"
->
-  <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" />
-  <path d="m15 5 4 4" />
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><g fill="currentColor"><path d="m11.4 18.16 7.4-7.4a10.3 10.3 0 0 1-5.57-5.56l-7.4 7.4c-.57.58-.86.87-1.1 1.18q-.45.57-.75 1.21c-.18.37-.3.76-.56 1.53L2.05 20.6a1.06 1.06 0 0 0 1.35 1.35l4.08-1.37c.77-.25 1.16-.38 1.52-.56q.65-.3 1.22-.74c.31-.25.6-.54 1.18-1.12M20.85 8.71a3.93 3.93 0 0 0-5.56-5.56l-.89.89a9 9 0 0 0 2.13 3.43 9 9 0 0 0 3.43 2.13z"/></g></svg>
