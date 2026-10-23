@@ -32,6 +32,13 @@
 // people of their own (Bob without it), for a long session across channels.
 // POST /_control/crowd-start makes someone new post in the last of them, or
 // in #general, 50 times a second, and /_control/crowd-stop stops them.
+// POST /_control/burst?count=N posts N messages, 150 every 10 ms, for
+// measuring: every third in #general, from 40 people in turn, every fourth of
+// those with a 960x640 picture and every fifth with an embed's picture, each at
+// a URL of its own; the rest in room-1.. and the quiet servers' channels. GET
+// /_control/burst tells how many it has posted. POST /_control/speakers-start
+// makes Bob, Carol and Dave speak a tone without pause in every call Alice is
+// in, and /_control/speakers-stop stops them.
 // POST /_control/chat-start makes Bob post in
 // #general every 2 s; POST /_control/chat-stop stops him. POST
 // /_control/gallery makes him post three photos in one message. Joining voice
@@ -1259,6 +1266,18 @@ const rooms = Array.from({ length: Number(args.channels) }, (_, n) => {
 });
 let crowd: ReturnType<typeof setInterval> | undefined;
 let crowdCount = 0;
+let burst: ReturnType<typeof setInterval> | undefined;
+let burstPosted = 0;
+let burstTotal = 0;
+/** The pictures bursts attach, drawn once: 960x640 PNGs. */
+let burstPictures: Uint8Array[] | undefined;
+const burstAuthors: User[] = Array.from({ length: 40 }, (_, n) => ({
+  id: (1_810_000_000_000_000_000n + BigInt(n)).toString(),
+  username: `burst${n}`,
+  global_name: `Burst ${n}`,
+  avatar: `b${n}`,
+}));
+for (const author of burstAuthors) userById.set(author.id, author);
 
 // The extra DMs of `--dms`, older than the fixture's.
 const fillerPeople: User[] = [];
@@ -3125,6 +3144,42 @@ function bobSpeaks(ws: Socket) {
     }
     index++;
   }, 20);
+  return true;
+}
+
+/** The calls Bob, Carol and Dave speak in without pause: one timer each. */
+const speakerTimers: ReturnType<typeof setInterval>[] = [];
+
+function speakersStart(ws: Socket) {
+  const key = ws.data.callKey;
+  const peer = ws.data.ssrc ? peers.get(ws.data.ssrc) : undefined;
+  if (!key || !peer) return false;
+  const speakers = [users.bob, users.carol, users.dave].map((user, n) => ({ user, ssrc: BOB_AUDIO_SSRC + 1000 + n }));
+  for (const { user, ssrc } of speakers) {
+    ws.send(JSON.stringify({ op: 5, d: { user_id: user.id, ssrc, speaking: 1 } }));
+  }
+  let index = 0;
+  let counter = 1;
+  const timer = setInterval(() => {
+    if (ws.readyState !== 1) {
+      clearInterval(timer);
+      return;
+    }
+    const wants: any = callWants.get(ws.data.ssrc!) ?? {};
+    for (const { ssrc } of speakers) {
+      const header = Buffer.alloc(12);
+      header[0] = 0x80;
+      header[1] = 120 | (index === 0 ? 0x80 : 0);
+      header.writeUInt16BE((30_000 + index) & 0xffff, 2);
+      header.writeUInt32BE((index * 960) >>> 0, 4);
+      header.writeUInt32BE(ssrc, 8);
+      if (Number(wants[String(ssrc)] ?? wants.any ?? 100) > 0) {
+        udp.send(sealRtp(Buffer.concat([header, voiceTone[index % voiceTone.length]!]), key, counter++, 12), peer.port, peer.address);
+      }
+    }
+    index++;
+  }, 20);
+  speakerTimers.push(timer);
   return true;
 }
 
@@ -7411,6 +7466,66 @@ const server = Bun.serve<SocketData>({
         dispatch("MESSAGE_CREATE", dispatched(message, origin));
       }, 20);
       return new Response("crowd started\n");
+    }
+    if (req.method === "POST" && path === "/_control/speakers-start") {
+      const calls = [...voiceSockets].filter((ws) => !ws.data.stream && ws.data.callKey);
+      // Carol and Dave sit muted in the Lounge; they unmute to speak.
+      for (const user of [users.carol.id, users.dave.id]) {
+        const state = voice.get(user);
+        if (state?.self_mute) {
+          voice.set(user, { ...state, self_mute: false, self_deaf: false });
+          announce(user);
+        }
+      }
+      const spoke = calls.filter((ws) => speakersStart(ws)).length;
+      return new Response(`three speak in ${spoke} call(s)\n`, { status: spoke ? 200 : 409 });
+    }
+    if (req.method === "POST" && path === "/_control/speakers-stop") {
+      for (const timer of speakerTimers.splice(0)) clearInterval(timer);
+      return new Response("speakers stopped\n");
+    }
+    if (req.method === "GET" && path === "/_control/burst") {
+      return Response.json({ posted: burstPosted, total: burstTotal, done: burst === undefined });
+    }
+    if (req.method === "POST" && path === "/_control/burst") {
+      clearInterval(burst);
+      burstPictures ??= Array.from({ length: 6 }, (_, k) =>
+        png(960, 640, (x, y) => [(k * 40 + Math.floor(x / 4)) & 255, (k * 70 + Math.floor(y / 3)) & 255, (x ^ y) & 255, 255]));
+      const pictures = burstPictures;
+      burstTotal = Number(url.searchParams.get("count") ?? 1000);
+      burstPosted = 0;
+      const elsewhere = [...rooms, ...fillerList];
+      let general = 0;
+      const picture = (channel: string, id: string, n: number) =>
+        addFile({ id, channel, filename: `burst${n}.png`, contentType: "image/png", data: pictures[n % pictures.length]!, width: 960, height: 640 });
+      burst = setInterval(() => {
+        for (let tick = 0; tick < 150 && burstPosted < burstTotal; tick++) {
+          const n = burstPosted++;
+          const now = Date.now();
+          const author = burstAuthors[n % burstAuthors.length]!;
+          if (n % 3 === 0 || elsewhere.length === 0) {
+            const g = general++;
+            const files = g % 4 === 0 ? [picture(GENERAL, snowflake(now, 200 + tick), n)] : [];
+            const shown = g % 5 === 0 ? picture(GENERAL, snowflake(now, 400 + tick), n + 1) : undefined;
+            const embeds = shown
+              ? (origin: string) => [{
+                type: "rich", title: `Burst article ${n}`, description: "A link someone posted, with its picture.",
+                color: 0x5865f2, image: { ...wireAttachment(shown, origin), url: `${origin}/attachments/${GENERAL}/${shown.id}/${shown.filename}` },
+              }]
+              : undefined;
+            const message = post(GENERAL, author, `Burst ${n}: a message with a few words in it`, now, { files, ...(embeds ? { embeds } : {}) });
+            dispatch("MESSAGE_CREATE", dispatched(message, origin));
+          } else {
+            const channel = elsewhere[n % elsewhere.length]!;
+            dispatch("MESSAGE_CREATE", dispatched(post(channel, author, `Burst ${n} elsewhere`, now), origin));
+          }
+        }
+        if (burstPosted >= burstTotal) {
+          clearInterval(burst);
+          burst = undefined;
+        }
+      }, 10);
+      return new Response(`burst of ${burstTotal} started\n`);
     }
     if (req.method === "POST" && path === "/_control/crowd-stop") {
       clearInterval(crowd);
