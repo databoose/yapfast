@@ -3203,6 +3203,19 @@ fn discord_threads_show_beside_their_channel() {
         messages: timeline(vec![ChatMessage {
             item: "d:5".into(),
             body: "Saturday?".into(),
+            attachments: vec![chat::Attachment {
+                name: "map.png".into(),
+                size: None,
+                image: true,
+                dimensions: None,
+                preview: None,
+                preview_failed: false,
+                placement: chat::Placement::Message,
+                gif: None,
+                spoiler: false,
+                video: false,
+                url: None,
+            }],
             can_react: true,
             can_reply: true,
             ..Default::default()
@@ -3211,6 +3224,27 @@ fn discord_threads_show_beside_their_channel() {
     let aside = app.state.aside.as_ref().unwrap();
     assert!(aside.ready && aside.messages.len() == 1);
     assert_eq!(app.state.selected.as_deref(), Some("discord:10:21"));
+
+    // Its images open from the thread, and show once they come from there.
+    let effects = app.dispatch(Action::ViewImage {
+        item: "d:5".into(),
+        index: 0,
+    });
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::Backend(Command::ViewImage { room, .. })] if room == "discord:10:30"
+    ));
+    app.apply(Event::Image {
+        room: "discord:10:30".into(),
+        item: "d:5".into(),
+        index: 0,
+        picture: Err("gone"),
+    });
+    assert_eq!(
+        app.state.viewer.as_ref().unwrap().pictures[&0],
+        Some(Err("gone"))
+    );
+    app.dispatch(Action::CloseImage);
 
     // Its messages act in the thread, and its composer writes there.
     let effects = app.dispatch(Action::React {

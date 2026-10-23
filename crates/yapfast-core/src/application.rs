@@ -2960,7 +2960,9 @@ impl Application {
                 index,
                 picture,
             } => {
-                if self.state.selected.as_ref() == Some(&room)
+                // The room it came from: the selected one, or the thread
+                // beside it.
+                if self.state.room_of(&item) == Some(&room)
                     && let Some(viewer) = &mut self.state.viewer
                     && viewer.item == item
                 {
