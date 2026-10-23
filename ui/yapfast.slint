@@ -642,7 +642,7 @@ export component YapfastWindow inherits Window {
     in property <bool> call-video;
     /// The call's grid of tiles is on screen, in its conversation or over
     /// the whole window.
-    out property <bool> grid-shown: root.stage-full || (root.voice-here && (root.voice-panel || root.call-shown) && !root.settings-open);
+    out property <bool> grid-shown: root.stage-full || (root.voice-here && (root.voice-panel || root.call-shown));
     /// The streams of those who film too, in tiles of their own, as indexes of
     /// `participants`; see ParticipantGrid.
     in property <[int]> stream-tiles;
@@ -661,7 +661,7 @@ export component YapfastWindow inherits Window {
     in property <int> pip-kind;
     in property <int> pip-person: -1;
     in property <int> pip-slot: -1;
-    out property <bool> pip-shown: root.workspace && root.voice-active && root.pip-kind != 0 && !root.call-on-screen && !root.settings-open && !root.stage-full;
+    out property <bool> pip-shown: root.workspace && root.voice-active && root.pip-kind != 0 && !root.call-on-screen && !root.stage-full;
     /// Sharing a screen is offered in Discord calls.
     in property <bool> can-share;
     in property <bool> sharing;
@@ -914,11 +914,15 @@ export component YapfastWindow inherits Window {
     in property <string> incoming-initial;
     in property <color> incoming-tint;
     in property <image> incoming-picture;
-    /// The settings screen covers the window, showing one section: 0 account, 1 voice and
+    /// The settings show over the window, one section at a time: 0 account, 1 voice and
     /// audio, 2 messages, 3 notifications, 4 Discord, 5 sounds, 8 game activity.
     in-out property <bool> settings-open;
+    /// Settings that opened stay a moment after they close, to shrink away.
+    property <bool> settings-kept;
+    Timer { interval: 100ms; running: root.settings-kept && !root.settings-open; triggered => { root.settings-kept = false; } }
     // Closing settings stops linking Discord there.
     changed settings-open => {
+        if self.settings-open { self.settings-kept = true; }
         if !self.settings-open && self.link-phase != 0 { self.cancel-discord-link(); }
         if !self.settings-open { self.camera-testing = false; }
         if !self.settings-open && self.theme-editor { self.cancel-theme(); }
@@ -2983,7 +2987,7 @@ export component YapfastWindow inherits Window {
     // The stream being watched, this account's own or a camera, in a corner
     // while the call is off screen; see StreamPip. It starts at the top right
     // of the conversation and stays in the corner it's dragged nearest.
-    property <bool> call-on-screen: root.voice-here && (root.voice-panel || root.call-shown) && !root.settings-open;
+    property <bool> call-on-screen: root.voice-here && (root.voice-panel || root.call-shown);
     property <bool> pip-left;
     property <bool> pip-bottom;
     if root.pip-shown: StreamPip {
@@ -3083,9 +3087,10 @@ export component YapfastWindow inherits Window {
         emoji-index: root.emoji-suggestion-index; emoji-font: root.emoji-font;
         emoji-chosen(index) => { root.emoji-suggestion-chosen(index); }
     }
-    // Settings cover the window, showing one section.
-    if root.settings-open: SettingsScreen {
+    // Settings over the window, showing one section.
+    if root.settings-open || root.settings-kept: SettingsScreen {
         y: root.title-height; height: root.height - root.title-height;
+        open: root.settings-open;
         settings-section <=> root.settings-section;
         discord-build: root.discord-build; preview: root.preview;
         close => { root.settings-open = false; }

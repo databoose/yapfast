@@ -228,6 +228,9 @@ export component SettingsFrame inherits Rectangle {
     /// a page with a list view of its own, which makes only the rows in
     /// sight.
     in property <bool> fill;
+    /// It's a card rather than the whole window, so the list of sections
+    /// keeps its own width instead of taking a share of the room.
+    in property <bool> popup;
     /// Where the section's column starts and how wide it is, for such a bar.
     out property <length> content-x: content.x;
     out property <length> content-width: content.width;
@@ -247,7 +250,7 @@ export component SettingsFrame inherits Rectangle {
         }
         HorizontalLayout {
             Rectangle {
-                background: Theme.sidebar; horizontal-stretch: 1; min-width: 232px;
+                background: Theme.sidebar; horizontal-stretch: root.popup ? 0 : 1; min-width: 232px;
                 HorizontalLayout {
                     alignment: end;
                     VerticalLayout {
@@ -299,7 +302,9 @@ export component SettingsFrame inherits Rectangle {
     }
 }
 
-// This device's settings, in a SettingsFrame.
+// This device's settings, in a SettingsFrame on a card over the dimmed
+// window, as Discord's: the card grows from 80% as it fades in, and
+// shrinks away as it fades out. A click outside closes it.
 export component SettingsScreen inherits Rectangle {
     /// The section showing: 0 account, 1 voice and video, 2 messages,
     /// 3 notifications, 4 Discord, 5 sounds, 6 advanced, 7 appearance,
@@ -307,8 +312,17 @@ export component SettingsScreen inherits Rectangle {
     in-out property <int> settings-section;
     in property <bool> discord-build;
     in property <bool> preview;
+    /// False once it's closing, while it shrinks away.
+    in property <bool> open: true;
     callback close;
     callback refresh-devices;
+    // How far in it is, from 0 to 1, with Discord's easing, quicker.
+    property <float> shown;
+    init => { self.shown = 1; }
+    changed open => { self.shown = self.open ? 1 : 0; }
+    animate shown { duration: 100ms; easing: ease-out-quad; }
+    Rectangle { background: #000000b3; opacity: root.shown; }
+    TouchArea { enabled: root.open; clicked => { root.close(); } }
     property <[SettingsRow]> with-discord: [
         { heading: true, text: "SETTINGS" },
         { text: "My account", icon: @image-url("icons/user.svg"), id: 0 },
@@ -331,15 +345,25 @@ export component SettingsScreen inherits Rectangle {
         { text: "Sounds", icon: @image-url("icons/volume-2.svg"), id: 5 },
         { text: "Advanced", icon: @image-url("icons/settings.svg"), id: 6 },
     ];
-    SettingsFrame {
-        rows: root.discord-build && !root.preview ? root.with-discord : root.without-discord;
-        selected: root.settings-section;
-        chose(id) => {
-            root.settings-section = id;
-            if id == 1 { root.refresh-devices(); }
+    Rectangle {
+        width: min(1080px, root.width - 80px); height: min(800px, root.height - 80px);
+        opacity: root.shown; transform-scale: 0.8 + 0.2 * root.shown;
+        border-radius: 12px; border-width: 1px; border-color: Theme.edge;
+        drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
+        Rectangle {
+            border-radius: 12px; clip: true;
+            SettingsFrame {
+                popup: true;
+                rows: root.discord-build && !root.preview ? root.with-discord : root.without-discord;
+                selected: root.settings-section;
+                chose(id) => {
+                    root.settings-section = id;
+                    if id == 1 { root.refresh-devices(); }
+                }
+                close => { root.close(); }
+                @children
+            }
         }
-        close => { root.close(); }
-        @children
     }
 }
 
