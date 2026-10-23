@@ -229,9 +229,15 @@ missing file or heading; Clippy with warnings denied and the tests for the whole
 still checks it as a dependency); a build; and the desktop smoke test, which
 runs `target/<profile>/yapfast`, the desktop build, from that build. After
 those, one at a time, as each compile of the UI crate takes several GiB of
-memory, and in `target/check-combinations/` so they don't replace the main
-build's artifacts, it runs Clippy for the Discord-only, Matrix-only and headless
-builds and the headless smoke test, whose binary stays there. Each step prints `=== step` and `rc=N` when it ends,
+memory, it runs Clippy for the Discord-only and Matrix-only builds, then the
+headless build's Clippy and smoke test in `target/check-combinations/`, so the
+headless binary doesn't replace the desktop one. The Discord-only and
+Matrix-only steps also select `crates/feature-union`, a crate without code
+that turns on the features the full build turns on in the crates below Slint.
+Slint and the UI crate then resolve as in the first Clippy step, and those
+steps reuse its check of the UI crate, taking seconds instead of several
+minutes each. When they compile `yapfast-ui` again, a dependency has drifted
+and `feature-union` needs its features. Each step prints `=== step` and `rc=N` when it ends,
 with Rust's errors when it fails, and keeps its full log under `target/check/`.
 The script runs every step and exits non-zero if any failed.
 

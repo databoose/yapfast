@@ -2332,6 +2332,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "feature-union"
+version = "0.1.0"
+dependencies = [
+ "arrayvec",
+ "bitflags 2.13.2",
+ "chrono",
+ "getrandom 0.4.3",
+ "idna",
+ "indexmap",
+ "itertools 0.13.0",
+ "phf_shared",
+ "pulldown-cmark",
+ "serde",
+ "serde_core",
+ "smallvec",
+ "thiserror 2.0.21",
+ "url",
+ "zerocopy",
+]
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
