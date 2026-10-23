@@ -1,5 +1,5 @@
 import { ScrollView } from "scrollview.slint";
-import { Theme, Middle, Label } from "theme.slint";
+import { Theme, Middle, Label, Popup } from "theme.slint";
 import { ActionButton, IconButton, Avatar, TextField, MenuItem } from "controls.slint";
 import { DiscordBadge } from "discord.slint";
 import { StatusDot } from "rail.slint";
@@ -38,9 +38,13 @@ export component StatusDialog inherits Rectangle {
     callback save-status;
     callback clear-status;
     callback close-status;
+    /// How far it's open, from 0 to 1; see PopupMotion.
+    in property <float> motion: 1;
     background: #00000099;
+    opacity: root.motion;
     TouchArea { clicked => { root.close-status(); } }
     Rectangle {
+        transform-scale: Popup.scale(root.motion);
         width: min(460px, root.width - 48px); height: status-content.preferred-height;
         background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
@@ -133,9 +137,13 @@ export component NewDmDialog inherits Rectangle {
     callback new-dm-search;
     callback start-dm(int);
     callback close-new-dm;
+    /// How far it's open, from 0 to 1; see PopupMotion.
+    in property <float> motion: 1;
     background: #00000099;
+    opacity: root.motion;
     TouchArea { clicked => { root.close-new-dm(); } }
     Rectangle {
+        transform-scale: Popup.scale(root.motion);
         width: min(440px, root.width - 48px); height: min(520px, root.height - 48px);
         background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
@@ -225,9 +233,13 @@ export component ForwardDialog inherits Rectangle {
     callback forward-choose(string);
     callback forward-send(string);
     callback close-forward;
+    /// How far it's open, from 0 to 1; see PopupMotion.
+    in property <float> motion: 1;
     background: #00000099;
+    opacity: root.motion;
     TouchArea { clicked => { root.close-forward(); } }
     Rectangle {
+        transform-scale: Popup.scale(root.motion);
         width: min(440px, root.width - 48px); height: min(600px, root.height - 48px);
         background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
@@ -338,9 +350,13 @@ export component LeavingDialog inherits Rectangle {
     in property <string> site;
     callback visit;
     callback close;
+    /// How far it's open, from 0 to 1; see PopupMotion.
+    in property <float> motion: 1;
     background: #00000099;
+    opacity: root.motion;
     TouchArea { clicked => { root.close(); } }
     Rectangle {
+        transform-scale: Popup.scale(root.motion);
         width: min(440px, root.width - 48px); height: content.preferred-height;
         background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
@@ -509,9 +525,13 @@ export component PersonDialog inherits Rectangle {
     callback answer(string);
     callback choose(int);
     callback close;
+    /// How far it's open, from 0 to 1; see PopupMotion.
+    in property <float> motion: 1;
     background: #00000099;
+    opacity: root.motion;
     TouchArea { clicked => { root.close(); } }
     Rectangle {
+        transform-scale: Popup.scale(root.motion);
         width: min(440px, root.width - 48px); height: person-content.preferred-height;
         background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
@@ -599,9 +619,13 @@ export component ReactionsDialog inherits Rectangle {
     callback more-reactors;
     callback remove-reactor(string);
     callback close-reactions;
+    /// How far it's open, from 0 to 1; see PopupMotion.
+    in property <float> motion: 1;
     background: #00000099;
+    opacity: root.motion;
     TouchArea { clicked => { root.close-reactions(); } }
     Rectangle {
+        transform-scale: Popup.scale(root.motion);
         width: min(600px, root.width - 48px); height: min(720px, root.height - 96px);
         background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
@@ -742,9 +766,13 @@ export component PollDialog inherits Rectangle {
     callback set-multiselect(bool);
     callback post;
     callback close;
+    /// How far it's open, from 0 to 1; see PopupMotion.
+    in property <float> motion: 1;
     background: #00000099;
+    opacity: root.motion;
     TouchArea { clicked => { root.close(); } }
     Rectangle {
+        transform-scale: Popup.scale(root.motion);
         width: min(500px, root.width - 48px);
         height: min(root.height - 48px, head.preferred-height + form.preferred-height + foot.preferred-height + 40px);
         background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;

@@ -89,3 +89,24 @@ export component Label inherits Text {
 export global Badges {
     in property <bool> discord: true;
 }
+
+// How popups open, as Discord's modals do but quicker: the card grows
+// from 80% as it fades in, and shrinks away as it fades out when it
+// closes. A popup's dimmed backdrop only fades.
+export global Popup {
+    out property <duration> duration: 100ms;
+    /// The card's size for how far it's open, from 0 to 1.
+    public pure function scale(amount: float) -> float { 0.8 + 0.2 * amount }
+}
+
+// The way in and out of a popup shown with `if`: `amount` goes from 0 to
+// 1 as it opens and back as it closes, and `shown` stays true until the
+// way out ends, which the popup's `if` waits for.
+export component PopupMotion {
+    in property <bool> open;
+    out property <float> amount;
+    out property <bool> shown: self.open || self.amount > 0;
+    init => { if self.open { self.amount = 1; } }
+    changed open => { self.amount = self.open ? 1 : 0; }
+    animate amount { duration: Popup.duration; easing: ease-out-quad; }
+}

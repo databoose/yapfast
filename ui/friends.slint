@@ -1,5 +1,5 @@
 import { ScrollView, ListView } from "scrollview.slint";
-import { Theme, Middle, Label } from "theme.slint";
+import { Theme, Middle, Label, Popup } from "theme.slint";
 import { ActionButton, IconButton, Avatar, TextField, StatusText, VoiceSpot } from "controls.slint";
 import { DiscordBadge } from "discord.slint";
 import { RoomRow, StatusDot, ChannelRow } from "rail.slint";
@@ -404,9 +404,13 @@ export component AddFriendDialog inherits Rectangle {
     in property <string> add-friend-note;
     callback add-friend(string);
     callback close-add-friend;
+    /// How far it's open, from 0 to 1; see PopupMotion.
+    in property <float> motion: 1;
     background: #00000099;
+    opacity: root.motion;
     TouchArea { clicked => { root.close-add-friend(); } }
     Rectangle {
+        transform-scale: Popup.scale(root.motion);
         width: min(460px, root.width - 48px); height: add-friend-content.preferred-height;
         background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;

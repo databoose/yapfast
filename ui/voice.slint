@@ -1,5 +1,5 @@
 import { ScrollView } from "scrollview.slint";
-import { Theme, Middle, Label, Tip } from "theme.slint";
+import { Theme, Middle, Label, Tip, Popup } from "theme.slint";
 import { ActionButton, IconButton, Avatar, CallButton, VolumeSlider, MenuItem } from "controls.slint";
 
 export struct PersonRow {
@@ -1035,14 +1035,12 @@ export component SwitchDialog inherits Rectangle {
     public function release-keys() { switch-keys.clear-focus(); }
     visible: self.opacity > 0;
     opacity: root.switching ? 1 : 0;
-    animate opacity { duration: 180ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+    animate opacity { duration: Popup.duration; easing: ease-out-quad; }
     background: #00000099;
     TouchArea { enabled: root.switching; clicked => { root.cancel-switch(); } }
     Rectangle {
         width: min(420px, root.width - 48px); height: switch-content.preferred-height;
-        y: (parent.height - self.height) / 2 + (root.switching ? 0px : 10px);
-        transform-scale: root.switching ? 1 : 0.96;
-        animate y, transform-scale { duration: 220ms; easing: cubic-bezier(0.33, 1, 0.68, 1); }
+        transform-scale: Popup.scale(root.opacity);
         background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;
         accessible-role: groupbox;

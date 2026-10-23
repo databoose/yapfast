@@ -1,4 +1,4 @@
-import { Theme, Label } from "theme.slint";
+import { Theme, Label, Popup } from "theme.slint";
 import { ActionButton, IconButton, MenuItem, TextField } from "controls.slint";
 
 /// A way to confirm that the prompt lists, by its id: 0 an authenticator
@@ -41,7 +41,10 @@ export component MfaDialog inherits Rectangle {
     callback resend;
     callback confirm;
     callback cancel;
+    /// How far it's open, from 0 to 1; see PopupMotion.
+    in property <float> motion: 1;
     background: #00000099;
+    opacity: root.motion;
     // The warning's button waits ten seconds, as Discord's does, each time
     // it shows.
     property <bool> warning: root.prompt.warning;
@@ -52,6 +55,7 @@ export component MfaDialog inherits Rectangle {
     Timer { interval: 1s; running: root.warning && root.wait > 0; triggered => { root.wait -= 1; } }
     TouchArea { }
     Rectangle {
+        transform-scale: Popup.scale(root.motion);
         width: min(440px, root.width - 48px); height: content.preferred-height;
         background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 12px;
         drop-shadow-blur: 32px; drop-shadow-color: #00000066; drop-shadow-offset-y: 12px;

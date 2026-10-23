@@ -1,6 +1,6 @@
 import { Theme, Middle, Label } from "theme.slint";
 import { ActionButton, Avatar, TextField, PictureStore } from "controls.slint";
-import { Choices, Picker, SettingsFrame, SettingsRow, SettingsTitle, SettingsHeading, SettingsSwitch, UnsavedBar } from "settings.slint";
+import { Choices, Picker, SettingsCard, SettingsFrame, SettingsRow, SettingsTitle, SettingsHeading, SettingsSwitch, UnsavedBar } from "settings.slint";
 import { AddMembersDialog, RoleConfirmDialog, RolesPrompt, RolesSection } from "roles.slint";
 import { AuditLogPrompt, AuditLogSection, BanDialog, BansPrompt, BansSection, SafetyPrompt, SafetySection } from "moderation.slint";
 import { InvitesPrompt, InvitesSection, MembersPrompt, MembersSection, SecurityActionsDialog } from "server_people.slint";
@@ -345,11 +345,13 @@ component BoostSection inherits VerticalLayout {
     }
 }
 
-// A Discord server's settings, covering the window: the pages this account
+// A Discord server's settings, on a card over the window: the pages this account
 // may change down the left, the chosen one on the right, and Discord's bar
 // over its bottom once the page has unsaved changes. Leaving the page or the
 // settings waits until they're reset or saved.
 export component ServerSettingsScreen inherits Rectangle {
+    /// How far it's open, from 0 to 1; see PopupMotion.
+    in property <float> motion: 1;
     in property <ServerSettingsPrompt> prompt;
     in-out property <string> name;
     in-out property <string> description;
@@ -402,88 +404,92 @@ export component ServerSettingsScreen inherits Rectangle {
     // Discord takes what they send.
     property <bool> dialog-open: root.prompt.emoji.uploading || root.prompt.stickers.form || root.prompt.ownership.kind != 0;
     changed dialog-open => { if !self.dialog-open { frame.focus-keys(); } }
-    frame := SettingsFrame {
-        rows: root.prompt.rows; selected: root.prompt.section; label: "Server settings";
-        bottom: root.bar ? 140px : 56px;
-        // A role's permissions are a list view.
-        fill: root.prompt.loaded && ((root.prompt.section == 3 && root.prompt.roles.open && root.prompt.roles.tab == 1) || root.prompt.section == 5 || root.prompt.section == 6 || root.prompt.section == 7 || root.prompt.section == 8 || root.prompt.section == 9);
-        chose(id) => { root.choose(id); }
+    SettingsCard {
+        motion: root.motion;
         close => { root.close(); }
-        if root.prompt.loading: Label { text: "Loading..."; }
-        if root.prompt.loaded && root.prompt.section == 0: ServerProfileSection {
-            prompt: root.prompt; name <=> root.name; description <=> root.description;
-            write(field, text) => { root.write(field, text); }
-            pick-icon => { root.pick-picture(0); }
-            remove-icon => { root.remove-picture(0); }
+        frame := SettingsFrame {
+            rows: root.prompt.rows; selected: root.prompt.section; label: "Server settings";
+            bottom: root.bar ? 140px : 56px;
+            // A role's permissions are a list view.
+            fill: root.prompt.loaded && ((root.prompt.section == 3 && root.prompt.roles.open && root.prompt.roles.tab == 1) || root.prompt.section == 5 || root.prompt.section == 6 || root.prompt.section == 7 || root.prompt.section == 8 || root.prompt.section == 9);
+            chose(id) => { root.choose(id); }
+            close => { root.close(); }
+            if root.prompt.loading: Label { text: "Loading..."; }
+            if root.prompt.loaded && root.prompt.section == 0: ServerProfileSection {
+                prompt: root.prompt; name <=> root.name; description <=> root.description;
+                write(field, text) => { root.write(field, text); }
+                pick-icon => { root.pick-picture(0); }
+                remove-icon => { root.remove-picture(0); }
+            }
+            if root.prompt.loaded && root.prompt.section == 1: EngagementSection {
+                prompt: root.prompt;
+                toggle(which) => { root.toggle(which); }
+                choose(list, index) => { root.pick-choice(list, index); }
+            }
+            if root.prompt.loaded && root.prompt.section == 2: BoostSection {
+                prompt: root.prompt;
+                pick(kind) => { root.pick-picture(kind); }
+                remove(kind) => { root.remove-picture(kind); }
+                toggle-progress-bar => { root.toggle(4); }
+            }
+            if root.prompt.loaded && root.prompt.section == 3: RolesSection {
+                page: root.prompt.roles; saving: root.prompt.saving; reading: root.prompt.reading;
+                name <=> root.role-name;
+                write(field, text) => { root.role(field, text, 0); }
+                open(id) => { root.role(10, id, 0); }
+                tab(tab) => { root.role(11, "", tab); }
+                color(index) => { root.role(12, "", index); }
+                toggle(which) => { root.role(13, "", which); }
+                permission(bit) => { root.role(14, "", bit); }
+                move(id, to) => { root.role(15, id, to); }
+                act(what, id) => { root.role(20 + what, id, 0); }
+                pick-icon => { root.pick-picture(3); }
+                remove-icon => { root.remove-picture(3); }
+            }
+            if root.prompt.loaded && root.prompt.section == 4: SafetySection {
+                page: root.prompt.safety; saving: root.prompt.saving;
+                // Verification, filter and two-factor are lists 10 to 12.
+                choose(what, value) => { root.pick-choice(10 + what, value); }
+            }
+            if root.prompt.loaded && root.prompt.section == 5: BansSection {
+                page: root.prompt.bans;
+                act(what, text, number) => { root.ban(what, text, number); }
+            }
+            if root.prompt.loaded && root.prompt.section == 6: AuditLogSection {
+                page: root.prompt.audit-log;
+                act(what, number) => { root.audit-log(what, number); }
+            }
+            if root.prompt.loaded && root.prompt.section == 7: MembersSection {
+                page: root.prompt.members;
+                act(what, text, number) => { root.member(what, text, number); }
+                menu(id, x, y) => { root.member-menu(id, x, y); }
+            }
+            if root.prompt.loaded && root.prompt.section == 8: InvitesSection {
+                page: root.prompt.invites;
+                act(what, text, number) => { root.invite(what, text, number); }
+            }
+            if root.prompt.loaded && root.prompt.section == 9: EmojiSection {
+                page: root.prompt.emoji;
+                act(what, id, name) => { root.emoji(what, id, name); }
+                upload => { root.pick-picture(4); }
+            }
+            if root.prompt.loaded && root.prompt.section == 10: StickersSection {
+                page: root.prompt.stickers;
+                act(what, id) => { root.sticker(what, id); }
+            }
+            if root.prompt.problem != "": Text { text: root.prompt.problem; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
+            if root.prompt.error != "": Text { text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
         }
-        if root.prompt.loaded && root.prompt.section == 1: EngagementSection {
-            prompt: root.prompt;
-            toggle(which) => { root.toggle(which); }
-            choose(list, index) => { root.pick-choice(list, index); }
+        if root.bar: UnsavedBar {
+            x: frame.content-x + 24px; width: min(700px, frame.content-width - 48px);
+            y: frame.height - self.height - 24px;
+            border-radius: 8px; drop-shadow-blur: 16px; drop-shadow-color: #00000066; drop-shadow-offset-y: 4px;
+            saving: root.prompt.saving; may-save: root.prompt.may-save; nudge: root.prompt.nudge;
+            // The fields go still while Discord takes the change, so Escape
+            // goes to the frame.
+            undo => { frame.focus-keys(); root.undo(); }
+            save => { frame.focus-keys(); root.save(); }
         }
-        if root.prompt.loaded && root.prompt.section == 2: BoostSection {
-            prompt: root.prompt;
-            pick(kind) => { root.pick-picture(kind); }
-            remove(kind) => { root.remove-picture(kind); }
-            toggle-progress-bar => { root.toggle(4); }
-        }
-        if root.prompt.loaded && root.prompt.section == 3: RolesSection {
-            page: root.prompt.roles; saving: root.prompt.saving; reading: root.prompt.reading;
-            name <=> root.role-name;
-            write(field, text) => { root.role(field, text, 0); }
-            open(id) => { root.role(10, id, 0); }
-            tab(tab) => { root.role(11, "", tab); }
-            color(index) => { root.role(12, "", index); }
-            toggle(which) => { root.role(13, "", which); }
-            permission(bit) => { root.role(14, "", bit); }
-            move(id, to) => { root.role(15, id, to); }
-            act(what, id) => { root.role(20 + what, id, 0); }
-            pick-icon => { root.pick-picture(3); }
-            remove-icon => { root.remove-picture(3); }
-        }
-        if root.prompt.loaded && root.prompt.section == 4: SafetySection {
-            page: root.prompt.safety; saving: root.prompt.saving;
-            // Verification, filter and two-factor are lists 10 to 12.
-            choose(what, value) => { root.pick-choice(10 + what, value); }
-        }
-        if root.prompt.loaded && root.prompt.section == 5: BansSection {
-            page: root.prompt.bans;
-            act(what, text, number) => { root.ban(what, text, number); }
-        }
-        if root.prompt.loaded && root.prompt.section == 6: AuditLogSection {
-            page: root.prompt.audit-log;
-            act(what, number) => { root.audit-log(what, number); }
-        }
-        if root.prompt.loaded && root.prompt.section == 7: MembersSection {
-            page: root.prompt.members;
-            act(what, text, number) => { root.member(what, text, number); }
-            menu(id, x, y) => { root.member-menu(id, x, y); }
-        }
-        if root.prompt.loaded && root.prompt.section == 8: InvitesSection {
-            page: root.prompt.invites;
-            act(what, text, number) => { root.invite(what, text, number); }
-        }
-        if root.prompt.loaded && root.prompt.section == 9: EmojiSection {
-            page: root.prompt.emoji;
-            act(what, id, name) => { root.emoji(what, id, name); }
-            upload => { root.pick-picture(4); }
-        }
-        if root.prompt.loaded && root.prompt.section == 10: StickersSection {
-            page: root.prompt.stickers;
-            act(what, id) => { root.sticker(what, id); }
-        }
-        if root.prompt.problem != "": Text { text: root.prompt.problem; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
-        if root.prompt.error != "": Text { text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
-    }
-    if root.bar: UnsavedBar {
-        x: frame.content-x + 24px; width: min(700px, frame.content-width - 48px);
-        y: root.height - self.height - 24px;
-        border-radius: 8px; drop-shadow-blur: 16px; drop-shadow-color: #00000066; drop-shadow-offset-y: 4px;
-        saving: root.prompt.saving; may-save: root.prompt.may-save; nudge: root.prompt.nudge;
-        // The fields go still while Discord takes the change, so Escape
-        // goes to the frame.
-        undo => { frame.focus-keys(); root.undo(); }
-        save => { frame.focus-keys(); root.save(); }
     }
     if root.prompt.section == 3 && root.prompt.roles.confirm != 0: RoleConfirmDialog {
         page: root.prompt.roles;

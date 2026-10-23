@@ -21,7 +21,7 @@ import "fonts/AtkinsonHyperlegibleNext-ExtraBold.ttf";
 // Yapfast's window. Its parts live beside it, by area: theme.slint, controls.slint,
 // discord.slint, voice.slint, rail.slint, composer.slint, messages.slint,
 // settings.slint, people.slint, friends.slint, dialogs.slint and sign-in.slint.
-import { Theme, Tip, ReactionHover, Middle } from "theme.slint";
+import { Theme, Tip, ReactionHover, Middle, Popup, PopupMotion } from "theme.slint";
 import { TitleBar, ResizeEdges } from "title_bar.slint";
 import { GifPicker, GifTile, PickerTab } from "gifs.slint";
 import { ActionButton, IconButton, PingToggle, DeviceToggle, Avatar, TextField, MessagesSkeleton, ContextMenu, MenuItem, MenuRow, DeviceMenu, HeaderToggle, Banner, StatusText } from "controls.slint";
@@ -917,12 +917,8 @@ export component YapfastWindow inherits Window {
     /// The settings show over the window, one section at a time: 0 account, 1 voice and
     /// audio, 2 messages, 3 notifications, 4 Discord, 5 sounds, 8 game activity.
     in-out property <bool> settings-open;
-    /// Settings that opened stay a moment after they close, to shrink away.
-    property <bool> settings-kept;
-    Timer { interval: 100ms; running: root.settings-kept && !root.settings-open; triggered => { root.settings-kept = false; } }
     // Closing settings stops linking Discord there.
     changed settings-open => {
-        if self.settings-open { self.settings-kept = true; }
         if !self.settings-open && self.link-phase != 0 { self.cancel-discord-link(); }
         if !self.settings-open { self.camera-testing = false; }
         if !self.settings-open && self.theme-editor { self.cancel-theme(); }
@@ -3088,9 +3084,10 @@ export component YapfastWindow inherits Window {
         emoji-chosen(index) => { root.emoji-suggestion-chosen(index); }
     }
     // Settings over the window, showing one section.
-    if root.settings-open || root.settings-kept: SettingsScreen {
+    settings-motion := PopupMotion { open: root.settings-open; }
+    if settings-motion.shown: SettingsScreen {
         y: root.title-height; height: root.height - root.title-height;
-        open: root.settings-open;
+        motion: settings-motion.amount;
         settings-section <=> root.settings-section;
         discord-build: root.discord-build; preview: root.preview;
         close => { root.settings-open = false; }
@@ -3193,8 +3190,10 @@ export component YapfastWindow inherits Window {
             sync-discord-reads-toggled(sync) => { root.sync-discord-reads = sync; root.sync-discord-reads-toggled(sync); }
         }
     }
-    // A Discord server's settings cover the window too.
-    if root.server-settings-open: ServerSettingsScreen {
+    // A Discord server's settings, and a channel's, on the same card.
+    server-settings-motion := PopupMotion { open: root.server-settings-open; }
+    if server-settings-motion.shown: ServerSettingsScreen {
+        motion: server-settings-motion.amount;
         y: root.title-height; height: root.height - root.title-height;
         prompt: root.server-settings-prompt;
         name <=> root.server-settings-name; description <=> root.server-settings-description;
@@ -3218,7 +3217,9 @@ export component YapfastWindow inherits Window {
         save => { root.save-server-settings(); }
         close => { root.close-server-settings(); }
     }
-    if root.channel-settings-open: ChannelSettingsScreen {
+    channel-settings-motion := PopupMotion { open: root.channel-settings-open; }
+    if channel-settings-motion.shown: ChannelSettingsScreen {
+        motion: channel-settings-motion.amount;
         y: root.title-height; height: root.height - root.title-height;
         prompt: root.channel-settings-prompt; channel: root.channel-settings-channel;
         name <=> root.channel-settings-name; topic <=> root.channel-settings-topic;
@@ -3226,7 +3227,8 @@ export component YapfastWindow inherits Window {
     }
     // A server channel's topic in full, under the header's line of it.
     // Escape or a click outside closes it.
-    if root.topic-open && root.has-topic: Rectangle {
+    topic-motion := PopupMotion { open: root.topic-open && root.has-topic; }
+    if topic-motion.shown: Rectangle {
         TouchArea { clicked => { root.topic-open = false; } }
         FocusScope {
             init => { self.focus(); }
@@ -3236,6 +3238,7 @@ export component YapfastWindow inherits Window {
             }
         }
         TopicPopover {
+            opacity: topic-motion.amount; transform-scale: Popup.scale(topic-motion.amount);
             x: max(8px, min(root.width - self.width - 8px, root.popover-x));
             y: root.popover-y + 6px;
             most: min(400px, root.height - self.y - 16px);
@@ -3246,7 +3249,8 @@ export component YapfastWindow inherits Window {
     }
     // The open DM's pinned messages, under the pin button. Jumping to one
     // closes them, as does Escape or a click outside.
-    if root.pins-open: Rectangle {
+    pins-motion := PopupMotion { open: root.pins-open; }
+    if pins-motion.shown: Rectangle {
         TouchArea { clicked => { root.show-pins(false); } }
         FocusScope {
             init => { self.focus(); }
@@ -3256,6 +3260,7 @@ export component YapfastWindow inherits Window {
             }
         }
         PinsPopover {
+            opacity: pins-motion.amount; transform-scale: Popup.scale(pins-motion.amount);
             x: max(8px, min(root.width - self.width - 8px, root.popover-x - self.width));
             y: root.popover-y + 6px;
             // As tall as its pins, up to 560px, within the window.
@@ -3268,7 +3273,8 @@ export component YapfastWindow inherits Window {
     }
     // The open channel's threads, under the Threads button. Opening one
     // closes them, as does Escape or a click outside.
-    if root.threads-open: Rectangle {
+    threads-motion := PopupMotion { open: root.threads-open; }
+    if threads-motion.shown: Rectangle {
         TouchArea { clicked => { root.show-threads(false); } }
         FocusScope {
             init => { self.focus(); }
@@ -3277,6 +3283,7 @@ export component YapfastWindow inherits Window {
                 return reject;
             }
             ThreadsPopover {
+                opacity: threads-motion.amount; transform-scale: Popup.scale(threads-motion.amount);
                 x: max(8px, min(root.width - self.width - 8px, root.popover-x - self.width));
                 y: root.popover-y + 6px;
                 // As Discord's: 35% of the window wide, from 480px to 600px,
@@ -3297,9 +3304,11 @@ export component YapfastWindow inherits Window {
         }
     }
     // Friends to add to the open DM, under the add button.
-    if root.add-people-open: Rectangle {
+    add-people-motion := PopupMotion { open: root.add-people-open; }
+    if add-people-motion.shown: Rectangle {
         TouchArea { clicked => { root.close-add-people(); } }
         AddPeoplePopover {
+            opacity: add-people-motion.amount; transform-scale: Popup.scale(add-people-motion.amount);
             x: max(8px, min(root.width - self.width - 8px, root.popover-x - self.width));
             y: root.popover-y + 6px;
             height: min(520px, root.height - self.y - 16px);
@@ -3314,7 +3323,8 @@ export component YapfastWindow inherits Window {
     }
     // A role mentioned in a message: who Yapfast knows has it. Clicking someone opens
     // their card over it; Escape or a click outside closes it.
-    if root.role-open: Rectangle {
+    role-motion := PopupMotion { open: root.role-open; }
+    if role-motion.shown: Rectangle {
         TouchArea { clicked => { root.close-role(); } }
         FocusScope {
             init => { self.focus(); }
@@ -3324,6 +3334,7 @@ export component YapfastWindow inherits Window {
             }
         }
         RoleCard {
+            opacity: role-motion.amount; transform-scale: Popup.scale(role-motion.amount);
             x: root.beside(root.role-x, root.role-width, self.width);
             y: max(root.title-height + 8px, min(root.height - self.height - 8px, root.role-y - 8px));
             limit: root.height - root.title-height - 16px;
@@ -3338,7 +3349,8 @@ export component YapfastWindow inherits Window {
         }
     }
     // A member's card, beside the member list. Escape or a click outside closes it.
-    if root.profile-open && !root.profile-large: Rectangle {
+    profile-motion := PopupMotion { open: root.profile-open && !root.profile-large; }
+    if profile-motion.shown: Rectangle {
         TouchArea { clicked => { root.close-profile(); } }
         FocusScope {
             init => { self.focus(); }
@@ -3348,6 +3360,7 @@ export component YapfastWindow inherits Window {
             }
         }
         ProfileCard {
+            opacity: profile-motion.amount; transform-scale: Popup.scale(profile-motion.amount);
             width: 300px; limit: root.height - root.title-height - 16px;
             x: root.profile-at-pointer
                 ? root.beside(root.anchor-x, root.anchor-width, self.width)
@@ -3362,8 +3375,9 @@ export component YapfastWindow inherits Window {
         }
     }
     // A full profile over the window, as the viewer shows images.
-    if root.profile-open && root.profile-large: Rectangle {
-        background: #000000b3;
+    large-profile-motion := PopupMotion { open: root.profile-open && root.profile-large; }
+    if large-profile-motion.shown: Rectangle {
+        background: #000000b3; opacity: large-profile-motion.amount;
         TouchArea { clicked => { root.close-profile(); } }
         FocusScope {
             init => { self.focus(); }
@@ -3373,6 +3387,7 @@ export component YapfastWindow inherits Window {
             }
         }
         ProfileCard {
+            transform-scale: Popup.scale(large-profile-motion.amount);
             large: true;
             width: min(600px, root.width - 64px); limit: root.height - 64px;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
@@ -3387,7 +3402,8 @@ export component YapfastWindow inherits Window {
     }
     // A mutual server's card, over the profile that lists it. Clicking
     // outside or Escape closes it.
-    if root.server-card-open: Rectangle {
+    server-card-motion := PopupMotion { open: root.server-card-open; }
+    if server-card-motion.shown: Rectangle {
         TouchArea { clicked => { root.server-card-open = false; } }
         FocusScope {
             init => { self.focus(); }
@@ -3397,6 +3413,7 @@ export component YapfastWindow inherits Window {
             }
         }
         ServerCard {
+            opacity: server-card-motion.amount; transform-scale: Popup.scale(server-card-motion.amount);
             width: 300px;
             x: root.beside(root.anchor-x, root.anchor-width, self.width);
             y: max(root.title-height + 8px, min(root.height - self.height - 8px, root.anchor-y - 8px));
@@ -3426,20 +3443,26 @@ export component YapfastWindow inherits Window {
         save-attachment(item, index) => { root.save-attachment(item, index); }
     }
     // Adding a Discord friend by username; see AddFriendDialog.
-    if root.add-friend-open: AddFriendDialog {
+    add-friend-motion := PopupMotion { open: root.add-friend-open; }
+    if add-friend-motion.shown: AddFriendDialog {
+        motion: add-friend-motion.amount;
         add-friend-name <=> root.add-friend-name;
         add-friend-sending: root.add-friend-sending; add-friend-sent: root.add-friend-sent; add-friend-note: root.add-friend-note;
         add-friend(name) => { root.add-friend(name); }
         close-add-friend => { root.close-add-friend(); }
     }
     // A Discord server's or channel's invite link; see InviteDialog.
-    if root.invite-open: InviteDialog {
+    invite-motion := PopupMotion { open: root.invite-open; }
+    if invite-motion.shown: InviteDialog {
+        motion: invite-motion.amount;
         prompt: root.invite-prompt; age <=> root.invite-age; uses <=> root.invite-uses;
         copy(link) => { root.copy-text(link); }
         remake(age, uses) => { root.make-invite(age, uses); }
         close => { root.close-invite(); }
     }
-    if root.join-open: JoinDialog {
+    join-motion := PopupMotion { open: root.join-open; }
+    if join-motion.shown: JoinDialog {
+        motion: join-motion.amount;
         prompt: root.join-prompt; link <=> root.join-link;
         find(link) => { root.find-invite(link); }
         join => { root.join-server(); }
@@ -3447,12 +3470,16 @@ export component YapfastWindow inherits Window {
         open-form => { root.open-join-form(); }
         close => { root.close-join(); }
     }
-    if root.channel-open: ChannelDialog {
+    channel-motion := PopupMotion { open: root.channel-open; }
+    if channel-motion.shown: ChannelDialog {
+        motion: channel-motion.amount;
         prompt: root.channel-prompt; name <=> root.channel-name; kind <=> root.channel-kind;
         save => { root.save-channel(); }
         close => { root.close-channel(); }
     }
-    if root.profile-editor-open: ProfileEditorDialog {
+    profile-editor-motion := PopupMotion { open: root.profile-editor-open; }
+    if profile-editor-motion.shown: ProfileEditorDialog {
+        motion: profile-editor-motion.amount;
         prompt: root.profile-editor-prompt;
         name <=> root.profile-editor-name; pronouns <=> root.profile-editor-pronouns;
         bio <=> root.profile-editor-bio; colour <=> root.profile-editor-colour;
@@ -3464,20 +3491,26 @@ export component YapfastWindow inherits Window {
         save => { root.save-profile(); }
         close => { root.close-profile-editor(); }
     }
-    if root.leave-open: ChannelDialog {
+    leave-motion := PopupMotion { open: root.leave-open; }
+    if leave-motion.shown: ChannelDialog {
+        motion: leave-motion.amount;
         prompt: root.leave-prompt;
         save => { root.leave-server(); }
         close => { root.close-leave(); }
     }
     // About a DM's other person; see PersonDialog.
-    if root.person-open: PersonDialog {
+    person-motion := PopupMotion { open: root.person-open; }
+    if person-motion.shown: PersonDialog {
+        motion: person-motion.amount;
         prompt: root.person-prompt; text <=> root.person-text;
         answer(text) => { root.answer-person(text); }
         choose(index) => { root.choose-person-option(index); }
         close => { root.close-person(); }
     }
     // The custom status; see StatusDialog.
-    if root.status-open: StatusDialog {
+    status-motion := PopupMotion { open: root.status-open; }
+    if status-motion.shown: StatusDialog {
+        motion: status-motion.amount;
         status-text <=> root.status-text; status-emoji <=> root.status-emoji; status-clear-after <=> root.status-clear-after;
         has-custom-status: root.has-custom-status; status-saving: root.status-saving; status-error: root.status-error;
         emoji-font: root.emoji-font;
@@ -3491,7 +3524,9 @@ export component YapfastWindow inherits Window {
         close-status => { root.close-status(); }
     }
     // Making a poll; see PollDialog.
-    if root.poll-open: PollDialog {
+    poll-motion := PopupMotion { open: root.poll-open; }
+    if poll-motion.shown: PollDialog {
+        motion: poll-motion.amount;
         question <=> root.poll-question; question-count: root.poll-question-count;
         answers: root.poll-answers; duration: root.poll-duration; multiselect: root.poll-multiselect;
         can-add: root.poll-can-add; can-post: root.poll-can-post; posting: root.poll-posting;
@@ -3512,7 +3547,9 @@ export component YapfastWindow inherits Window {
         close => { root.close-poll(); }
     }
     // Starting a DM; see NewDmDialog.
-    if root.new-dm-open: NewDmDialog {
+    new-dm-motion := PopupMotion { open: root.new-dm-open; }
+    if new-dm-motion.shown: NewDmDialog {
+        motion: new-dm-motion.amount;
         new-dm-query <=> root.new-dm-query; matrix: root.matrix-build;
         new-dm-people: root.new-dm-people; new-dm-starting: root.new-dm-starting; new-dm-note: root.new-dm-note;
         new-dm-search => { root.new-dm-search(); }
@@ -3520,7 +3557,9 @@ export component YapfastWindow inherits Window {
         close-new-dm => { root.close-new-dm(); }
     }
     // A message's reactions and who reacted; see ReactionsDialog.
-    if root.reactions-open: ReactionsDialog {
+    reactions-motion := PopupMotion { open: root.reactions-open; }
+    if reactions-motion.shown: ReactionsDialog {
+        motion: reactions-motion.amount;
         reaction-pills: root.reaction-pills; reactions-key: root.reactions-key;
         reactor-rows: root.reactor-rows; reactors-loading: root.reactors-loading;
         reactors-more: root.reactors-more; reactors-error: root.reactors-error;
@@ -3531,7 +3570,9 @@ export component YapfastWindow inherits Window {
         close-reactions => { root.close-reactions(); }
     }
     // Forwarding a message; see ForwardDialog.
-    if root.forward-open: ForwardDialog {
+    forward-motion := PopupMotion { open: root.forward-open; }
+    if forward-motion.shown: ForwardDialog {
+        motion: forward-motion.amount;
         forward-preview: root.forward-preview; forward-targets: root.forward-targets;
         forward-query <=> root.forward-query; forward-note <=> root.forward-note;
         forward-chosen: root.forward-chosen; forward-limit: root.forward-limit;
@@ -3543,7 +3584,9 @@ export component YapfastWindow inherits Window {
         close-forward => { root.close-forward(); }
     }
     // A masked link, before it opens; see LeavingDialog.
-    if root.leaving-link != "": LeavingDialog {
+    leaving-motion := PopupMotion { open: root.leaving-link != ""; }
+    if leaving-motion.shown: LeavingDialog {
+        motion: leaving-motion.amount;
         link: root.leaving-link; site: root.leaving-site;
         visit => { root.visit-leaving-link(); }
         close => { root.close-leaving-link(); }
@@ -3648,7 +3691,9 @@ export component YapfastWindow inherits Window {
         }
     }
     // Over everything, as the request it confirms may come from anywhere.
-    if root.mfa-open: MfaDialog {
+    mfa-motion := PopupMotion { open: root.mfa-open; }
+    if mfa-motion.shown: MfaDialog {
+        motion: mfa-motion.amount;
         prompt: root.mfa-prompt; code <=> root.mfa-code;
         choose(method) => { root.choose-mfa(method); }
         write(code) => { root.write-mfa(code); }

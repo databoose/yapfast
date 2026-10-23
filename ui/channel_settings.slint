@@ -4,7 +4,7 @@
 // denied or left to the roles for a role or member.
 import { Theme, Middle, Label, Tip } from "theme.slint";
 import { ActionButton, Avatar, IconButton, TextField } from "controls.slint";
-import { SettingsFrame, SettingsRow, SettingsTitle, SettingsHeading, SettingsSwitch, UnsavedBar } from "settings.slint";
+import { SettingsCard, SettingsFrame, SettingsRow, SettingsTitle, SettingsHeading, SettingsSwitch, UnsavedBar } from "settings.slint";
 import { ListView } from "scrollview.slint";
 import { RoleMemberRow } from "roles.slint";
 
@@ -436,10 +436,12 @@ component AddOverwriteDialog inherits Rectangle {
     }
 }
 
-// A channel's settings, covering the window: its pages down the left, the
+// A channel's settings, on a card over the window: its pages down the left, the
 // chosen one on the right, and Discord's bar once the page has unsaved
 // changes.
 export component ChannelSettingsScreen inherits Rectangle {
+    /// How far it's open, from 0 to 1; see PopupMotion.
+    in property <float> motion: 1;
     in property <ChannelSettingsPrompt> prompt;
     in property <string> channel;
     in-out property <string> name;
@@ -452,34 +454,37 @@ export component ChannelSettingsScreen inherits Rectangle {
     /// cancelled; 30 Reset, 31 Save, 32 closed.
     callback input(int, string, int);
     property <bool> bar: root.prompt.changed || root.prompt.saving;
-    background: Theme.chat;
-    frame := SettingsFrame {
-        rows: root.prompt.rows; selected: root.prompt.section; label: "Channel settings";
-        bottom: root.bar ? 140px : 56px;
-        fill: root.prompt.loaded && root.prompt.section == 1;
-        chose(id) => { root.input(10, "", id); }
+    SettingsCard {
+        motion: root.motion;
         close => { root.input(32, "", 0); }
-        if root.prompt.loading: Label { text: "Loading..."; }
-        if root.prompt.loaded && root.prompt.section == 0: OverviewSection {
-            prompt: root.prompt; name <=> root.name; topic <=> root.topic;
-            write(field, text) => { root.input(field, text, 0); }
-            slowmode(index) => { root.input(11, "", index); }
-            nsfw(on) => { root.input(12, "", on ? 1 : 0); }
+        frame := SettingsFrame {
+            rows: root.prompt.rows; selected: root.prompt.section; label: "Channel settings";
+            bottom: root.bar ? 140px : 56px;
+            fill: root.prompt.loaded && root.prompt.section == 1;
+            chose(id) => { root.input(10, "", id); }
+            close => { root.input(32, "", 0); }
+            if root.prompt.loading: Label { text: "Loading..."; }
+            if root.prompt.loaded && root.prompt.section == 0: OverviewSection {
+                prompt: root.prompt; name <=> root.name; topic <=> root.topic;
+                write(field, text) => { root.input(field, text, 0); }
+                slowmode(index) => { root.input(11, "", index); }
+                nsfw(on) => { root.input(12, "", on ? 1 : 0); }
+            }
+            if root.prompt.loaded && root.prompt.section == 1: PermissionsSection {
+                prompt: root.prompt;
+                input(what, text, number) => { root.input(what, text, number); }
+            }
+            if root.prompt.problem != "": Text { text: root.prompt.problem; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
+            if root.prompt.error != "": Text { text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
         }
-        if root.prompt.loaded && root.prompt.section == 1: PermissionsSection {
-            prompt: root.prompt;
-            input(what, text, number) => { root.input(what, text, number); }
+        if root.bar: UnsavedBar {
+            x: frame.content-x + 24px; width: min(700px, frame.content-width - 48px);
+            y: frame.height - self.height - 24px;
+            border-radius: 8px; drop-shadow-blur: 16px; drop-shadow-color: #00000066; drop-shadow-offset-y: 4px;
+            saving: root.prompt.saving; may-save: root.prompt.may-save; nudge: root.prompt.nudge;
+            undo => { frame.focus-keys(); root.input(30, "", 0); }
+            save => { frame.focus-keys(); root.input(31, "", 0); }
         }
-        if root.prompt.problem != "": Text { text: root.prompt.problem; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
-        if root.prompt.error != "": Text { text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
-    }
-    if root.bar: UnsavedBar {
-        x: frame.content-x + 24px; width: min(700px, frame.content-width - 48px);
-        y: root.height - self.height - 24px;
-        border-radius: 8px; drop-shadow-blur: 16px; drop-shadow-color: #00000066; drop-shadow-offset-y: 4px;
-        saving: root.prompt.saving; may-save: root.prompt.may-save; nudge: root.prompt.nudge;
-        undo => { frame.focus-keys(); root.input(30, "", 0); }
-        save => { frame.focus-keys(); root.input(31, "", 0); }
     }
     if root.prompt.confirm != 0: OverwriteConfirmDialog {
         prompt: root.prompt; channel: root.channel;
