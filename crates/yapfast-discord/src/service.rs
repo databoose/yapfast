@@ -2487,6 +2487,16 @@ impl Discord {
 
     /// Downloads a file from Discord's CDN, or a picture kept on disk.
     pub async fn download(&self, url: &str, limit: usize) -> Result<Vec<u8>> {
+        self.fetch(url, limit, true).await
+    }
+
+    /// Downloads a file as [`Self::download`] does, without waiting behind
+    /// the pictures downloading: one someone opened, saved or copied.
+    pub async fn download_now(&self, url: &str, limit: usize) -> Result<Vec<u8>> {
+        self.fetch(url, limit, false).await
+    }
+
+    async fn fetch(&self, url: &str, limit: usize, queued: bool) -> Result<Vec<u8>> {
         // An activity names a game's icon by the game until Discord says
         // which picture it is.
         let icon;
@@ -2503,7 +2513,11 @@ impl Discord {
         if let Some(kept) = cache::picture(url).await.filter(|kept| kept.len() <= limit) {
             return Ok(kept);
         }
-        let data = self.api.download(url, limit).await?;
+        let data = if queued {
+            self.api.download(url, limit).await?
+        } else {
+            self.api.download_now(url, limit).await?
+        };
         cache::keep_picture(url, data.clone()).await;
         Ok(data)
     }

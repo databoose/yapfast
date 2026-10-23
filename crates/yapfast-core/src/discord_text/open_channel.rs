@@ -1,7 +1,10 @@
 //! The open channel: its loaded messages, sends waiting for Discord, and
 //! the messages as the timeline last showed them.
 
-use yapfast_discord::{api::Span, ready::Deletes};
+use yapfast_discord::{
+    api::{Refused, Span, Stalled},
+    ready::Deletes,
+};
 
 use crate::chat::SendOptions;
 
@@ -1162,7 +1165,7 @@ impl OpenChannel {
         };
         let (discord, done) = (discord.clone(), done.clone());
         tokio::spawn(async move {
-            let result = match discord.download(&url, MAX_SAVE_BYTES).await {
+            let result = match discord.download_now(&url, MAX_SAVE_BYTES).await {
                 Ok(data) => tokio::fs::write(&path, data)
                     .await
                     .map_err(|_| "Could not write the file. Choose another folder."),
@@ -1198,7 +1201,7 @@ impl OpenChannel {
         let (discord, done) = (discord.clone(), done.clone());
         self.tasks.spawn(async move {
             let picture = discord
-                .download(&url, MAX_PREVIEW_DOWNLOAD_BYTES)
+                .download_now(&url, MAX_PREVIEW_DOWNLOAD_BYTES)
                 .await
                 .map_err(|_| "Yapfast couldn't copy this picture. Save it instead.");
             let _ = done.send(Done::Copied { room, picture });
@@ -1229,7 +1232,7 @@ impl OpenChannel {
         };
         let (discord, done) = (discord.clone(), done.clone());
         self.tasks.spawn(async move {
-            let picture = match discord.download(&url, MAX_PREVIEW_DOWNLOAD_BYTES).await {
+            let picture = match discord.download_now(&url, MAX_PREVIEW_DOWNLOAD_BYTES).await {
                 Ok(data) => tokio::task::spawn_blocking({
                     let url = url.clone();
                     move || {
@@ -1241,7 +1244,19 @@ impl OpenChannel {
                 .flatten()
                 .map(Arc::new)
                 .ok_or("Yapfast can't show this image. Save it to open it elsewhere."),
-                Err(_) => Err("Yapfast couldn't download this image from Discord. Try again."),
+                Err(error) => {
+                    // The address stays out of the log: it names the attachment.
+                    let status = error
+                        .downcast_ref::<Refused>()
+                        .map(|Refused(status)| status.as_u16());
+                    let stalled = error.is::<Stalled>();
+                    tracing::warn!(?status, stalled, "could not download an image to view");
+                    Err(if stalled {
+                        "Discord stopped sending this image. Try again."
+                    } else {
+                        "Yapfast couldn't download this image from Discord. Try again."
+                    })
+                }
             };
             let _ = done.send(Done::Image {
                 room,

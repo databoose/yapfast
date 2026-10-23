@@ -93,7 +93,11 @@ Yapfast follows the rules Discord documents for every client:
 - **Downloads.** Pictures and files from Discord's CDN download eight at a
   time, over one HTTP/2 connection, as a browser's requests to one host go.
   Opening the emoji picker queues its pictures in the picker's order instead
-  of asking for hundreds at once.
+  of asking for hundreds at once. A file someone asked for, such as the
+  image the viewer shows or one they save or copy, skips the queue. A
+  download that gets nothing from Discord for 20 seconds gives up, so a
+  connection lost to a network change or sleep doesn't hold the queue; while
+  requests wait, an HTTP/2 ping that goes unanswered closes that connection.
 
 ## Why not an existing bridge
 

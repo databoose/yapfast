@@ -174,6 +174,25 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
+/// A download that Discord stopped answering for [`STALL`], given up so it
+/// doesn't hold its turn.
+#[derive(Debug)]
+pub struct Stalled;
+
+impl std::fmt::Display for Stalled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Discord stopped sending the file")
+    }
+}
+
+impl std::error::Error for Stalled {}
+
+/// How long a download may wait for Discord's next bytes. A connection lost
+/// to a network change or sleep sends nothing more, and without a limit its
+/// downloads would hold their turns, and every download after them would
+/// wait, until Yapfast closed.
+const STALL: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// Discord's own code and words for a refusal, in its error's chain: `{:#}`
 /// shows them, and [`code`] finds the code.
 #[derive(Debug)]
@@ -209,7 +228,10 @@ pub fn may_work_later(error: &anyhow::Error) -> bool {
                     StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
                 )
         }
-        None => error.downcast_ref::<reqwest::Error>().is_some(),
+        None => {
+            error.downcast_ref::<reqwest::Error>().is_some()
+                || error.downcast_ref::<Stalled>().is_some()
+        }
     }
 }
 
@@ -224,6 +246,8 @@ pub struct Api {
     /// Downloads going at once, so opening the emoji picker or a busy channel
     /// spreads its pictures out rather than asking for hundreds together.
     downloads: tokio::sync::Semaphore,
+    /// [`STALL`], shorter in tests.
+    stall: std::time::Duration,
 }
 
 /// The most files Yapfast downloads from Discord at once. They share one HTTP/2
@@ -236,6 +260,12 @@ impl Api {
         let http = Client::builder()
             .user_agent(client::user_agent())
             .cookie_provider(crate::cookies::jar())
+            .connect_timeout(std::time::Duration::from_secs(15))
+            // Requests to a host share one HTTP/2 connection. While some are
+            // waiting, a ping that goes unanswered closes it, so the next
+            // request opens a new one rather than waiting on a lost one.
+            .http2_keep_alive_interval(std::time::Duration::from_secs(10))
+            .http2_keep_alive_timeout(std::time::Duration::from_secs(10))
             .build()
             .context("could not set up HTTPS")?;
         let base = match client::test_server() {
@@ -249,6 +279,7 @@ impl Api {
             limits: Limits::default(),
             refusals: Refusals::default(),
             downloads: tokio::sync::Semaphore::new(DOWNLOADS),
+            stall: STALL,
         })
     }
 
@@ -1781,30 +1812,27 @@ impl Api {
     }
 
     /// Downloads a file from Discord's CDN or media proxy, or the test
-    /// server, refusing anything over `limit` bytes.
+    /// server, refusing anything over `limit` bytes. It waits its turn among
+    /// [`DOWNLOADS`].
     pub async fn download(&self, url: &str, limit: usize) -> Result<Vec<u8>> {
-        let test_file = client::test_server()
-            .and_then(|server| url.strip_prefix(server))
-            .is_some_and(|path| path.starts_with('/'));
-        if !discord_file(url)
-            && !test_file
-            && !crate::gifs::provider_media(url)
-            && !crate::activity::outside_picture(url)
-        {
-            bail!("not a Discord file");
-        }
+        allowed(url)?;
         let _turn = self.downloads.acquire().await?;
-        let mut response = self
-            .http
-            .get(url)
-            .send()
-            .await
-            .context("could not reach Discord")?;
-        if !response.status().is_success() {
-            return Err(Refused(response.status()).into());
-        }
+        self.read_file(url, limit).await
+    }
+
+    /// Downloads a file as [`Self::download`] does, without waiting for a
+    /// turn: one someone opened, such as the image the viewer shows, which
+    /// shouldn't wait behind the previews and avatars a channel asks for.
+    pub async fn download_now(&self, url: &str, limit: usize) -> Result<Vec<u8>> {
+        allowed(url)?;
+        self.read_file(url, limit).await
+    }
+
+    /// Downloads a file without checking where it is from.
+    async fn read_file(&self, url: &str, limit: usize) -> Result<Vec<u8>> {
+        let mut response = self.get_file(url).await?;
         let mut data = Vec::new();
-        while let Some(chunk) = response.chunk().await.context("the download stopped")? {
+        while let Some(chunk) = self.next_chunk(&mut response).await? {
             data.extend_from_slice(&chunk);
             if data.len() > limit {
                 bail!("the file is too large");
@@ -1822,27 +1850,10 @@ impl Api {
         limit: u64,
     ) -> Result<u64> {
         use std::io::Write;
-        let test_file = client::test_server()
-            .and_then(|server| url.strip_prefix(server))
-            .is_some_and(|path| path.starts_with('/'));
-        if !discord_file(url)
-            && !test_file
-            && !crate::gifs::provider_media(url)
-            && !crate::activity::outside_picture(url)
-        {
-            bail!("not a Discord file");
-        }
-        let mut response = self
-            .http
-            .get(url)
-            .send()
-            .await
-            .context("could not reach Discord")?;
-        if !response.status().is_success() {
-            return Err(Refused(response.status()).into());
-        }
+        allowed(url)?;
+        let mut response = self.get_file(url).await?;
         let mut size = 0;
-        while let Some(chunk) = response.chunk().await.context("the download stopped")? {
+        while let Some(chunk) = self.next_chunk(&mut response).await? {
             size += chunk.len() as u64;
             if size > limit {
                 bail!("the file is too large");
@@ -1851,6 +1862,30 @@ impl Api {
         }
         file.flush().context("could not keep the file")?;
         Ok(size)
+    }
+
+    /// Asks for a file, giving up if Discord doesn't answer within [`STALL`].
+    async fn get_file(&self, url: &str) -> Result<Response> {
+        let response = tokio::time::timeout(self.stall, self.http.get(url).send())
+            .await
+            .map_err(|_| Stalled)?
+            .context("could not reach Discord")?;
+        if !response.status().is_success() {
+            return Err(Refused(response.status()).into());
+        }
+        Ok(response)
+    }
+
+    /// The next part of a file, or none at its end. Discord sending nothing
+    /// for [`STALL`] ends the download.
+    async fn next_chunk(
+        &self,
+        response: &mut Response,
+    ) -> Result<Option<impl std::ops::Deref<Target = [u8]>>> {
+        tokio::time::timeout(self.stall, response.chunk())
+            .await
+            .map_err(|_| Stalled)?
+            .context("the download stopped")
     }
 
     async fn json(&self, request: RequestBuilder) -> Result<Value> {
@@ -2209,6 +2244,22 @@ fn encode(segment: &str) -> String {
     encoded
 }
 
+/// Refuses a file from anywhere but Discord's CDN and media proxy, the GIF
+/// providers and games' pictures, or the test server.
+fn allowed(url: &str) -> Result<()> {
+    let test_file = client::test_server()
+        .and_then(|server| url.strip_prefix(server))
+        .is_some_and(|path| path.starts_with('/'));
+    if !discord_file(url)
+        && !test_file
+        && !crate::gifs::provider_media(url)
+        && !crate::activity::outside_picture(url)
+    {
+        bail!("not a Discord file");
+    }
+    Ok(())
+}
+
 /// Whether `url` is on Discord's CDN or its media proxy, which serves
 /// embeds' pictures from `images-ext-1.discordapp.net` and the like.
 fn discord_file(url: &str) -> bool {
@@ -2323,6 +2374,39 @@ mod tests {
     fn encodes_emoji_for_paths() {
         assert_eq!(super::encode("👍"), "%F0%9F%91%8D");
         assert_eq!(super::encode("pog:5"), "pog%3A5");
+    }
+
+    #[tokio::test]
+    async fn a_download_discord_stops_sending_gives_up() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        // The first answer stops partway through the file; the second never
+        // comes. Both keep their connections open.
+        tokio::spawn(async move {
+            let mut held = vec![];
+            for answer in [
+                &b"HTTP/1.1 200 OK\r\ncontent-length: 8\r\n\r\nhalf"[..],
+                b"",
+            ] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let _ = socket.read(&mut [0; 1024]).await;
+                socket.write_all(answer).await.unwrap();
+                held.push(socket);
+            }
+            std::future::pending::<()>().await;
+        });
+        let mut api = super::Api::anonymous().unwrap();
+        api.stall = std::time::Duration::from_millis(200);
+        let url = format!("http://{address}/a.png");
+        for _ in 0..2 {
+            let error = api.read_file(&url, 1 << 10).await.unwrap_err();
+            assert!(error.is::<super::Stalled>(), "{error:#}");
+            assert!(super::may_work_later(&error));
+        }
     }
 
     #[test]
