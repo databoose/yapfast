@@ -859,3 +859,351 @@ target/measure/yapfast-game-detection-probe /path/to/discord-games.json 30
 
 For the before column, build the parent of the commit that made the
 change, with the probe's `rss_kib` replaced by the same `mallinfo2` read.
+
+## 2026-10-23: mimalloc against glibc's malloc
+
+This record asks whether mimalloc, as Rust's global allocator, holds less
+memory than glibc. The `mimalloc` Cargo feature makes it the allocator and
+calls `mi_collect(true)` wherever Yapfast already calls `malloc_trim`: after
+READY, 3 s after a call, and 0.5 s after the window closes to the tray. The
+arena cap and the trims stay, since Skia, WebRTC and PulseAudio are C and C++
+and keep allocating from glibc. The crate, 0.1.52, builds mimalloc v3.3.2.
+
+Three builds, all Discord-only `measure` builds: glibc (the default),
+mimalloc on its defaults, and mimalloc tuned to give memory back promptly,
+built with the crate's `no_thp` feature and run with
+`MIMALLOC_PURGE_DELAY=0`. They ran through `testing/measure_tray.py` as in
+[closing the window to the tray](#2026-10-14-closing-the-window-to-the-tray),
+with a sample after leaving the call added, in three rounds that alternate
+the builds' order. Memory is anonymous memory plus swap, which covers both
+allocators, at the end of each sample: the closed rows are a minute after
+the close. Brackets give the range of the three runs. CPU is a percentage of
+one core.
+
+| Skia Software | glibc | mimalloc, defaults | mimalloc, tuned |
+| --- | ---: | ---: | ---: |
+| #general, window open | 19.7 MiB (19.4–19.9) | 55.1 MiB (24.0–72.7) | 23.4 MiB (23.3–23.4) |
+| #general, closed to the tray | 16.8 MiB (16.8–16.8) | 56.4 MiB (21.0–80.4) | 20.7 MiB (20.6–20.7) |
+| #general, opened again | 17.8 MiB (17.7–17.8) | 58.3 MiB (22.0–81.1) | 21.6 MiB (21.6–21.6) |
+| Lounge call, window open | 38.3 MiB (36.2–39.5) | 89.0 MiB (44.6–114.8) | 39.7 MiB (39.0–40.2) |
+| Lounge call, closed to the tray | 32.0 MiB (32.0–32.1) | 91.3 MiB (44.0–123.0) | 39.2 MiB (38.4–39.7) |
+| Lounge call, opened again | 32.2 MiB (32.1–32.3) | 91.4 MiB (44.1–123.1) | 39.4 MiB (38.6–39.8) |
+| After leaving the call | 18.7 MiB (17.4–21.0) | 59.0 MiB (23.3–81.4) | 23.0 MiB (22.9–23.2) |
+| CPU in the call, window open | 6.51% (6.24–6.64) | 6.51% (6.34–6.59) | 6.36% (6.04–6.59) |
+
+One Skia GPU run of each, for the case of the post on freed memory:
+
+| Skia GPU, one run | glibc | mimalloc, defaults | mimalloc, tuned |
+| --- | ---: | ---: | ---: |
+| #general, window open | 89.0 MiB | 139.4 MiB | 92.7 MiB |
+| #general, closed to the tray | 65.1 MiB | 115.6 MiB | 69.0 MiB |
+| Lounge call, window open | 109.8 MiB | 169.9 MiB | 110.4 MiB |
+| Lounge call, closed to the tray | 78.8 MiB | 147.2 MiB | 87.7 MiB |
+| After leaving the call | 67.9 MiB | 122.8 MiB | 76.2 MiB |
+
+mimalloc's defaults cost the most, and by how much depends on the machine.
+v3 commits its 1 GiB arena up front on Linux and asks for transparent huge
+pages on it (`madvise`), so wherever the kernel has free 2 MiB pages, a few
+live allocations keep whole 2 MiB pages resident. This host's THP setting is
+`madvise`, and its memory was fragmented: two of the three Software runs got
+huge pages (the arena held 43–112 MiB), one didn't (12–33 MiB), and all five
+startup launches did, with a peak RSS of 165–171 MiB against 102 MiB. Setting
+`MIMALLOC_ALLOW_THP=0` turned THP off when it was mimalloc's only variable,
+but not when a second `MIMALLOC_` variable was also set (8 of 9 launches), so
+the tuned build leaves huge pages out at compile time.
+
+Tuned, mimalloc gave memory back as promptly as glibc's trims do, and closing
+the window still returned what it held: 2.7 MiB with Software and 23.7 MiB
+with the GPU, against 2.9 and 23.9 on glibc. Neither build gave back more
+during the minute closed than in its first 5 s. Yet the tuned build held
+more than glibc in every state, by 3.7 MiB with #general open, 4.3 MiB after
+the call, and 7.2 MiB in the call with the window closed, where glibc's trim at the
+close returned 6.3 MiB of heap the call had freed. The runs of each build differ by about
+0.5 MiB idle and 3 MiB in the call. PSS shows the same, 102.5 against
+98.7 MiB idle.
+
+How much is Rust's: on the mimalloc builds glibc's heap holds only the C and
+C++ allocations, 2.4 MiB in use idle and 3.4 MiB in the call against 10.1
+and 21.2 MiB on glibc, so Rust has about 8 MiB in use idle and 18 MiB in the
+call. With the GPU, glibc keeps about 65 MiB of driver and Skia heap on any
+build. The tuned arena held 11.6 MiB idle and 28.5 MiB in the call for those.
+
+Startup, five launches of each, alternated, was the same for all three: the
+CPU went quiet 0.13–0.19 s after launch, after 0.11–0.17 s of CPU, and
+used 0.19–0.23 s of CPU in the first 3 s. The stripped binary grew by
+146,584 bytes (0.1%). This Discord-only build runs 15 threads idle and 21
+in the call.
+
+With mimalloc, the window control's `stats` still prints only glibc's heap;
+the script reads mimalloc's from the anonymous memory of its arena, the
+mappings of 256 MiB or more. mimalloc's own committed counter isn't usable
+for this: with the arena committed up front it stayed at 142 MiB.
+
+Windows is unmeasured. There Rust already allocates from the system heap,
+not glibc, so the comparison is a different one, and Wine's heap isn't
+Windows', so it needs a real Windows machine.
+
+Reproduce: build each variant and copy it out, then run each in turn,
+alternating the order between rounds:
+
+```sh
+nix develop path:./nix --command cargo build --locked --profile measure --no-default-features --features desktop,discord --bin yapfast
+# mimalloc: add ,mimalloc to the features; tuned: add ,mimalloc,mimalloc/no_thp
+python3 testing/measure_tray.py --runs 1 --bin /tmp/alloc/glibc/yapfast --output .local/alloc/glibc/round1
+python3 testing/measure_tray.py --runs 1 --bin /tmp/alloc/tuned/yapfast --env MIMALLOC_PURGE_DELAY=0 --output .local/alloc/tuned/round1
+```
+
+Add `--renderer gpu` for the GPU table.
+
+## 2026-10-23: glibc and mimalloc tuned, without the arena cap
+
+This record asks the questions replies to the post on freed memory raised
+about [the record above](#2026-10-23-mimalloc-against-glibcs-malloc): does
+the cap of two arenas cost lock contention, does tuning the allocator
+through its own settings make Yapfast's `malloc_trim` calls unneeded, and how
+does mimalloc compare once neither allocator is capped. Two environment
+variables, experiments, turn the app's own settings off without a rebuild:
+`YAPFAST_NO_ARENA_CAP` skips `mallopt(M_ARENA_MAX, 2)`, as an `arena_max` in
+`GLIBC_TUNABLES` now also does, and `YAPFAST_NO_TRIM` skips the trims after
+READY, after a call and after closing to the tray. Neither they nor the `mimalloc`
+feature stayed in the tree; `.local/alloc2/experiment.patch` holds them.
+
+The settings, chosen from glibc 2.40's source and manual and mimalloc
+v3.3.2's options, then a pilot of one short run each:
+
+- glibc tuned: `GLIBC_TUNABLES=glibc.malloc.mmap_threshold=131072`. Without
+  it glibc raises the threshold for its own mappings to the size of each
+  mapped block that's freed, up to 32 MiB, and the trim threshold to twice
+  that; after the first decoded picture, every later picture buffer lands in
+  an arena and stays there. Setting any one of `mmap_threshold`,
+  `trim_threshold`, `top_pad` or `mmap_max` stops that adjustment for good;
+  128 KiB is glibc's own starting value, and the trim threshold stays at its
+  128 KiB. In the pilot `top_pad=0` and `mxfast=0` changed nothing beyond the
+  noise, and a 32 KiB threshold under 1 MiB, so they stay at glibc's
+  defaults. `arena_test` caps nothing: it only says how many arenas glibc
+  makes before it works out its limit of eight per core, here 192.
+- mimalloc tuned: the `mimalloc,mimalloc/no_thp` build with
+  `MIMALLOC_PURGE_DELAY=0` and glibc's setting above for the C and C++ that
+  stays on glibc. v3 purges a freed page only when a later free or
+  allocation runs past its delay, which defaults to 1000 ms; it has no
+  timer, so what an idle app frees waits. In the pilot, without trims, a
+  1000 ms delay held 36.8 MiB in mimalloc's arena in the call, 10 ms 29.4, and
+  0 ms 27.8; 0 ms cost twice the `madvise` calls of 10 ms and no CPU that
+  showed. `MIMALLOC_PAGE_FULL_RETAIN=0` and `MIMALLOC_GENERIC_COLLECT=1000`
+  saved nothing.
+
+Memory ran through `testing/measure_tray.py` as in the record above, three
+rounds of Skia Software in an order that rotates, and one Skia GPU run each.
+"No cap, glibc defaults" keeps the trims; the tuned builds ran with and
+without them. Brackets give the range of the three runs, which is the noise
+floor: within 0.5 MiB for most rows.
+
+| Skia Software, MiB | Today: cap 2, trims | No cap, glibc defaults | glibc tuned, trims | glibc tuned, no trims | mimalloc tuned, trims | mimalloc tuned, no trims |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| #general, window open | 19.4 (19.3–19.5) | 22.6 (22.5–22.8) | 18.0 (17.9–18.1) | 18.7 (18.6–18.8) | 21.2 (21.1–21.3) | 21.1 (21.0–21.2) |
+| #general, closed to the tray | 16.7 (16.7–16.8) | 17.6 (17.4–17.7) | 17.4 (17.4–17.4) | 18.7 (18.6–18.8) | 20.9 (20.8–21.0) | 21.0 (21.0–21.1) |
+| #general, opened again | 17.7 (17.7–17.8) | 18.6 (18.4–18.7) | 17.7 (17.7–17.8) | 18.8 (18.7–18.8) | 21.2 (21.1–21.3) | 21.2 (21.1–21.3) |
+| Lounge call, window open | 39.2 (39.1–39.3) | 41.1 (40.9–41.3) | 29.9 (29.8–29.9) | 30.9 (30.7–31.2) | 38.9 (38.8–38.9) | 38.8 (38.6–38.9) |
+| Lounge call, closed to the tray | 31.8 (31.8–31.9) | 38.0 (37.9–38.1) | 29.6 (29.5–29.7) | 30.9 (30.7–31.2) | 38.7 (38.5–38.8) | 38.8 (38.6–38.9) |
+| Lounge call, opened again | 32.0 (31.9–32.1) | 38.1 (38.0–38.3) | 29.8 (29.7–29.8) | 30.9 (30.7–31.2) | 38.8 (38.7–38.9) | 38.9 (38.8–39.0) |
+| After leaving the call | 23.2 (22.8–23.5) | 28.5 (28.2–29.0) | 18.1 (18.1–18.1) | 20.7 (20.4–21.1) | 23.1 (22.9–23.2) | 23.4 (23.3–23.5) |
+| PSS, #general open | 98.4 (98.3–98.5) | 98.7 (92.6–102.0) | 94.7 (89.6–97.6) | 97.7 (97.4–98.1) | 100.5 (100.2–100.7) | 97.4 (92.1–100.4) |
+| PSS, in the call | 138.0 (137.8–138.1) | 137.1 (131.0–140.1) | 128.9 (128.6–129.2) | 129.7 (129.5–130.0) | 135.0 (129.1–137.9) | 137.7 (137.2–138.0) |
+| CPU in the call, window open | 6.36% (6.34–6.39) | 6.37% (6.24–6.49) | 6.29% (6.29–6.29) | 6.31% (6.09–6.44) | 6.07% (5.84–6.24) | 6.36% (6.34–6.39) |
+
+| Skia GPU, one run, MiB | Today | No cap, defaults | glibc tuned, trims | glibc tuned, no trims | mimalloc tuned, trims | mimalloc tuned, no trims |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| #general, window open | 88.8 | 91.1 | 86.5 | 86.8 | 90.3 | 90.1 |
+| #general, closed to the tray | 65.2 | 64.7 | 64.4 | 83.2 | 68.7 | 86.6 |
+| Lounge call, window open | 100.1 | 114.3 | 97.9 | 100.3 | 108.8 | 110.1 |
+| Lounge call, closed to the tray | 76.9 | 81.8 | 76.3 | 95.4 | 87.4 | 105.1 |
+| After leaving the call | 73.2 | 81.8 | 67.2 | 85.9 | 75.6 | 92.0 |
+
+Without the cap glibc made 22–23 arenas here, one for each thread that
+allocates. On its default thresholds that cost 0.9–6.2 MiB against the cap,
+so the cap did save memory, but the fixed mapping threshold saves more
+without it: 9.3 MiB less than today in the call, 5.1 MiB less after it.
+Heap in use was the same in all four glibc columns; glibc's held heap in the
+call fell from 32.5 MiB (capped) to 25.1.
+
+The trims still matter. A tuned threshold gives back the mapped blocks and
+the free space at the top of each arena, but nothing freed below a block
+still in use; only `malloc_trim` does that. With Skia Software, going
+without them cost 0.7 to 2.6 MiB on tuned glibc. With the GPU, closing the window gave
+back 22.1 MiB with the trims and 3.6 MiB without, and in the call 21.6
+against 4.9: what the window frees there is mostly the driver's and Skia's,
+C and C++ on glibc in either build, so a mimalloc build needs glibc's trim as
+much (21.6 against 3.5). mimalloc's own trims changed nothing with a 0 ms
+purge delay. Closing the window, on Software, gave back 2.7 MiB today and
+0.6 MiB tuned: the tuned build had already given back the mapped picture
+buffers while the window was open.
+
+Tuned mimalloc held 2–9 MiB more than tuned glibc in every state. Its arena
+held 11.7 MiB idle and 27.9 MiB in the call for Rust's 7.6 and 17.8 MiB in
+use (glibc's in-use heap, 10.1 and 21.3, less the C and C++ part left on
+glibc in the mimalloc build, 2.5 and 3.5).
+
+Performance came from a run against the fake that `.local/alloc2/perf_run.py`
+drives, uncommitted, with `testing/fake_discord.ts`'s new
+`/_control/burst` and `/_control/speakers-start`: launch until the CPU is
+quiet; 1,500 messages from 40 people within 0.1 s, a third in the open
+#general, every fourth of those with a 960x640 picture and every fifth with
+an embed's picture, the rest across eight more channels and three servers;
+switching through those eight channels, each opened at 60 messages with
+pictures, scrolling 2,400 pixels down in each; then 30 s in the Lounge call
+with Bob, Carol and Dave speaking at once. Each variant ran three rounds
+on all 24 CPUs, and pinned with `taskset` to four cores (CPUs 8–11) and to
+two (8–9), in rotating order; the trims stayed on. Whole-run figures are
+the process's own rusage at exit, every thread's. Brackets give the range,
+the noise floor.
+
+| All 24 CPUs | Today: cap 2 | No cap, defaults | glibc tuned | mimalloc tuned |
+| --- | ---: | ---: | ---: | ---: |
+| Burst, CPU, s | 0.28 (0.23–0.31) | 0.32 (0.30–0.34) | 0.32 (0.30–0.34) | 0.34 (0.32–0.36) |
+| Burst, until quiet, s | 0.65 (0.62–0.67) | 0.62 (0.62–0.62) | 0.62 (0.62–0.62) | 0.62 (0.62–0.62) |
+| Channels, CPU, s | 3.38 (3.33–3.43) | 3.45 (3.39–3.55) | 3.40 (3.38–3.41) | 3.27 (3.22–3.31) |
+| Call with three speaking, CPU per 30 s | 1.97 (1.95–2.02) | 1.93 (1.92–1.96) | 2.00 (1.97–2.02) | 1.94 (1.92–1.96) |
+| Whole run, user, s | 6.75 (6.64–6.84) | 6.70 (6.57–6.84) | 6.69 (6.65–6.72) | 6.50 (6.42–6.57) |
+| Whole run, sys, s | 0.15 (0.11–0.19) | 0.20 (0.19–0.21) | 0.26 (0.18–0.32) | 0.24 (0.21–0.27) |
+| Whole run, minor faults, thousands | 36.2 (32.0–42.1) | 44.5 (43.6–45.2) | 142 (102–219) | 98.4 (95.2–100.3) |
+| Whole run, voluntary context switches, thousands | 35.7 (35.0–36.8) | 33.1 (33.1–33.1) | 33.7 (33.2–34.1) | 32.7 (32.5–32.9) |
+| Peak RSS, MiB | 166 (164–169) | 210 (207–213) | 162 (161–162) | 194 (193–194) |
+| glibc arenas at the end | 2 | 35 (32–38) | 35 (34–37) | 33 (32–34) |
+
+| Four cores, then two | Today: cap 2 | No cap, defaults | glibc tuned | mimalloc tuned |
+| --- | ---: | ---: | ---: | ---: |
+| 4: whole run, user, s | 7.05 (6.74–7.32) | 7.24 (7.20–7.31) | 7.23 (7.17–7.26) | 7.04 (6.98–7.15) |
+| 4: whole run, sys, s | 0.47 (0.19–0.76) | 0.17 (0.15–0.20) | 0.20 (0.16–0.23) | 0.22 (0.19–0.24) |
+| 4: call, CPU per 30 s | 2.22 (2.19–2.24) | 2.12 (2.05–2.17) | 2.16 (2.15–2.19) | 2.08 (2.06–2.10) |
+| 4: voluntary switches, thousands | 35.1 (33.2–36.3) | 32.3 (32.0–32.8) | 32.3 (32.0–32.5) | 31.9 (31.7–32.1) |
+| 4: peak RSS, MiB | 167 (163–169) | 227 (224–229) | 164 (164–164) | 202 (197–206) |
+| 2: whole run, user, s | 7.28 (7.19–7.35) | 7.01 (6.83–7.29) | 7.29 (7.20–7.46) | 7.04 (7.00–7.08) |
+| 2: whole run, sys, s | 0.27 (0.24–0.28) | 0.22 (0.14–0.27) | 0.31 (0.25–0.34) | 0.26 (0.25–0.27) |
+| 2: call, CPU per 30 s | 2.25 (2.23–2.29) | 2.12 (2.00–2.20) | 2.29 (2.19–2.37) | 2.16 (2.14–2.19) |
+| 2: voluntary switches, thousands | 34.6 (33.3–36.7) | 33.4 (32.3–35.0) | 32.9 (32.7–33.1) | 32.8 (32.2–33.2) |
+| 2: peak RSS, MiB | 168 (166–171) | 231 (228–236) | 165 (164–166) | 218 (208–224) |
+
+One run of each under `strace -f`, on all CPUs, for the system calls:
+
+| Calls in the whole run | Today: cap 2 | No cap, defaults | glibc tuned | mimalloc tuned |
+| --- | ---: | ---: | ---: | ---: |
+| futex waits on a held lock | 3,699 | 983 | 1,215 | 779 |
+| futex, all | 69,418 | 62,884 | 62,976 | 62,283 |
+| mmap / munmap | 545 / 76 | 579 / 95 | 1,426 / 886 | 627 / 143 |
+| brk / mremap | 90 / 1 | 62 / 1 | 129 / 176 | 109 / 1 |
+| madvise (MADV_DONTNEED) | 57 | 67 | 283 | 1,164 |
+| mprotect | 743 | 1,108 | 1,250 | 370 |
+
+The cap does cost contention: three times the waits on a held lock (a futex
+wait on value 2, as glibc's lock and Rust's `Mutex` both wait), and 1,200
+to 3,000 more voluntary context switches over the run. It didn't show as CPU,
+nor as time on any number of cores: the burst settled in 0.62–0.67 s
+everywhere and the CPU of each phase stayed within the noise. A profile
+(`perf record -e cycles:u`, one run each) put glibc's malloc and free at
+7.6–7.8% of user CPU with the cap or without; the waiting itself happens in
+the kernel. mimalloc and the glibc left beside it took 4.3%: on all CPUs
+its runs used 3% less user CPU than the others, and pinned they were within
+the others' noise.
+
+The tuned threshold costs what it was set for: picture buffers are mapped
+and unmapped each time: three to five times the minor faults of today's
+build, and 0.1 s more system time over a run on all CPUs, within the noise
+pinned; against 3–4 MiB less peak RSS than today and 48–66 MiB less than
+glibc's defaults without the cap. Its minor faults varied most, 102 to 219
+thousand.
+
+Startup was 0.2 s to quiet with 0.1 s of CPU in every memory run, the same
+for all.
+
+Reproduce: build each and copy it out, then run the scripts in
+`.local/alloc2/`, which alternate the variants in a scratch worktree's
+ui-session:
+
+```sh
+nix develop path:./nix --command cargo build --locked --profile measure --no-default-features --features desktop,discord --bin yapfast
+# mimalloc: --features desktop,discord,mimalloc,mimalloc/no_thp
+.local/alloc2/mem_matrix.sh software 3 ref g-nocap gt-trims gt mt-trims mt
+.local/alloc2/mem_matrix.sh gpu 1 ref g-nocap gt-trims gt mt-trims mt
+.local/alloc2/perf_matrix.sh 3
+.local/alloc2/perf_trace.sh
+```
+
+`.local/alloc2/variants.sh` names each variant's binary and environment.
+
+### The cap with the fixed threshold
+
+Cap and threshold together, `mallopt(M_ARENA_MAX, 2)` with the same
+`GLIBC_TUNABLES`, held the least of all, but its main arena grew and shrank
+with `brk` 8,638 times in the run under `strace` (90 today). heaptrack
+showed why: DeepFilterNet, on tract, allocates two 120 KiB tensors in each
+10 ms block of the microphone and frees them. Under the cap the capture
+thread shares the main arena, whose top is trimmed whenever 128 KiB lies
+free there, the fixed trim threshold; an arena of its own trims only past
+twice that, and on glibc's defaults the trim threshold had risen with the
+mapping threshold. `glibc.malloc.trim_threshold=524288` stops it: 101 `brk`
+calls. The same heaptrack run counted 250,000 allocations a second in a
+call, 85% of all of them from DeepFilterNet's tract plan, about 2,500 and
+1.25 MiB for each 10 ms block.
+
+Three alternating Software runs each, beside new runs of the uncapped
+threshold, which matched its runs above within 0.1 MiB:
+
+| Skia Software, MiB | Today: cap 2 | Threshold, no cap | Cap + threshold | Cap + threshold + 512 KiB trim threshold |
+| --- | ---: | ---: | ---: | ---: |
+| #general, window open | 19.4 (19.3–19.5) | 18.1 (18.0–18.1) | 17.3 (17.1–17.4) | 17.3 (17.2–17.3) |
+| #general, closed to the tray | 16.7 (16.7–16.8) | 17.4 (17.4–17.5) | 16.8 (16.6–16.9) | 16.8 (16.6–16.9) |
+| #general, opened again | 17.7 (17.7–17.8) | 17.7 (17.7–17.8) | 17.1 (16.9–17.2) | 17.0 (16.9–17.1) |
+| Lounge call, window open | 39.2 (39.1–39.3) | 30.0 (29.8–30.2) | 29.2 (29.1–29.3) | 29.7 (29.4–30.2) |
+| Lounge call, closed to the tray | 31.8 (31.8–31.9) | 29.5 (29.5–29.6) | 28.6 (28.6–28.7) | 28.9 (28.8–29.1) |
+| Lounge call, opened again | 32.0 (31.9–32.1) | 29.7 (29.7–29.8) | 28.8 (28.7–28.8) | 29.1 (29.0–29.2) |
+| After leaving the call | 23.2 (22.8–23.5) | 18.1 (18.1–18.1) | 17.4 (17.2–17.5) | 17.9 (17.4–18.2) |
+
+The 512 KiB trim threshold costs 0.3–0.5 MiB in and after the call, what
+the main arena may now keep free at its top until a trim. With Skia GPU,
+one run each, the three tuned columns were within 1.7 MiB of each other in
+every state but #general opened again, where the app's own heap in use
+differed by 19 MiB between runs.
+
+Performance, in rotating order with today's build and the uncapped
+threshold, each run waiting for a load average under 1: other worktrees'
+sessions kept the machine busier than for the runs above, so every column
+used more CPU than there. Whole run unless named:
+
+| | Today: cap 2 | Threshold, no cap | Cap + threshold + 512 KiB |
+| --- | ---: | ---: | ---: |
+| All CPUs: user, s | 8.27 (8.10–8.47) | 8.40 (7.89–8.95) | 8.11 (7.77–8.68) |
+| All CPUs: sys, s | 0.30 (0.24–0.40) | 0.35 (0.29–0.42) | 0.33 (0.29–0.38) |
+| All CPUs: call, CPU per 30 s | 2.52 (2.40–2.59) | 2.77 (2.42–2.96) | 2.46 (2.36–2.57) |
+| All CPUs: burst, until quiet, s | 0.64 (0.62–0.67) | 0.67 (0.67–0.68) | 0.66 (0.62–0.73) |
+| All CPUs: minor faults, thousands | 35.1 (30.8–40.7) | 101 (99–104) | 94.0 (91.7–97.4) |
+| All CPUs: peak RSS, MiB | 164 (162–166) | 161 (161–162) | 158 (158–159) |
+| 4 cores: user, s | 7.74 (7.25–8.12) | 7.36 (7.32–7.42) | 7.31 (7.17–7.51) |
+| 4 cores: peak RSS, MiB | 170 (166–173) | 163 (162–163) | 160 (159–161) |
+| 2 cores: user, s | 7.00 (6.90–7.10) | 8.03 (7.03–10.01) | 7.04 (6.56–7.36) |
+| 2 cores: peak RSS, MiB | 166 (163–168) | 165 (165–166) | 160 (159–160) |
+
+Under `strace`, one run: 3,829 waits on a held lock (today 3,699), 101
+`brk`, 1,261 `mmap` and 793 `munmap`, 70 `madvise`. The CPU stayed within
+the noise of today's build on every number of cores, with the lowest peak
+RSS of the three; the minor faults are the fixed threshold's, as above.
+
+The capped build with both thresholds holds 0.2–0.8 MiB less than the
+uncapped threshold in every state, but Yapfast ships the uncapped one: a
+fixed 128 KiB mapping threshold, set with `mallopt` in `main`, glibc's own
+count of arenas, and the trims. It gives up those 0.2–0.8 MiB for a third of
+the cap's lock waits and no trim threshold sized around one library's
+buffers. Against the cap it replaces, it holds 9.3 MiB less in the call and
+5.1 MiB less after it.
+
+The shipped build, with `mallopt(M_MMAP_THRESHOLD, 128 * 1024)` instead of
+the environment, ran five times beside three new runs of the uncapped
+threshold. Three of its runs matched those within 0.2 MiB in every state:
+17.9 MiB with #general open, 29.7 in the call, 18.0 after it. In the first
+two the app's heap in use was 0.7–1.0 MiB higher, with the same screens and
+the same memory over heap in use, 8.0–9.3 MiB in each state: something in the
+app, not the allocator.
+
+```sh
+.local/alloc2/run3.sh   # cap + threshold against the uncapped threshold
+.local/alloc2/run4.sh   # with the 512 KiB trim threshold
+```

@@ -40,23 +40,29 @@ use yapfast_core::{cli, logging, runtime::BackgroundRuntime};
 #[cfg(feature = "matrix")]
 use yapfast_core::{experiment, voice_demo};
 
-/// glibc gives threads that contend for the heap their own arenas, up to eight
-/// per core, and each arena keeps its freed memory. Yapfast runs dozens of threads.
-/// In a ten-person call two arenas held 12 MiB less heap at the same CPU.
-fn limit_heap_arenas() {
+/// glibc maps a block of 128 KiB or more on its own and unmaps it when freed,
+/// but each such free raises that threshold to the block's size, up to 32 MiB:
+/// after the first decoded picture, every later one stayed in the heap. With a
+/// fixed threshold and glibc's own count of arenas, Yapfast held 9.3 MiB less in
+/// a call than with two arenas, and 5.1 MiB less after it; see
+/// docs/measurements/README.md. The environment's own setting wins.
+fn fix_mmap_threshold() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    if std::env::var_os("MALLOC_ARENA_MAX").is_none() {
-        const M_ARENA_MAX: std::ffi::c_int = -8;
+    if std::env::var_os("MALLOC_MMAP_THRESHOLD_").is_none()
+        && !std::env::var("GLIBC_TUNABLES")
+            .is_ok_and(|tunables| tunables.contains("glibc.malloc.mmap_threshold"))
+    {
+        const M_MMAP_THRESHOLD: std::ffi::c_int = -3;
         unsafe extern "C" {
             fn mallopt(parameter: std::ffi::c_int, value: std::ffi::c_int) -> std::ffi::c_int;
         }
         // SAFETY: this runs first in main, before Yapfast starts any other thread.
-        unsafe { mallopt(M_ARENA_MAX, 2) };
+        unsafe { mallopt(M_MMAP_THRESHOLD, 128 * 1024) };
     }
 }
 
 fn main() -> Result<()> {
-    limit_heap_arenas();
+    fix_mmap_threshold();
     // A stream worker starts nothing else: no UI, runtime or TLS.
     #[cfg(feature = "discord")]
     if std::env::args().nth(1).as_deref() == Some(yapfast_core::stream_worker::ARGUMENT) {
