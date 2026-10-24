@@ -12,6 +12,8 @@
 <p align="center">
   <a href="https://github.com/yapfast/yapfast/releases/latest"><b>Download for Windows</b></a>
   &nbsp;·&nbsp;
+  <a href="https://github.com/yapfast/yapfast/releases/latest"><b>Download for Linux</b></a>
+  &nbsp;·&nbsp;
   <a href="https://yapfast.com">yapfast.com</a>
   &nbsp;·&nbsp;
   <a href="https://yapfast.com/discord-invite">Discord server</a>
@@ -19,6 +21,10 @@
   <a href="#features">Features</a>
   &nbsp;·&nbsp;
   <a href="#build-it-yourself">Build it yourself</a>
+</p>
+
+<p align="center">
+  <sub>Windows 10 and 11: an installer or a portable ZIP. Linux: an AppImage or an Arch package. Both on the <a href="https://github.com/yapfast/yapfast/releases/latest">latest release</a>.</sub>
 </p>
 
 <p align="center">
@@ -49,7 +55,7 @@ renderer too, behind **Render with the GPU** in Settings, but it takes about
 processor is the default. Your numbers will depend on how many servers and DMs
 you have. [How I measure](docs/measurements/README.md).
 
-It's a 0.1 beta, and it's what I use for Discord every day, so it had better
+It's a beta, and it's what I use for Discord every day, so it had better
 be usable. Still, there are rough edges; when you hit one,
 [open an issue](https://github.com/yapfast/yapfast/issues) and I'll fix it, or
 come hang out on the [Yapfast Discord server](https://yapfast.com/discord-invite)
@@ -109,17 +115,28 @@ Advanced**.
 ### Linux
 
 It runs great on both X11 and Wayland, screen sharing too (Hyprland here).
-There's no package yet; an AppImage and an Arch package are coming with the
-next release. Until then, if you have [Nix](https://nixos.org), it's one
-command (pretty sure, anyway :D), and you get the same Discord-only app the
-releases ship, in your launcher:
+Every release has two packages, on the
+[latest release](https://github.com/yapfast/yapfast/releases/latest):
+
+- **AppImage**, `Yapfast-…-x86_64.AppImage`, for any distro with glibc 2.39 or
+  newer, like Ubuntu 24.04, Fedora 40 or Debian 13. Make it executable
+  (`chmod +x`, or "Allow executing" in its properties) and run it. It adds
+  itself to your app menu, and uses your own graphics driver, Mesa or NVIDIA.
+- **Arch package**, `yapfast-…-x86_64.pkg.tar.zst`. Install it with
+  `sudo pacman -U` and the file or its link. Rather build it yourself? The
+  [PKGBUILD](packaging/arch/PKGBUILD) builds the release's tag from source.
+
+Then link your account with the QR code, as on Windows.
+
+With [Nix](https://nixos.org), it's one command (pretty sure, anyway :D), and
+you get the same Discord-only app the releases ship, in your launcher:
 
 ```sh
 nix profile add github:yapfast/yapfast#yapfast
 ```
 
-It compiles from source, so give it a few minutes. No Nix? Then
-[build it yourself](#build-it-yourself).
+It compiles from source, so give it a few minutes. An older glibc and no Nix?
+Then [build it yourself](#build-it-yourself).
 
 ### macOS
 
@@ -134,10 +151,9 @@ They're on the [releases page](https://github.com/yapfast/yapfast/releases),
 marked **Pre-release**, newest first, each with a list of what changed:
 
 - **Windows:** the portable ZIP. Extract it and double-click `yapfast.exe`.
-- **Linux:** the AppImage, the one coming to releases too. `chmod +x` it and
-  run it.
-- **Arch Linux:** the `.pkg.tar.zst`, the one coming to releases too. Install
-  it with `sudo pacman -U` and the file or its link.
+- **Linux:** the AppImage. `chmod +x` it and run it.
+- **Arch Linux:** the `.pkg.tar.zst`. Install it with `sudo pacman -U` and the
+  file or its link.
 
 They're untested between releases, so expect the odd rough edge.
 
@@ -146,7 +162,8 @@ They're untested between releases, so expect the odd rough edge.
 - Servers, channels, DMs and group DMs, all live. Pin, mute or close a DM from
   its menu, and accept or ignore message requests.
 - Messages you can send, reply to, edit, react to, pin, forward and attach
-  files to, with Markdown, embeds, custom emoji, stickers and spoilers.
+  files to, with Markdown, embeds, custom emoji, stickers and spoilers. Polls
+  too: vote in them and make your own.
 - Threads: start one from a message, browse a channel's threads, join or leave
   one, and read it beside its channel.
 - Forums: browse the posts as cards, with their tags, first message, top
@@ -171,10 +188,12 @@ They're untested between releases, so expect the odd rough edge.
   does, and names games Yapfast doesn't know. See
   [game detection](docs/discord.md#game-detection) and
   [Rich Presence](docs/discord.md#linux-rich-presence).
-- Running a server: make and edit channels and categories, invite people, hand
-  out roles, change nicknames, time out, kick and ban. In voice, server mute,
-  deafen and move people to another channel. Edit your server profile, and
-  leave. Join a server by invite, from the + under your servers or a link in
+- Running a server: Server Settings with roles, emoji, stickers, bans, the
+  audit log and the rest of the pages your roles let you use, and channel
+  settings with their permissions. Make and edit channels and categories,
+  invite people, hand out roles, change nicknames, time out, kick and ban. In
+  voice, server mute, deafen and move people to another channel. Edit your
+  server profile, and leave. Join a server by invite, from the + under your servers or a link in
   chat. Folders show up as they do in Discord.
 - Notifications that follow your Discord settings, muting for channels,
   categories and servers, unread markers and member lists.
@@ -187,7 +206,7 @@ They're untested between releases, so expect the odd rough edge.
 
 - Media channels.
 - The soundboard.
-- Activities and server settings.
+- Activities.
 - Making and changing server folders.
 - A server's form for new members, such as its rules, when you join. Yapfast
   sends you to Discord in your browser to fill it in.

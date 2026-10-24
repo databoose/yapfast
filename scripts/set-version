@@ -2,8 +2,10 @@
 # Sets Yapfast's version in Cargo.toml and Cargo.lock, as the nightly release
 # does before building: `scripts/set-version 0.2.0-nightly.20261020.5`.
 # The app, the packages' names and SOURCE.txt's release link all take it. A
-# stable version also goes into the Arch PKGBUILD, which builds its tag:
-# `scripts/set-version 0.2.0` before committing and tagging v0.2.0.
+# stable version also goes into the Arch PKGBUILD, which builds its tag, and
+# into the metainfo's releases, dated today: `scripts/set-version 0.2.0`
+# before committing and tagging v0.2.0. The README names no version, so
+# nothing else needs changing.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 version=${1:?usage: scripts/set-version VERSION}
@@ -19,4 +21,8 @@ sed -i "/^name = \"yapfast\"$/{n;s/^version = .*/version = \"$version\"/}" Cargo
 # A pkgver can't hold a prerelease's "-", and nightlies don't build from a tag.
 if [[ $version != *-* ]]; then
   sed -i -e "s/^pkgver=.*/pkgver=$version/" -e "s/^pkgrel=.*/pkgrel=1/" packaging/arch/PKGBUILD
+  metainfo=packaging/linux/io.github.yapfast.Yapfast.metainfo.xml
+  if ! grep -q "<release version=\"$version\"" "$metainfo"; then
+    sed -i "s|^  <releases>$|&\n    <release version=\"$version\" date=\"$(date +%F)\"/>|" "$metainfo"
+  fi
 fi
