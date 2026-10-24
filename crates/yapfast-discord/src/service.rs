@@ -633,11 +633,14 @@ impl Discord {
         let api = Arc::new(Api::new(token.clone())?);
         let (requests, receiver) = mpsc::unbounded_channel();
         // The account as last seen shows while Yapfast connects.
+        let key = crate::token::cache_key()
+            .inspect_err(|error| tracing::warn!(%error, "Discord's files won't be kept"))
+            .ok();
         let cache::Loaded {
             snapshot: cached,
             names,
             lists,
-        } = cache::load(&token);
+        } = cache::load(&token, key);
         let presence = settings::presence(
             if cached.presence.is_empty() {
                 "online"

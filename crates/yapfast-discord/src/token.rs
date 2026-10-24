@@ -1,5 +1,6 @@
 //! The Discord token lives in the OS credential store, next to Yapfast's Matrix
-//! session, and never in Matrix.
+//! session, and never in Matrix. So does the key [`crate::cache`] encrypts
+//! its files with.
 
 use std::sync::{Mutex, OnceLock};
 
@@ -12,6 +13,8 @@ const SERVICE: &str = "io.github.yapfast.Yapfast";
 const ACCOUNT: &str = "discord-token";
 /// Where the first probe kept the token; moved to `ACCOUNT` when read.
 const EARLIER_ACCOUNT: &str = "discord-probe-token";
+/// The key of the files [`crate::cache`] keeps, in hex.
+const CACHE_KEY: &str = "discord-cache-key";
 
 fn entry() -> Result<Entry> {
     named(ACCOUNT)
@@ -82,6 +85,31 @@ pub fn load() -> Result<String> {
     }
 }
 
+/// The key [`crate::cache`] encrypts its files with, made the first time.
+/// With the test server, always the same one, so what a run kept shows in
+/// the next, as with Discord.
+pub(crate) fn cache_key() -> Result<crate::cache::Key> {
+    if crate::client::test_server().is_some() {
+        return Ok([7; 32]);
+    }
+    let entry = named(CACHE_KEY)?;
+    match entry.get_password() {
+        Ok(hex) => {
+            if let Some(key) = crate::cache::read_key(&hex) {
+                return Ok(key);
+            }
+        }
+        Err(keyring::Error::NoEntry) => {}
+        Err(_) => bail!("could not read the cache key from the OS credential store"),
+    }
+    // None yet, or one that isn't a key: what it encrypted can't be read.
+    let key = crate::cache::new_key();
+    entry
+        .set_password(&crate::cache::write_key(&key))
+        .map_err(|_| anyhow!("could not save the cache key in the OS credential store"))?;
+    Ok(key)
+}
+
 pub fn forget() -> Result<()> {
     crate::cache::forget();
     if crate::client::test_server().is_some() {
@@ -90,7 +118,7 @@ pub fn forget() -> Result<()> {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         return Ok(());
     }
-    for account in [ACCOUNT, EARLIER_ACCOUNT] {
+    for account in [ACCOUNT, EARLIER_ACCOUNT, CACHE_KEY] {
         match named(account)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => {}
             Err(_) => bail!("could not remove the token from the OS credential store"),

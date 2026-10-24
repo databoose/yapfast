@@ -13,9 +13,10 @@ doctest = false
 
 [dependencies]
 chrono.workspace = true
-# Voice's transport encryption, and DAVE.
+# Voice's transport encryption, and DAVE. ChaCha's stream also encrypts the
+# files kept on disk: see src/cache/sealed.rs.
 aes-gcm = "0.10.3"
-chacha20poly1305 = "0.10.1"
+chacha20poly1305 = { version = "0.10.1", features = ["stream"] }
 davey = "0.1.4"
 rand = "0.9"
 # Linking by QR code: Discord's remote login encrypts what it sends with the

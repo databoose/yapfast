@@ -23,16 +23,21 @@
 //!
 //! The files name the login they belong to by a hash of the token, so another
 //! account linked meanwhile starts empty, and unlinking deletes them all.
-//! They're readable only by the user, and nothing in them is encrypted.
+//! They're readable only by the user. The account, messages, profiles and
+//! favourite GIFs are encrypted, with a key kept beside the token in the
+//! OS credential store (see [`sealed`]), so a backup or a disk read without
+//! it shows none of them. The pictures and videos aren't.
+
+mod sealed;
 
 use std::{
-    io::{Read, Seek, SeekFrom, Write},
+    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
@@ -71,19 +76,19 @@ pub const CHANNEL_MESSAGES: usize = 100;
 /// The most profiles kept; the least lately shown go. One takes 1-5 KB.
 const PROFILES: usize = 500;
 
-/// How each file naming its login starts, before the login: it's the first
-/// field of each.
-const LOGIN_FIELD: &[u8] = br#"{"login":""#;
+pub(crate) use sealed::Key;
+pub(crate) use sealed::{new_key, read_key, write_key};
 
 static FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// The login whose files are read and written: a hash of its token.
 static LOGIN: Mutex<Option<String>> = Mutex::new(None);
+/// The key they're encrypted with, while the credential store gives one.
+static KEY: Mutex<Option<Key>> = Mutex::new(None);
 /// The member lists to save with the account, as the service last kept them.
 static LISTS: Mutex<Vec<MemberList>> = Mutex::new(Vec::new());
 
 #[derive(Deserialize)]
 struct Saved {
-    login: String,
     snapshot: Arc<Snapshot>,
     #[serde(default)]
     names: SavedNames,
@@ -95,7 +100,6 @@ struct Saved {
 /// copies of it.
 #[derive(Serialize)]
 struct Saving<'a> {
-    login: &'a str,
     snapshot: &'a Snapshot,
     names: LockedNames<'a>,
     lists: &'a [MemberList],
@@ -123,25 +127,6 @@ pub(crate) struct Loaded {
     pub lists: Vec<MemberList>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct SavedFavoriteGifs {
-    login: String,
-    /// As Discord's settings carry them: see [`crate::gifs::write_favorites`].
-    settings: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct SavedChannel {
-    login: String,
-    messages: Vec<Message>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct SavedProfile<P> {
-    login: String,
-    profile: P,
-}
-
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
@@ -158,7 +143,9 @@ pub fn keep_in(file: PathBuf) {
         profiles_directory(),
         videos(),
     ) {
+        let text = [self::file(), favorite_gifs_file()];
         std::thread::spawn(move || {
+            unsealed(text.into_iter().flatten(), [&messages, &profiles]);
             prune(&pictures, PICTURES_SIZE, usize::MAX);
             prune(&gifs, GIFS_SIZE, usize::MAX);
             prune(&messages, u64::MAX, CHANNELS);
@@ -166,6 +153,26 @@ pub fn keep_in(file: PathBuf) {
             // Videos played before Yapfast last closed.
             prune(&videos, 0, 0);
         });
+    }
+}
+
+/// Deletes `files`, and those in `directories`, that Yapfast kept before it
+/// encrypted them.
+fn unsealed(files: impl Iterator<Item = PathBuf>, directories: [&Path; 2]) {
+    let kept = directories
+        .into_iter()
+        .filter_map(|directory| std::fs::read_dir(directory).ok())
+        .flatten()
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        // Not one being written, which ends in `.partial`.
+        .filter(|file| {
+            file.extension()
+                .is_some_and(|extension| extension == "json")
+        });
+    for file in files.chain(kept) {
+        if file.is_file() && !sealed::is_sealed(&file) {
+            let _ = std::fs::remove_file(&file);
+        }
     }
 }
 
@@ -189,31 +196,17 @@ fn favorite_gifs_file() -> Option<PathBuf> {
 /// The favourite GIFs kept for this login. It reads the disk, so the async
 /// side calls it off its threads.
 pub fn favorite_gifs() -> Option<Vec<crate::gifs::Favorite>> {
-    let (file, login) = (favorite_gifs_file()?, current_login()?);
-    let data = std::fs::read(file).ok()?;
-    match serde_json::from_slice::<SavedFavoriteGifs>(&data) {
-        Ok(saved) if saved.login == login => crate::gifs::read_favorites(&saved.settings),
-        Ok(_) => None,
-        Err(error) => {
-            tracing::warn!(%error, "could not read the saved favourite GIFs");
-            None
-        }
-    }
+    // As Discord's settings carry them: see [`crate::gifs::write_favorites`].
+    let settings: String = read_sealed(&favorite_gifs_file()?, "the saved favourite GIFs")?;
+    crate::gifs::read_favorites(&settings)
 }
 
 /// Keeps the favourite GIFs for this login, as [`favorite_gifs`] reads them.
 pub fn keep_favorite_gifs(favorites: &[crate::gifs::Favorite]) {
-    let (Some(file), Some(login)) = (favorite_gifs_file(), current_login()) else {
+    let Some(file) = favorite_gifs_file() else {
         return;
     };
-    let saved = SavedFavoriteGifs {
-        login,
-        settings: crate::gifs::write_favorites(favorites),
-    };
-    let written = serde_json::to_vec(&saved)
-        .map_err(anyhow::Error::from)
-        .and_then(|data| write_bytes(&file, &data));
-    if let Err(error) = written {
+    if let Err(error) = write_sealed(&file, &crate::gifs::write_favorites(favorites)) {
         tracing::warn!(%error, "could not save the favourite GIFs");
     }
 }
@@ -297,24 +290,21 @@ fn current_login() -> Option<String> {
     lock(&LOGIN).clone()
 }
 
+fn current_key() -> Option<Key> {
+    *lock(&KEY)
+}
+
 /// What was saved for this login, to show while connecting. From now on
-/// the files are this login's.
-pub(crate) fn load(token: &str) -> Loaded {
-    let login = hash(token);
-    *lock(&LOGIN) = Some(login.clone());
-    let Some(data) = file().and_then(|file| std::fs::read(file).ok()) else {
+/// the files are this login's, encrypted with `key`; without one, nothing is
+/// read or kept.
+pub(crate) fn load(token: &str, key: Option<Key>) -> Loaded {
+    *lock(&LOGIN) = Some(hash(token));
+    *lock(&KEY) = key;
+    let Some(saved) =
+        file().and_then(|file| read_sealed::<Saved>(&file, "the saved Discord account"))
+    else {
         return Loaded::default();
     };
-    let saved: Saved = match serde_json::from_slice(&data) {
-        Ok(saved) => saved,
-        Err(error) => {
-            tracing::warn!(%error, "could not read the saved Discord account");
-            return Loaded::default();
-        }
-    };
-    if saved.login != login {
-        return Loaded::default();
-    }
     let mut snapshot = Arc::unwrap_or_clone(saved.snapshot);
     snapshot.status = Status::Connecting;
     for conversation in &mut snapshot.conversations {
@@ -347,7 +337,7 @@ pub(crate) fn relogin(token: &str) {
         .flatten()
         .chain(kept)
     {
-        if let Err(error) = relabel(&file, &earlier, &login)
+        if let Err(error) = sealed::relabel(&file, &earlier, &login)
             && error.kind() != std::io::ErrorKind::NotFound
         {
             tracing::warn!(%error, "could not keep a Discord file for the refreshed login");
@@ -355,22 +345,42 @@ pub(crate) fn relogin(token: &str) {
     }
 }
 
-/// Writes `login` over `earlier` at the start of `file`, if it's there.
-fn relabel(file: &Path, earlier: &str, login: &str) -> std::io::Result<()> {
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(file)?;
-    let mut start = vec![0; LOGIN_FIELD.len() + earlier.len()];
-    match file.read_exact(&mut start) {
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
-        read => read?,
+/// What `file` holds for this login, as it reads: none when it's missing,
+/// another login's, or doesn't read with this key.
+fn read_sealed<T: DeserializeOwned>(file: &Path, what: &str) -> Option<T> {
+    let (key, login) = (current_key()?, current_login()?);
+    let (owner, opening) = match sealed::open(file, &key) {
+        Ok(opened) => opened,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            tracing::warn!(%error, "could not read {what}");
+            return None;
+        }
+    };
+    if owner != login {
+        return None;
     }
-    if start.strip_prefix(LOGIN_FIELD) != Some(earlier.as_bytes()) {
+    match serde_json::from_reader(opening) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            tracing::warn!(%error, "could not read {what}");
+            None
+        }
+    }
+}
+
+/// Writes `value` to `file` for this login, encrypted, as it goes. Without
+/// a key it isn't kept.
+fn write_sealed(file: &Path, value: &impl Serialize) -> anyhow::Result<()> {
+    let (Some(key), Some(login)) = (current_key(), current_login()) else {
         return Ok(());
-    }
-    file.seek(SeekFrom::Start(LOGIN_FIELD.len() as u64))?;
-    file.write_all(login.as_bytes())
+    };
+    write_with(file, |writer| {
+        let mut sealing = sealed::seal(writer, &key, &login)?;
+        serde_json::to_writer(&mut sealing, value)?;
+        sealing.finish()?;
+        Ok(())
+    })
 }
 
 /// The member lists to save with the account from now on.
@@ -391,13 +401,12 @@ pub(crate) async fn keep(mut snapshots: watch::Receiver<Arc<Snapshot>>, names: A
         if snapshot.status != Status::Online {
             continue;
         }
-        let (Some(file), Some(login)) = (file(), current_login()) else {
+        let Some(file) = file() else {
             continue;
         };
         let (names, lists) = (names.clone(), lock(&LISTS).clone());
         let written =
-            tokio::task::spawn_blocking(move || save(&file, &login, &snapshot, &names, &lists))
-                .await;
+            tokio::task::spawn_blocking(move || save(&file, &snapshot, &names, &lists)).await;
         if let Ok(Err(error)) = written {
             tracing::warn!(%error, "could not save the Discord account");
         }
@@ -415,41 +424,29 @@ fn channel_file(channel: &str) -> Option<PathBuf> {
 
 /// The messages kept of a channel for this login, oldest first.
 pub fn messages(channel: &str) -> Vec<Message> {
-    let (Some(file), Some(login)) = (channel_file(channel), current_login()) else {
+    let Some(file) = channel_file(channel) else {
         return Vec::new();
     };
-    let Ok(data) = std::fs::read(&file) else {
+    let Some(messages) = read_sealed(&file, "a saved Discord channel") else {
         return Vec::new();
     };
-    match serde_json::from_slice::<SavedChannel>(&data) {
-        Ok(saved) if saved.login == login => {
-            // Used now, so pruning keeps it longer.
-            touch(&file);
-            saved.messages
-        }
-        Ok(_) => Vec::new(),
-        Err(error) => {
-            tracing::warn!(%error, "could not read a saved Discord channel");
-            Vec::new()
-        }
-    }
+    // Used now, so pruning keeps it longer.
+    touch(&file);
+    messages
 }
 
 /// Keeps a channel's newest [`CHANNEL_MESSAGES`] messages, oldest first. It
 /// writes to disk, so the async side calls it off its threads.
-pub fn save_messages(channel: &str, mut messages: Vec<Message>) {
-    let (Some(file), Some(login)) = (channel_file(channel), current_login()) else {
+pub fn save_messages(channel: &str, messages: Vec<Message>) {
+    let Some(file) = channel_file(channel) else {
         return;
     };
-    if messages.len() > CHANNEL_MESSAGES {
-        messages.drain(..messages.len() - CHANNEL_MESSAGES);
-    }
-    let saved = SavedChannel { login, messages };
+    let newest = &messages[messages.len().saturating_sub(CHANNEL_MESSAGES)..];
     let written = file
         .parent()
         .map_or(Ok(()), std::fs::create_dir_all)
         .map_err(anyhow::Error::from)
-        .and_then(|()| write_bytes(&file, &serde_json::to_vec(&saved)?));
+        .and_then(|()| write_sealed(&file, &newest));
     if let Err(error) = written {
         tracing::warn!(%error, "could not save a Discord channel");
     }
@@ -472,34 +469,24 @@ fn profile_file(guild: &str, user: &str) -> Option<PathBuf> {
 /// The profile kept of a user in a server, or outside any, for this login.
 /// It reads the disk, so the async side calls it off its threads.
 pub(crate) fn profile(guild: &str, user: &str) -> Option<Profile> {
-    let (file, login) = (profile_file(guild, user)?, current_login()?);
-    let data = std::fs::read(&file).ok()?;
-    match serde_json::from_slice::<SavedProfile<Profile>>(&data) {
-        Ok(saved) if saved.login == login => {
-            // Shown now, so pruning keeps it longer.
-            touch(&file);
-            Some(saved.profile)
-        }
-        Ok(_) => None,
-        Err(error) => {
-            tracing::warn!(%error, "could not read a saved Discord profile");
-            None
-        }
-    }
+    let file = profile_file(guild, user)?;
+    let profile = read_sealed(&file, "a saved Discord profile")?;
+    // Shown now, so pruning keeps it longer.
+    touch(&file);
+    Some(profile)
 }
 
 /// Keeps a user's profile as [`profile`] reads it. It writes to disk, so the
 /// async side calls it off its threads.
 pub(crate) fn save_profile(guild: &str, user: &str, profile: &Profile) {
-    let (Some(file), Some(login)) = (profile_file(guild, user), current_login()) else {
+    let Some(file) = profile_file(guild, user) else {
         return;
     };
-    let saved = SavedProfile { login, profile };
     let written = file
         .parent()
         .map_or(Ok(()), std::fs::create_dir_all)
         .map_err(anyhow::Error::from)
-        .and_then(|()| write_with(&file, |writer| Ok(serde_json::to_writer(writer, &saved)?)));
+        .and_then(|()| write_sealed(&file, profile));
     if let Err(error) = written {
         tracing::warn!(%error, "could not save a Discord profile");
     }
@@ -642,6 +629,7 @@ pub fn forget() {
         }
     }
     lock(&LISTS).clear();
+    *lock(&KEY) = None;
 }
 
 /// Writes the account to `file` as it goes, rather than all at once: as
@@ -649,18 +637,16 @@ pub fn forget() {
 /// on an account of 3,000 people.
 fn save(
     file: &Path,
-    login: &str,
     snapshot: &Snapshot,
     names: &RwLock<Names>,
     lists: &[MemberList],
 ) -> anyhow::Result<()> {
     let saving = Saving {
-        login,
         snapshot,
         names: LockedNames(names),
         lists,
     };
-    write_with(file, |writer| Ok(serde_json::to_writer(writer, &saving)?))
+    write_sealed(file, &saving)
 }
 
 /// Writes beside `file`, readable only by this user, then swaps it in, so
@@ -697,6 +683,8 @@ mod tests {
         service::{Account, Conversation},
     };
 
+    const KEY: Key = [1; 32];
+
     // One test, since the files' place and the login are the process's.
     #[test]
     fn keeps_the_account_messages_and_pictures_for_their_login() {
@@ -704,7 +692,10 @@ mod tests {
             std::env::temp_dir().join(format!("yapfast-discord-cache-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         keep_in(directory.join("discord-account.json"));
-        assert!(load("token").snapshot.servers.is_empty(), "nothing yet");
+        assert!(
+            load("token", Some(KEY)).snapshot.servers.is_empty(),
+            "nothing yet"
+        );
         let snapshot = Snapshot {
             status: Status::Online,
             user_id: Some("1".into()),
@@ -732,15 +723,8 @@ mod tests {
             "10",
             &json!({"user": {"id": "2", "global_name": "Bob"}, "nick": "Bobby", "roles": ["30"]}),
         );
-        save(
-            &file().unwrap(),
-            &hash("token"),
-            &snapshot,
-            &RwLock::new(names),
-            &[],
-        )
-        .unwrap();
-        let shown = load("token");
+        save(&file().unwrap(), &snapshot, &RwLock::new(names), &[]).unwrap();
+        let shown = load("token", Some(KEY));
         assert_eq!(shown.snapshot.status, Status::Connecting);
         assert_eq!(shown.snapshot.account.unwrap().name, "Alice");
         assert_eq!(shown.snapshot.servers[0].name, "Server");
@@ -749,6 +733,12 @@ mod tests {
             "calls are over by now"
         );
         assert_eq!(shown.names.name("10", "2"), Some("Bobby"));
+        // Encrypted: not readable on disk, nor with another key.
+        let written = std::fs::read(file().unwrap()).unwrap();
+        assert!(!written.windows(5).any(|window| window == b"Alice"));
+        assert!(load("token", Some([2; 32])).snapshot.servers.is_empty());
+        assert!(load("token", None).snapshot.servers.is_empty());
+        load("token", Some(KEY));
 
         // A channel's newest messages.
         let message = |id: u64| Message {
@@ -765,6 +755,14 @@ mod tests {
         assert_eq!(kept.len(), CHANNEL_MESSAGES);
         assert_eq!(kept[0].id, "6", "the oldest go");
         assert!(messages("../40").is_empty() && messages("41").is_empty());
+        // A channel kept before Yapfast encrypted them goes.
+        let earlier = messages_directory().unwrap().join("41.json");
+        std::fs::write(&earlier, br#"{"login":"","messages":[]}"#).unwrap();
+        unsealed(
+            std::iter::empty(),
+            [&messages_directory().unwrap(), &directory.join("none")],
+        );
+        assert!(!earlier.exists() && channel_file("40").unwrap().exists());
 
         // Profiles, in a server and outside any.
         let bob = |name: &str| Profile {
@@ -829,20 +827,23 @@ mod tests {
 
         // Discord refreshed the login: what's kept is the new one's.
         relogin("refreshed");
-        assert_eq!(load("refreshed").snapshot.servers[0].name, "Server");
+        assert_eq!(
+            load("refreshed", Some(KEY)).snapshot.servers[0].name,
+            "Server"
+        );
         assert_eq!(messages("40").len(), CHANNEL_MESSAGES);
         assert_eq!(profile("10", "2"), Some(bob("Bobby")));
         assert!(favorite_gifs().is_some());
-        assert!(load("token").snapshot.servers.is_empty());
+        assert!(load("token", Some(KEY)).snapshot.servers.is_empty());
 
         // Another login sees none of it.
-        assert!(load("another").snapshot.servers.is_empty());
+        assert!(load("another", Some(KEY)).snapshot.servers.is_empty());
         assert!(messages("40").is_empty());
         assert_eq!(profile("10", "2"), None);
         assert_eq!(favorite_gifs(), None);
-        load("token");
+        load("token", Some(KEY));
         forget();
-        assert!(load("token").snapshot.servers.is_empty());
+        assert!(load("token", Some(KEY)).snapshot.servers.is_empty());
         assert!(messages("40").is_empty());
         assert_eq!(favorite_gifs(), None);
         assert!(!pictures().unwrap().exists());
