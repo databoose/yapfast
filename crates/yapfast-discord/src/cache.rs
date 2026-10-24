@@ -11,10 +11,12 @@
 //! - `discord-profiles/`: each profile shown lately, outside servers or in
 //!   one, as Discord last gave it, for the [`PROFILES`] shown last. A card
 //!   shows it at once while Discord's answer comes.
-//! - `discord-pictures/`: avatars, banners, server icons, emoji and stickers, and the
-//!   media proxy's previews of attachments and links. Discord gives each
-//!   version of a picture its own address, so a kept one never goes stale.
-//!   The least lately shown go past [`PICTURES_SIZE`].
+//! - `discord-pictures/`: avatars, banners, server icons, emoji and
+//!   stickers. Discord gives each version of a picture its own address, so
+//!   a kept one never goes stale. The least lately shown go past
+//!   [`PICTURES_SIZE`].
+//! - `discord-previews/`: the media proxy's previews of attachments and
+//!   links. The least lately shown go past [`PREVIEWS_SIZE`].
 //! - `discord-videos/`: the video playing, while it does; see [`videos`].
 //! - `discord-favorite-gifs.json`: the favourite GIFs, as Discord's settings
 //!   last gave them, so the picker shows them before Discord answers.
@@ -23,15 +25,16 @@
 //!
 //! The files name the login they belong to by a hash of the token, so another
 //! account linked meanwhile starts empty, and unlinking deletes them all.
-//! They're readable only by the user. The account, messages, profiles and
-//! favourite GIFs are encrypted, with a key kept beside the token in the
-//! OS credential store (see [`sealed`]), so a backup or a disk read without
-//! it shows none of them. The pictures and videos aren't.
+//! They're readable only by the user. The account, messages, profiles,
+//! favourite GIFs and previews are encrypted, with a key kept beside the
+//! token in the OS credential store (see [`sealed`]), so a backup or a disk
+//! read without it shows none of them. The pictures, public on Discord's
+//! CDN, aren't, nor the video playing, gone once it stops.
 
 mod sealed;
 
 use std::{
-    io::Write,
+    io::{Read, Seek, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
     time::Duration,
@@ -63,7 +66,9 @@ const PICTURE_PATHS: [&str; 9] = [
     "/stickers/",
 ];
 /// The most the kept pictures take; the least lately shown go first.
-const PICTURES_SIZE: u64 = 256 * 1024 * 1024;
+const PICTURES_SIZE: u64 = 64 * 1024 * 1024;
+/// The most the kept previews take; the least lately shown go first.
+const PREVIEWS_SIZE: u64 = 192 * 1024 * 1024;
 /// The most the favourite GIFs' thumbnails take; the least lately shown go
 /// first. A thumbnail takes 14-300 KB, 40 KB at the median.
 const GIFS_SIZE: u64 = 50 * 1024 * 1024;
@@ -144,8 +149,22 @@ pub fn keep_in(file: PathBuf) {
         videos(),
     ) {
         let text = [self::file(), favorite_gifs_file()];
+        let previews = previews();
+        // Pictures kept before the previews were apart, and encrypted,
+        // have them among them: they go, out of the way first.
+        let earlier = pictures.with_extension("earlier");
+        if let Some(previews) = &previews
+            && !previews.exists()
+        {
+            let _ = std::fs::rename(&pictures, &earlier);
+            let _ = std::fs::create_dir_all(previews);
+        }
         std::thread::spawn(move || {
+            let _ = std::fs::remove_dir_all(&earlier);
             unsealed(text.into_iter().flatten(), [&messages, &profiles]);
+            if let Some(previews) = &previews {
+                prune(previews, PREVIEWS_SIZE, usize::MAX);
+            }
             prune(&pictures, PICTURES_SIZE, usize::MAX);
             prune(&gifs, GIFS_SIZE, usize::MAX);
             prune(&messages, u64::MAX, CHANNELS);
@@ -187,6 +206,10 @@ pub(crate) fn games_file() -> Option<PathBuf> {
 
 fn pictures() -> Option<PathBuf> {
     Some(file()?.with_file_name("discord-pictures"))
+}
+
+fn previews() -> Option<PathBuf> {
+    Some(file()?.with_file_name("discord-previews"))
 }
 
 fn favorite_gifs_file() -> Option<PathBuf> {
@@ -326,7 +349,7 @@ pub(crate) fn relogin(token: &str) {
     let Some(earlier) = lock(&LOGIN).replace(login.clone()) else {
         return;
     };
-    let kept = [messages_directory(), profiles_directory()]
+    let kept = [messages_directory(), profiles_directory(), previews()]
         .into_iter()
         .flatten()
         .filter_map(|directory| std::fs::read_dir(directory).ok())
@@ -348,18 +371,16 @@ pub(crate) fn relogin(token: &str) {
 /// What `file` holds for this login, as it reads: none when it's missing,
 /// another login's, or doesn't read with this key.
 fn read_sealed<T: DeserializeOwned>(file: &Path, what: &str) -> Option<T> {
-    let (key, login) = (current_key()?, current_login()?);
-    let (owner, opening) = match sealed::open(file, &key) {
-        Ok(opened) => opened,
+    let opening = match open_sealed(file) {
+        Ok(opening) => opening,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
         Err(error) => {
-            tracing::warn!(%error, "could not read {what}");
+            if error.kind() != std::io::ErrorKind::PermissionDenied {
+                tracing::warn!(%error, "could not read {what}");
+            }
             return None;
         }
     };
-    if owner != login {
-        return None;
-    }
     match serde_json::from_reader(opening) {
         Ok(value) => Some(value),
         Err(error) => {
@@ -369,15 +390,40 @@ fn read_sealed<T: DeserializeOwned>(file: &Path, what: &str) -> Option<T> {
     }
 }
 
+/// Opens `file`, encrypted for this login. Another login's, or any without
+/// a key, is denied.
+fn open_sealed(file: &Path) -> std::io::Result<sealed::Opening<std::fs::File>> {
+    let denied = || std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+    let (key, login) = (current_key(), current_login());
+    let (Some(key), Some(login)) = (key, login) else {
+        return Err(denied());
+    };
+    let (owner, opening) = sealed::open(file, &key)?;
+    if owner != login {
+        return Err(denied());
+    }
+    Ok(opening)
+}
+
 /// Writes `value` to `file` for this login, encrypted, as it goes. Without
 /// a key it isn't kept.
 fn write_sealed(file: &Path, value: &impl Serialize) -> anyhow::Result<()> {
+    write_sealed_with(file, |sealing| Ok(serde_json::to_writer(sealing, value)?))
+}
+
+/// Writes what `fill` puts in the writer to `file` as [`write_sealed`] does.
+fn write_sealed_with(
+    file: &Path,
+    fill: impl FnOnce(
+        &mut sealed::Sealing<&mut std::io::BufWriter<std::fs::File>>,
+    ) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     let (Some(key), Some(login)) = (current_key(), current_login()) else {
         return Ok(());
     };
     write_with(file, |writer| {
         let mut sealing = sealed::seal(writer, &key, &login)?;
-        serde_json::to_writer(&mut sealing, value)?;
+        fill(&mut sealing)?;
         sealing.finish()?;
         Ok(())
     })
@@ -492,20 +538,116 @@ pub(crate) fn save_profile(guild: &str, user: &str, profile: &Profile) {
     }
 }
 
-/// Where the picture at `url` is kept, if it's one Yapfast keeps. The media
-/// proxy signs its addresses for a while; the signature isn't part of the
-/// key, so a picture signed again is found.
-fn picture_file(url: &str) -> Option<PathBuf> {
+/// Where the picture at `url` is kept, if it's one Yapfast keeps: plain
+/// when it's public on Discord's CDN, else encrypted. The media proxy signs
+/// its addresses for a while; the signature isn't part of the key, so a
+/// picture signed again is found.
+fn picture_file(url: &str) -> Option<KeptPicture> {
     let (host, path) = url.split_once("://")?.1.split_once('/')?;
     let path = format!("/{path}");
     // The test server stands in for the media proxy.
     let proxied = host == "media.discordapp.net"
         || host.starts_with("images-ext-") && host.ends_with(".discordapp.net")
         || crate::client::test_server().is_some_and(|server| url.starts_with(server));
-    if !proxied && !PICTURE_PATHS.iter().any(|kept| path.starts_with(kept)) {
-        return None;
+    let public = PICTURE_PATHS.iter().any(|kept| path.starts_with(kept));
+    let name = hash(&unsigned(url));
+    if public {
+        Some(KeptPicture::Plain(pictures()?.join(name)))
+    } else if proxied {
+        Some(KeptPicture::Sealed(previews()?.join(name)))
+    } else {
+        None
     }
-    Some(pictures()?.join(hash(&unsigned(url))))
+}
+
+/// A picture kept on disk: plain, or encrypted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeptPicture {
+    Plain(PathBuf),
+    Sealed(PathBuf),
+}
+
+impl KeptPicture {
+    fn file(&self) -> &Path {
+        match self {
+            Self::Plain(file) | Self::Sealed(file) => file,
+        }
+    }
+
+    /// How long the picture is, without its encryption.
+    pub fn length(&self) -> Option<u64> {
+        let size = std::fs::metadata(self.file()).ok()?.len();
+        match self {
+            Self::Plain(_) => Some(size),
+            Self::Sealed(_) => sealed::length(size),
+        }
+    }
+
+    /// The picture, read as it's needed, from wherever it seeks.
+    pub fn open(&self) -> std::io::Result<KeptReader> {
+        Ok(match self {
+            Self::Plain(file) => KeptReader::Plain(std::fs::File::open(file)?),
+            Self::Sealed(file) => KeptReader::Sealed(open_sealed(file)?),
+        })
+    }
+
+    /// The whole picture.
+    fn read(&self) -> std::io::Result<Vec<u8>> {
+        match self {
+            Self::Plain(file) => std::fs::read(file),
+            Self::Sealed(file) => {
+                let mut opening = open_sealed(file)?;
+                let mut data = Vec::with_capacity(opening.length() as usize);
+                opening.read_to_end(&mut data)?;
+                Ok(data)
+            }
+        }
+    }
+
+    /// Keeps `data` as the picture. Without a key, an encrypted one isn't.
+    fn write(&self, data: &[u8]) -> anyhow::Result<()> {
+        if let Some(directory) = self.file().parent() {
+            std::fs::create_dir_all(directory)?;
+        }
+        match self {
+            Self::Plain(file) => write_bytes(file, data),
+            Self::Sealed(file) => write_sealed_with(file, |sealing| Ok(sealing.write_all(data)?)),
+        }
+    }
+}
+
+/// A kept picture as it's read.
+pub enum KeptReader {
+    Plain(std::fs::File),
+    Sealed(sealed::Opening<std::fs::File>),
+}
+
+impl KeptReader {
+    /// How long the picture is, without its encryption.
+    pub fn length(&self) -> Option<u64> {
+        match self {
+            Self::Plain(file) => file.metadata().ok().map(|kept| kept.len()),
+            Self::Sealed(opening) => Some(opening.length()),
+        }
+    }
+}
+
+impl Read for KeptReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Plain(file) => file.read(out),
+            Self::Sealed(opening) => opening.read(out),
+        }
+    }
+}
+
+impl Seek for KeptReader {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        match self {
+            Self::Plain(file) => file.seek(to),
+            Self::Sealed(opening) => opening.seek(to),
+        }
+    }
 }
 
 /// `url` without the media proxy's signature: its `ex`, `is` and `hm`.
@@ -530,40 +672,39 @@ fn unsigned(url: &str) -> String {
 
 /// The picture at `url`, if it was kept.
 pub(crate) async fn picture(url: &str) -> Option<Vec<u8>> {
-    let file = picture_file(url)?;
+    let kept = picture_file(url)?;
     tokio::task::spawn_blocking(move || {
-        let data = std::fs::read(&file).ok()?;
+        let data = kept.read().ok()?;
         // Shown lately, so pruning keeps it longer.
-        touch(&file);
+        touch(kept.file());
         Some(data)
     })
     .await
     .ok()?
 }
 
-/// Where the picture at `url` is kept, if it is.
-pub fn kept_picture(url: &str) -> Option<PathBuf> {
-    picture_file(url).filter(|file| file.is_file())
+/// The picture at `url` as it's kept, if it is.
+pub fn kept_picture(url: &str) -> Option<KeptPicture> {
+    picture_file(url).filter(|kept| kept.file().is_file())
 }
 
-/// Keeps the picture downloaded from `url`, if it's one Yapfast keeps.
-pub(crate) async fn keep_picture(url: &str, data: Vec<u8>) {
-    if data.len() > LARGEST_PICTURE {
-        return;
-    }
-    let Some(file) = picture_file(url) else {
-        return;
+/// Keeps the picture downloaded from `url`, if it's one Yapfast keeps, and
+/// gives it back; none only when keeping it panicked.
+pub(crate) async fn keep_picture(url: &str, data: Vec<u8>) -> Option<Vec<u8>> {
+    let kept = picture_file(url).filter(|_| data.len() <= LARGEST_PICTURE);
+    let Some(kept) = kept else {
+        return Some(data);
     };
-    let written = tokio::task::spawn_blocking(move || {
-        if let Some(directory) = file.parent() {
-            std::fs::create_dir_all(directory)?;
-        }
-        write_bytes(&file, &data)
+    let (data, written) = tokio::task::spawn_blocking(move || {
+        let written = kept.write(&data);
+        (data, written)
     })
-    .await;
-    if let Ok(Err(error)) = written {
+    .await
+    .ok()?;
+    if let Err(error) = written {
         tracing::warn!(%error, "could not keep a Discord picture");
     }
+    Some(data)
 }
 
 fn touch(file: &Path) {
@@ -614,6 +755,7 @@ pub fn forget() {
     }
     for directory in [
         pictures(),
+        previews(),
         gifs(),
         messages_directory(),
         profiles_directory(),
@@ -823,6 +965,26 @@ mod tests {
             assert_eq!(picture(avatar).await.as_deref(), Some(&b"avatar"[..]));
             assert_eq!(picture(resigned).await.as_deref(), Some(&b"preview"[..]));
             assert_eq!(picture(original).await, None);
+            // The preview is encrypted; the avatar, public, isn't.
+            let (Some(KeptPicture::Plain(avatar)), Some(kept)) =
+                (kept_picture(avatar), kept_picture(preview))
+            else {
+                panic!("the avatar is plain");
+            };
+            assert_eq!(std::fs::read(avatar).unwrap(), b"avatar");
+            assert!(matches!(kept, KeptPicture::Sealed(_)));
+            assert!(
+                !std::fs::read(kept.file())
+                    .unwrap()
+                    .windows(7)
+                    .any(|window| window == b"preview")
+            );
+            assert_eq!(kept.length(), Some(7));
+            let mut opened = kept.open().unwrap();
+            opened.seek(std::io::SeekFrom::Start(3)).unwrap();
+            let mut rest = String::new();
+            opened.read_to_string(&mut rest).unwrap();
+            assert_eq!(rest, "view");
         });
 
         // Discord refreshed the login: what's kept is the new one's.
@@ -846,7 +1008,7 @@ mod tests {
         assert!(load("token", Some(KEY)).snapshot.servers.is_empty());
         assert!(messages("40").is_empty());
         assert_eq!(favorite_gifs(), None);
-        assert!(!pictures().unwrap().exists());
+        assert!(!pictures().unwrap().exists() && !previews().unwrap().exists());
         assert!(!profiles_directory().unwrap().exists());
         assert_eq!(kept_gif(gif), None);
         std::fs::remove_dir_all(&directory).unwrap();

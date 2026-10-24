@@ -2547,8 +2547,9 @@ impl Discord {
         } else {
             self.api.download_now(url, limit).await?
         };
-        cache::keep_picture(url, data.clone()).await;
-        Ok(data)
+        cache::keep_picture(url, data)
+            .await
+            .context("the picture was lost while it was kept")
     }
 
     /// The address of an application's icon, asked of Discord once.

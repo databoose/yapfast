@@ -88,6 +88,7 @@ impl Source for AnimationReader {
         match self {
             Self::Memory(reader) => reader.size(),
             Self::Disk(reader) => reader.get_ref().metadata().ok().map(|kept| kept.len()),
+            Self::Kept(reader) => reader.get_ref().length(),
         }
     }
 }

@@ -992,6 +992,9 @@ pub struct Animation {
 enum AnimationFile {
     Memory(Arc<[u8]>),
     Disk(PathBuf),
+    /// As Discord's cache keeps it, perhaps encrypted.
+    #[cfg(feature = "discord")]
+    Kept(yapfast_discord::cache::KeptPicture),
 }
 
 impl AnimationFile {
@@ -1010,6 +1013,12 @@ impl AnimationFile {
                 .inspect_err(|error| tracing::debug!(%error, "could not read an animation"))
                 .ok()
                 .map(|file| AnimationReader::Disk(std::io::BufReader::new(file))),
+            #[cfg(feature = "discord")]
+            Self::Kept(kept) => kept
+                .open()
+                .inspect_err(|error| tracing::debug!(%error, "could not read an animation"))
+                .ok()
+                .map(|file| AnimationReader::Kept(std::io::BufReader::new(file))),
         }
     }
 }
@@ -1018,6 +1027,8 @@ impl AnimationFile {
 pub(crate) enum AnimationReader {
     Memory(std::io::Cursor<Arc<[u8]>>),
     Disk(std::io::BufReader<std::fs::File>),
+    #[cfg(feature = "discord")]
+    Kept(std::io::BufReader<yapfast_discord::cache::KeptReader>),
 }
 
 impl std::io::Read for AnimationReader {
@@ -1025,6 +1036,8 @@ impl std::io::Read for AnimationReader {
         match self {
             Self::Memory(reader) => reader.read(buffer),
             Self::Disk(reader) => reader.read(buffer),
+            #[cfg(feature = "discord")]
+            Self::Kept(reader) => reader.read(buffer),
         }
     }
 }
@@ -1034,6 +1047,8 @@ impl std::io::BufRead for AnimationReader {
         match self {
             Self::Memory(reader) => reader.fill_buf(),
             Self::Disk(reader) => reader.fill_buf(),
+            #[cfg(feature = "discord")]
+            Self::Kept(reader) => reader.fill_buf(),
         }
     }
 
@@ -1041,6 +1056,8 @@ impl std::io::BufRead for AnimationReader {
         match self {
             Self::Memory(reader) => reader.consume(amount),
             Self::Disk(reader) => reader.consume(amount),
+            #[cfg(feature = "discord")]
+            Self::Kept(reader) => reader.consume(amount),
         }
     }
 }
@@ -1050,6 +1067,8 @@ impl std::io::Seek for AnimationReader {
         match self {
             Self::Memory(reader) => reader.seek(to),
             Self::Disk(reader) => reader.seek(to),
+            #[cfg(feature = "discord")]
+            Self::Kept(reader) => reader.seek(to),
         }
     }
 }
@@ -1089,18 +1108,19 @@ impl Picture {
         Box::new(frames.take(animation.delays.len()))
     }
 
-    /// Reads an animation's frames from `file` from now on, rather than
-    /// keeping its bytes in memory: `file` is the one it was decoded from,
-    /// kept on disk. A file of another size isn't, and is left alone.
-    pub fn read_from(&mut self, file: PathBuf) {
+    /// Reads an animation's frames from `kept` from now on, rather than
+    /// keeping its bytes in memory: `kept` is the picture it was decoded
+    /// from, kept on disk. One of another size isn't, and is left alone.
+    #[cfg(feature = "discord")]
+    pub fn read_from(&mut self, kept: yapfast_discord::cache::KeptPicture) {
         let Some(animation) = &mut self.animation else {
             return;
         };
         let AnimationFile::Memory(data) = &animation.file else {
             return;
         };
-        if std::fs::metadata(&file).is_ok_and(|kept| kept.len() == data.len() as u64) {
-            animation.file = AnimationFile::Disk(file);
+        if kept.length() == Some(data.len() as u64) {
+            animation.file = AnimationFile::Kept(kept);
         }
     }
 }
@@ -4230,7 +4250,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "discord")]
     fn animations_read_their_frames_from_the_kept_file() {
+        use yapfast_discord::cache::KeptPicture;
         let data = gif(8, 3);
         let mut picture = decode_picture(&data, 360, 270).unwrap();
         let frames: Vec<_> = picture.frames().collect();
@@ -4238,7 +4260,7 @@ mod tests {
         // Another file isn't the one it came from.
         let other = directory.path().join("other.gif");
         std::fs::write(&other, gif(8, 4)).unwrap();
-        picture.read_from(other);
+        picture.read_from(KeptPicture::Plain(other));
         let memory = |picture: &Picture| {
             matches!(
                 picture.animation.as_ref().unwrap().file,
@@ -4248,7 +4270,7 @@ mod tests {
         assert!(memory(&picture));
         let kept = directory.path().join("kept.gif");
         std::fs::write(&kept, &data).unwrap();
-        picture.read_from(kept.clone());
+        picture.read_from(KeptPicture::Plain(kept.clone()));
         assert!(!memory(&picture));
         assert_eq!(picture.frames().collect::<Vec<_>>(), frames);
         // Gone, it has no frames, and its first stays.
