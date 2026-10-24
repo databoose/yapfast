@@ -72,9 +72,11 @@ window at 2× scale.
 ### GPU recovery
 
 The GPU setting and `--renderer gpu` request Skia GPU through an explicit
-`skia-opengl` renderer.
-The generic `skia` renderer would silently substitute a software surface when
-OpenGL fails, so Yapfast owns the fallback instead:
+`skia-opengl` renderer on Linux, and on Windows through the `skia` renderer
+with Direct3D required, which Slint draws through wgpu's Direct3D 12. With
+OpenGL on Windows, NVIDIA's driver kept a core busy while Yapfast drew.
+The generic `skia` renderer without a required API would silently substitute a
+software surface when the GPU fails, so Yapfast owns the fallback instead:
 
 - If window creation, the GPU surface or the event loop fails, Yapfast logs the
   technical reason, releases the session and runtime, and restarts itself with

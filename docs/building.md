@@ -45,9 +45,11 @@ the system's FreeType lacks FreeType's COLRv1 calls, so it drew nothing for the
 COLRv1 build of Noto Color Emoji, the only one Fedora installs. Rust-skia
 builds that Skia only with its text layout, which the linker leaves out, and
 without Vulkan, so the renderer goes without wgpu, whose Vulkan surface needs
-it. Yapfast asks for Skia OpenGL or Skia Software by name; the wgpu renderers
-the winit backend still names make surfaces that fail to start. Without wgpu
-the Discord-only binary is 4.2 MB smaller. Each change is marked `Yapfast:` in
+it. On Linux Yapfast asks for Skia OpenGL or Skia Software by name; the wgpu
+renderers the winit backend still names make surfaces that fail to start.
+Without wgpu the Discord-only binary is 4.2 MB smaller. Windows turns wgpu back
+on through a dependency in Yapfast's own `Cargo.toml`, for Skia GPU on
+Direct3D 12 (see `src/graphics.rs`). Each change is marked `Yapfast:` in
 `itemrenderer.rs`, `cached_image.rs`, `lib.rs`, `font_cache.rs` or
 `Cargo.toml`. Copy the matching release over it, and reapply them, when
 upgrading Slint.

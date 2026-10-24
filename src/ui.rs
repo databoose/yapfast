@@ -112,15 +112,22 @@ pub fn run(
     };
     decode_into_slint_buffers();
     pictures::make_frames_in_slint_buffers();
-    // Request OpenGL explicitly so Slint cannot silently replace a failed GPU
-    // surface; Yapfast owns the fallback and tells the user about it.
-    let renderer = match plan.renderer {
-        graphics::Renderer::Gpu => "skia-opengl",
-        graphics::Renderer::Software => "skia-software",
+    // Request the graphics API explicitly so Slint cannot silently replace a
+    // failed GPU surface; Yapfast owns the fallback and tells the user about it.
+    // Windows draws the GPU setting with Direct3D 12; see [`graphics`].
+    let selector = slint::BackendSelector::new().backend_name("winit".into());
+    let (selector, renderer) = match plan.renderer {
+        graphics::Renderer::Gpu if cfg!(windows) => (
+            selector.renderer_name("skia".into()).require_d3d(),
+            "skia-direct3d",
+        ),
+        graphics::Renderer::Gpu => (selector.renderer_name("skia-opengl".into()), "skia-opengl"),
+        graphics::Renderer::Software => (
+            selector.renderer_name("skia-software".into()),
+            "skia-software",
+        ),
     };
-    slint::BackendSelector::new()
-        .backend_name("winit".into())
-        .renderer_name(renderer.into())
+    selector
         .with_winit_window_attributes_hook(|attributes| {
             crate::instance::attributes(title_bar::attributes(crate::icon::attributes(attributes)))
         })
