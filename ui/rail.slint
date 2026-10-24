@@ -399,11 +399,12 @@ export component ChannelRow inherits Rectangle {
     /// A voice channel with a chat, which a button on the row opens.
     in property <bool> chat;
     /// It may be dragged: once the pointer has moved a few pixels with the
-    /// button down, `start-drag` asks whether it may, `dragged` says where
-    /// the pointer is in the window, and `dropped` that the button went
-    /// up, which doesn't click it.
+    /// button down, `start-drag` asks whether it may, given how far down
+    /// the row it was pressed, `dragged` says where the pointer is in the
+    /// window, and `dropped` that the button went up, which doesn't click
+    /// it.
     in property <bool> draggable;
-    callback start-drag() -> bool;
+    callback start-drag(length) -> bool;
     callback dragged(length);
     callback dropped;
     /// Another row is being dragged, which may have scrolled out of the
@@ -459,7 +460,7 @@ export component ChannelRow inherits Rectangle {
             }
             moved => {
                 if self.pressed && root.draggable && !root.dragging && !root.refused && abs(self.mouse-y - self.pressed-y) > 4px {
-                    root.dragging = root.start-drag();
+                    root.dragging = root.start-drag(self.pressed-y);
                     root.refused = !root.dragging;
                 }
                 if root.dragging { root.dragged(self.absolute-position.y + self.mouse-y); }
@@ -585,7 +586,7 @@ component CategoryHeading inherits Rectangle {
     in property <bool> collapsed;
     /// It may be dragged, as ChannelRow may.
     in property <bool> draggable;
-    callback start-drag() -> bool;
+    callback start-drag(length) -> bool;
     callback dragged(length);
     callback dropped;
     in property <bool> tracking;
@@ -630,7 +631,7 @@ component CategoryHeading inherits Rectangle {
             }
             moved => {
                 if self.pressed && root.draggable && !root.dragging && !root.refused && abs(self.mouse-y - self.pressed-y) > 4px {
-                    root.dragging = root.start-drag();
+                    root.dragging = root.start-drag(self.pressed-y);
                     root.refused = !root.dragging;
                 }
                 if root.dragging { root.dragged(self.absolute-position.y + self.mouse-y); }
@@ -832,7 +833,7 @@ component BrowseLink inherits VerticalLayout {
     }
 }
 
-export component RoomList inherits VerticalLayout {
+export component RoomList inherits Rectangle {
     in property <[RoomRow]> rooms;
     in property <bool> dms-selected;
     in property <bool> discord-linked;
@@ -894,9 +895,15 @@ export component RoomList inherits VerticalLayout {
     property <bool> dragged-voice;
     property <bool> dragged-category;
     property <int> scrolled;
-    function begin(place: int, voice: bool, category: bool) -> bool {
-        root.dragged-voice = voice;
+    // The dragged row, which follows the pointer up and down faintly,
+    // held where it was pressed.
+    property <RoomRow> dragged-row;
+    property <length> grab-y;
+    function begin(place: int, row: RoomRow, category: bool, grab-y: length) -> bool {
+        root.dragged-voice = row.voice && !category;
         root.dragged-category = category;
+        root.dragged-row = row;
+        root.grab-y = grab-y;
         root.hovered = place;
         return root.start-arranging(place);
     }
@@ -932,260 +939,288 @@ export component RoomList inherits VerticalLayout {
     }
     min-height: 96px; vertical-stretch: 1;
     property <bool> screens: root.dms-selected && root.discord-linked && !root.preview;
-    // With no rooms the list is empty; what it would start with shows above it.
-    if root.rooms.length == 0 && (root.screens || root.browse-offered || root.sidebar-empty != ""): VerticalLayout {
-        padding-left: 8px; padding-right: 8px; spacing: 2px;
-        if root.screens: DmScreenLinks {
-            friends-open: root.friends-open; requests-current: root.requests-current; requests-badge: root.requests-badge;
-            open-friends => { root.open-friends(); }
-            open-requests => { root.open-requests(); }
-        }
-        if root.browse-offered: BrowseLink {
-            browsing: root.browsing;
-            open-browse => { root.open-browse(); }
-        }
-        if root.sidebar-empty != "": HorizontalLayout { padding: 8px; Label { text: root.sidebar-empty; } }
-    }
-    // A list view makes only the rows in sight, which matters with hundreds of DMs.
-    list := ListView {
-        vertical-stretch: 1;
-        for room[index] in root.rooms: VerticalLayout {
-            padding-left: 8px; padding-right: 8px;
-            padding-bottom: index == root.rooms.length - 1 ? 12px : 2px;
-            spacing: 2px;
-            if index == 0 && root.screens: DmScreenLinks {
+    VerticalLayout {
+        // With no rooms the list is empty; what it would start with shows above it.
+        if root.rooms.length == 0 && (root.screens || root.browse-offered || root.sidebar-empty != ""): VerticalLayout {
+            padding-left: 8px; padding-right: 8px; spacing: 2px;
+            if root.screens: DmScreenLinks {
                 friends-open: root.friends-open; requests-current: root.requests-current; requests-badge: root.requests-badge;
                 open-friends => { root.open-friends(); }
                 open-requests => { root.open-requests(); }
             }
-            if index == 0 && root.browse-offered: BrowseLink {
+            if root.browse-offered: BrowseLink {
                 browsing: root.browsing;
                 open-browse => { root.open-browse(); }
             }
-            // A server's pinned channels end with a line, as in Discord.
-            if index > 0 && !room.direct && !room.pinned && root.rooms[index - 1].pinned: Rectangle {
-                height: 9px;
-                Rectangle { height: 1px; background: Theme.line; }
-            }
-            // Their heading neither folds nor has a menu.
-            if room.heading != "" && room.pinned && !room.direct: HorizontalLayout {
-                height: 36px; padding-left: 16px;
-                Text {
-                    text: room.heading; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
-                    vertical-alignment: center; overflow: elide; accessible-role: text;
+            if root.sidebar-empty != "": HorizontalLayout { padding: 8px; Label { text: root.sidebar-empty; } }
+        }
+        // A list view makes only the rows in sight, which matters with hundreds of DMs.
+        list := ListView {
+            vertical-stretch: 1;
+            for room[index] in root.rooms: VerticalLayout {
+                padding-left: 8px; padding-right: 8px;
+                padding-bottom: index == root.rooms.length - 1 ? 12px : 2px;
+                spacing: 2px;
+                if index == 0 && root.screens: DmScreenLinks {
+                    friends-open: root.friends-open; requests-current: root.requests-current; requests-badge: root.requests-badge;
+                    open-friends => { root.open-friends(); }
+                    open-requests => { root.open-requests(); }
                 }
-            }
-            if room.heading != "" && !(room.pinned && !room.direct): CategoryHeading {
-                text: room.heading; collapsed: room.collapsed;
-                toggled => { root.toggle-category(room.category); }
-                context-menu(x, y) => { root.open-category-menu(room.id, x, y); }
-                draggable: room.heading-place > 0; tracking: root.arranging > 0;
-                start-drag => { return root.begin(room.heading-place, false, true); }
-                dragged(y) => { root.drag-y = y; }
-                dropped => { root.finish(); }
-                // The pointer is over it, or the gap above it.
-                property <bool> over: root.arranging > 0 && room.heading-place > 0 && root.scrolled >= 0
-                    && root.drag-y >= self.absolute-position.y - 2px && root.drag-y < self.absolute-position.y + self.height;
-                changed over => {
-                    if self.over { root.hovered = room.heading-place; }
-                    else if root.hovered == room.heading-place { root.hovered = 0; }
+                if index == 0 && root.browse-offered: BrowseLink {
+                    browsing: root.browsing;
+                    open-browse => { root.open-browse(); }
                 }
-                // Dragged up, it drops above the row; dragged down, below.
-                if root.aimed(room.heading-place): DropLine {
-                    x: 8px; width: parent.width - 8px;
-                    // The list's first row has no gap above it to draw in.
-                    y: room.heading-place > root.arranging ? parent.height - 1px : index == 0 && !root.browse-offered ? 0px : -3px;
+                // A server's pinned channels end with a line, as in Discord.
+                if index > 0 && !room.direct && !room.pinned && root.rooms[index - 1].pinned: Rectangle {
+                    height: 9px;
+                    Rectangle { height: 1px; background: Theme.line; }
                 }
-            }
-            // A thread hangs from its channel's icon on a line that runs on
-            // to the next of its threads.
-            if !room.hidden && room.thread: HorizontalLayout {
-                spacing: 0px;
-                Rectangle {
-                    width: 28px;
-                    Path {
-                        x: 0px; y: -2px; width: 28px; height: 38px;
-                        viewbox-width: 28; viewbox-height: 38;
-                        commands: room.thread-continues ? "M 18 0 L 18 38 M 18 13 Q 18 19 24 19 L 28 19" : "M 18 0 L 18 13 Q 18 19 24 19 L 28 19";
-                        stroke: Theme.faint; stroke-width: 1.5px;
+                // Their heading neither folds nor has a menu.
+                if room.heading != "" && room.pinned && !room.direct: HorizontalLayout {
+                    height: 36px; padding-left: 16px;
+                    Text {
+                        text: room.heading; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
+                        vertical-alignment: center; overflow: elide; accessible-role: text;
                     }
                 }
-                ChannelRow {
-                    text: room.name; thread: true;
-                    opacity: root.dimmed(false) ? 0.3 : 1;
-                    tracking: root.arranging > 0;
+                if room.heading != "" && !(room.pinned && !room.direct): CategoryHeading {
+                    text: room.heading; collapsed: room.collapsed;
+                    toggled => { root.toggle-category(room.category); }
+                    context-menu(x, y) => { root.open-category-menu(room.id, x, y); }
+                    draggable: room.heading-place > 0; tracking: root.arranging > 0;
+                    start-drag(y) => { return root.begin(room.heading-place, room, true, y); }
                     dragged(y) => { root.drag-y = y; }
                     dropped => { root.finish(); }
-                    label: room.name + ", thread" + (room.muted ? ", muted" : "")
-                        + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
-                    selected: room.selected; unread: room.unread; badge: room.badge; muted: room.muted;
+                    // The pointer is over it, or the gap above it.
+                    property <bool> over: root.arranging > 0 && room.heading-place > 0 && root.scrolled >= 0
+                        && root.drag-y >= self.absolute-position.y - 2px && root.drag-y < self.absolute-position.y + self.height;
+                    changed over => {
+                        if self.over { root.hovered = room.heading-place; }
+                        else if root.hovered == room.heading-place { root.hovered = 0; }
+                    }
+                    // Dragged up, it drops above the row; dragged down, below.
+                    if root.aimed(room.heading-place): DropLine {
+                        x: 8px; width: parent.width - 8px;
+                        // The list's first row has no gap above it to draw in.
+                        y: room.heading-place > root.arranging ? parent.height - 1px : index == 0 && !root.browse-offered ? 0px : -3px;
+                    }
+                }
+                // A thread hangs from its channel's icon on a line that runs on
+                // to the next of its threads.
+                if !room.hidden && room.thread: HorizontalLayout {
+                    spacing: 0px;
+                    Rectangle {
+                        width: 28px;
+                        Path {
+                            x: 0px; y: -2px; width: 28px; height: 38px;
+                            viewbox-width: 28; viewbox-height: 38;
+                            commands: room.thread-continues ? "M 18 0 L 18 38 M 18 13 Q 18 19 24 19 L 28 19" : "M 18 0 L 18 13 Q 18 19 24 19 L 28 19";
+                            stroke: Theme.faint; stroke-width: 1.5px;
+                        }
+                    }
+                    ChannelRow {
+                        text: room.name; thread: true;
+                        opacity: root.dimmed(false) ? 0.3 : 1;
+                        tracking: root.arranging > 0;
+                        dragged(y) => { root.drag-y = y; }
+                        dropped => { root.finish(); }
+                        label: room.name + ", thread" + (room.muted ? ", muted" : "")
+                            + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
+                        selected: room.selected; unread: room.unread; badge: room.badge; muted: room.muted;
+                        clicked => { root.select-room(room.id); }
+                        context-menu(x, y) => { root.open-room-menu(room.id, x, y); }
+                    }
+                }
+                if !room.hidden && !room.thread: ChannelRow {
+                    text: room.name;
+                    label: room.name + (room.discord ? ", Discord" : "")
+                        + (room.presence == "dnd" ? ", do not disturb" : room.presence == "mobile" ? ", online on mobile" : room.presence != "" ? ", " + room.presence : "")
+                        + (room.voice-room != "" ? ", in " + room.voice-channel + " in " + room.voice-server : "")
+                        + (room.detail != "" ? ", " + room.detail : "")
+                        + (room.pinned ? ", pinned" : "") + (room.muted ? ", muted" : "")
+                        + (room.locked ? ", locked" : "") + (room.call ? ", in a call" : "") + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
+                    icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;
+                    chat: room.chat;
+                    open-chat => { root.open-chat(room.id); }
+                    picture: room.picture; picture-url: room.picture-url; discord: room.discord;
+                    selected: room.selected; unread: room.unread; badge: room.badge; locked: room.locked;
+                    call: room.call; presence: room.presence; detail: room.detail; detail-emoji: room.detail-emoji;
+                    voice-channel: room.voice-channel; voice-server: room.voice-server;
+                    // Discord doesn't dim a muted voice channel, only a text one.
+                    pinned: room.pinned && room.direct; muted: room.muted && !room.voice;
                     clicked => { root.select-room(room.id); }
+                    open-voice => { root.open-voice(room.voice-room); }
                     context-menu(x, y) => { root.open-room-menu(room.id, x, y); }
+                    opacity: root.dimmed(room.voice) ? 0.3 : 1;
+                    draggable: room.place > 0; tracking: root.arranging > 0;
+                    start-drag(y) => { return root.begin(room.place, room, false, y); }
+                    dragged(y) => { root.drag-y = y; }
+                    dropped => { root.finish(); }
+                    // Who is in a voice channel lists under it, as part of it.
+                    property <length> people: !room.voice ? 0px
+                        : room.id == root.voice-channel ? root.participants.length * 30px + 4px
+                        : room.people.length > 0 ? room.people.length * 30px + 4px : 0px;
+                    property <bool> over: root.arranging > 0 && room.place > 0 && root.scrolled >= 0
+                        && root.drag-y >= self.absolute-position.y - 2px && root.drag-y < self.absolute-position.y + self.height + self.people;
+                    changed over => {
+                        if self.over { root.hovered = room.place; }
+                        else if root.hovered == room.place { root.hovered = 0; }
+                    }
+                    if root.aimed(room.place): DropLine {
+                        x: 8px; width: parent.width - 8px;
+                        y: room.place < root.arranging ? -3px : parent.height + parent.people - 1px;
+                    }
                 }
+                // Discord reports who is in every voice channel; Matrix
+                // only shows the call Yapfast is in, below.
+                if room.voice && room.id != root.voice-channel && room.people.length > 0: VerticalLayout {
+                    padding-left: 32px; padding-bottom: 4px; spacing: 0px;
+                    for person in room.people: Rectangle {
+                        // A click opens their profile beside the row and a right
+                        // click their menu, as in Discord; their LIVE tag watches
+                        // their stream. This account in the call on another
+                        // client is dimmed until hovered, without its icons.
+                        property <string> tip: person.elsewhere ? "Connected on another client" : "";
+                        height: 30px; border-radius: 4px;
+                        background: person-touch.has-hover ? Theme.hover : transparent;
+                        animate background { duration: 90ms; }
+                        opacity: person.elsewhere && !person-touch.has-hover ? 0.5 : 1;
+                        accessible-role: button;
+                        accessible-label: person.elsewhere ? person.name + ", connected on another client" : person.name;
+                        accessible-description: "Show their profile";
+                        accessible-action-default => {
+                            root.open-voice-profile(person, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+                        }
+                        person-touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.open-voice-profile(person, parent.absolute-position.x, parent.absolute-position.y, parent.width, parent.height);
+                            }
+                            pointer-event(event) => {
+                                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                                    root.open-voice-menu(room.id, person, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                }
+                            }
+                            changed has-hover => {
+                                if self.has-hover && parent.tip != "" {
+                                    Tip.text = parent.tip; Tip.side = 0;
+                                    Tip.x = parent.absolute-position.x + parent.width / 2; Tip.y = parent.absolute-position.y;
+                                } else if parent.tip != "" && Tip.text == parent.tip {
+                                    Tip.text = "";
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px; padding-left: 4px; padding-right: 8px;
+                            Middle { Avatar { size: 22px; initial: person.initial; tint: person.tint; picture: person.picture; } }
+                            Text {
+                                text: person.name; font-size: 15px; font-weight: 500; color: Theme.secondary;
+                                vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+                            }
+                            if person.video && !person.elsewhere: Image {
+                                source: @image-url("icons/video.svg"); width: 16px; image-fit: contain;
+                                colorize: Theme.muted; accessible-role: image; accessible-label: person.name + "'s camera is on";
+                            }
+                            if person.live && !person.elsewhere: Middle {
+                                LivePill {
+                                    clickable: !person.local; label: "Watch " + person.name + "'s stream";
+                                    clicked => { root.show-voice-person(room.id, person.id); }
+                                }
+                            }
+                            if (person.muted || person.deafened) && !person.elsewhere: Image {
+                                source: @image-url("icons/mic-off.svg"); width: 16px; image-fit: contain;
+                                colorize: person.server-muted ? Theme.danger : Theme.muted; accessible-role: image;
+                                accessible-label: person.name + (person.server-muted ? " is server muted" : " is muted");
+                            }
+                            if person.deafened && !person.elsewhere: Image {
+                                source: @image-url("icons/headphone-off.svg"); width: 16px; image-fit: contain;
+                                colorize: person.server-deafened ? Theme.danger : Theme.muted; accessible-role: image;
+                                accessible-label: person.name + (person.server-deafened ? " is server deafened" : " is deafened");
+                            }
+                        }
+                    }
+                }
+                if room.voice && room.id == root.voice-channel: VerticalLayout {
+                    padding-left: 32px; padding-bottom: 4px; spacing: 0px;
+                    for person in root.participants: Rectangle {
+                        // A click opens their profile and a right click their
+                        // menu, as above.
+                        height: 30px; border-radius: 4px;
+                        background: participant-touch.has-hover ? Theme.hover : transparent;
+                        animate background { duration: 90ms; }
+                        accessible-role: button; accessible-label: person.name;
+                        accessible-description: "Show their profile";
+                        accessible-action-default => {
+                            root.open-voice-profile(person, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+                        }
+                        participant-touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.open-voice-profile(person, parent.absolute-position.x, parent.absolute-position.y, parent.width, parent.height);
+                            }
+                            pointer-event(event) => {
+                                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                                    root.open-voice-menu(root.voice-channel, person, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px; padding-left: 4px; padding-right: 8px;
+                            Middle { Avatar { size: 22px; initial: person.initial; tint: person.tint; picture: person.picture; speaking: person.speaking; } }
+                            Text {
+                                text: person.name; font-size: 15px; font-weight: person.speaking ? 700 : 500;
+                                color: person.speaking ? Theme.text : person.connected ? Theme.secondary : Theme.muted;
+                                vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+                            }
+                            if person.video: Image {
+                                source: @image-url("icons/video.svg"); width: 16px; image-fit: contain;
+                                colorize: Theme.muted; accessible-role: image; accessible-label: person.name + "'s camera is on";
+                            }
+                            if person.live: Middle {
+                                LivePill {
+                                    clickable: !person.local; label: "Watch " + person.name + "'s stream";
+                                    clicked => { root.show-voice-person(room.id, person.id); }
+                                }
+                            }
+                            if person.muted || person.deafened: Image {
+                                source: @image-url("icons/mic-off.svg"); width: 16px; image-fit: contain;
+                                colorize: person.server-muted ? Theme.danger : Theme.muted; accessible-role: image;
+                                accessible-label: person.name + (person.server-muted ? " is server muted" : " is muted");
+                            }
+                            if person.deafened: Image {
+                                source: @image-url("icons/headphone-off.svg"); width: 16px; image-fit: contain;
+                                colorize: person.server-deafened ? Theme.danger : Theme.muted; accessible-role: image;
+                                accessible-label: person.name + (person.server-deafened ? " is server deafened" : " is deafened");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // What's dragged follows the pointer, faint, as a browser draws it.
+    if root.arranging > 0: Rectangle {
+        x: 8px; y: root.drag-y - root.absolute-position.y - root.grab-y;
+        width: root.width - 16px; height: root.dragged-category ? 36px : 34px;
+        border-radius: root.dragged-category ? 4px : 6px;
+        background: Theme.active; opacity: 0.6;
+        if root.dragged-category: HorizontalLayout {
+            padding-left: 2px; spacing: 2px;
+            Image {
+                source: root.dragged-row.collapsed ? @image-url("icons/chevron-right.svg") : @image-url("icons/chevron-down.svg");
+                width: 12px; image-fit: contain; colorize: Theme.secondary;
             }
-            if !room.hidden && !room.thread: ChannelRow {
-                text: room.name;
-                label: room.name + (room.discord ? ", Discord" : "")
-                    + (room.presence == "dnd" ? ", do not disturb" : room.presence == "mobile" ? ", online on mobile" : room.presence != "" ? ", " + room.presence : "")
-                    + (room.voice-room != "" ? ", in " + room.voice-channel + " in " + room.voice-server : "")
-                    + (room.detail != "" ? ", " + room.detail : "")
-                    + (room.pinned ? ", pinned" : "") + (room.muted ? ", muted" : "")
-                    + (room.locked ? ", locked" : "") + (room.call ? ", in a call" : "") + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
-                icon: room.icon; person: room.direct; initial: room.initial; tint: room.tint;
-                chat: room.chat;
-                open-chat => { root.open-chat(room.id); }
-                picture: room.picture; picture-url: room.picture-url; discord: room.discord;
-                selected: room.selected; unread: room.unread; badge: room.badge; locked: room.locked;
-                call: room.call; presence: room.presence; detail: room.detail; detail-emoji: room.detail-emoji;
-                voice-channel: room.voice-channel; voice-server: room.voice-server;
-                // Discord doesn't dim a muted voice channel, only a text one.
-                pinned: room.pinned && room.direct; muted: room.muted && !room.voice;
-                clicked => { root.select-room(room.id); }
-                open-voice => { root.open-voice(room.voice-room); }
-                context-menu(x, y) => { root.open-room-menu(room.id, x, y); }
-                opacity: root.dimmed(room.voice) ? 0.3 : 1;
-                draggable: room.place > 0; tracking: root.arranging > 0;
-                start-drag => { return root.begin(room.place, room.voice, false); }
-                dragged(y) => { root.drag-y = y; }
-                dropped => { root.finish(); }
-                // Who is in a voice channel lists under it, as part of it.
-                property <length> people: !room.voice ? 0px
-                    : room.id == root.voice-channel ? root.participants.length * 30px + 4px
-                    : room.people.length > 0 ? room.people.length * 30px + 4px : 0px;
-                property <bool> over: root.arranging > 0 && room.place > 0 && root.scrolled >= 0
-                    && root.drag-y >= self.absolute-position.y - 2px && root.drag-y < self.absolute-position.y + self.height + self.people;
-                changed over => {
-                    if self.over { root.hovered = room.place; }
-                    else if root.hovered == room.place { root.hovered = 0; }
-                }
-                if root.aimed(room.place): DropLine {
-                    x: 8px; width: parent.width - 8px;
-                    y: room.place < root.arranging ? -3px : parent.height + parent.people - 1px;
-                }
+            Text {
+                text: root.dragged-row.heading; color: Theme.secondary; font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
+                vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
             }
-            // Discord reports who is in every voice channel; Matrix
-            // only shows the call Yapfast is in, below.
-            if room.voice && room.id != root.voice-channel && room.people.length > 0: VerticalLayout {
-                padding-left: 32px; padding-bottom: 4px; spacing: 0px;
-                for person in room.people: Rectangle {
-                    // A click opens their profile beside the row and a right
-                    // click their menu, as in Discord; their LIVE tag watches
-                    // their stream. This account in the call on another
-                    // client is dimmed until hovered, without its icons.
-                    property <string> tip: person.elsewhere ? "Connected on another client" : "";
-                    height: 30px; border-radius: 4px;
-                    background: person-touch.has-hover ? Theme.hover : transparent;
-                    animate background { duration: 90ms; }
-                    opacity: person.elsewhere && !person-touch.has-hover ? 0.5 : 1;
-                    accessible-role: button;
-                    accessible-label: person.elsewhere ? person.name + ", connected on another client" : person.name;
-                    accessible-description: "Show their profile";
-                    accessible-action-default => {
-                        root.open-voice-profile(person, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
-                    }
-                    person-touch := TouchArea {
-                        mouse-cursor: MouseCursor.pointer;
-                        clicked => {
-                            root.open-voice-profile(person, parent.absolute-position.x, parent.absolute-position.y, parent.width, parent.height);
-                        }
-                        pointer-event(event) => {
-                            if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
-                                root.open-voice-menu(room.id, person, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
-                            }
-                        }
-                        changed has-hover => {
-                            if self.has-hover && parent.tip != "" {
-                                Tip.text = parent.tip; Tip.side = 0;
-                                Tip.x = parent.absolute-position.x + parent.width / 2; Tip.y = parent.absolute-position.y;
-                            } else if parent.tip != "" && Tip.text == parent.tip {
-                                Tip.text = "";
-                            }
-                        }
-                    }
-                    HorizontalLayout {
-                        spacing: 8px; padding-left: 4px; padding-right: 8px;
-                        Middle { Avatar { size: 22px; initial: person.initial; tint: person.tint; picture: person.picture; } }
-                        Text {
-                            text: person.name; font-size: 15px; font-weight: 500; color: Theme.secondary;
-                            vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
-                        }
-                        if person.video && !person.elsewhere: Image {
-                            source: @image-url("icons/video.svg"); width: 16px; image-fit: contain;
-                            colorize: Theme.muted; accessible-role: image; accessible-label: person.name + "'s camera is on";
-                        }
-                        if person.live && !person.elsewhere: Middle {
-                            LivePill {
-                                clickable: !person.local; label: "Watch " + person.name + "'s stream";
-                                clicked => { root.show-voice-person(room.id, person.id); }
-                            }
-                        }
-                        if (person.muted || person.deafened) && !person.elsewhere: Image {
-                            source: @image-url("icons/mic-off.svg"); width: 16px; image-fit: contain;
-                            colorize: person.server-muted ? Theme.danger : Theme.muted; accessible-role: image;
-                            accessible-label: person.name + (person.server-muted ? " is server muted" : " is muted");
-                        }
-                        if person.deafened && !person.elsewhere: Image {
-                            source: @image-url("icons/headphone-off.svg"); width: 16px; image-fit: contain;
-                            colorize: person.server-deafened ? Theme.danger : Theme.muted; accessible-role: image;
-                            accessible-label: person.name + (person.server-deafened ? " is server deafened" : " is deafened");
-                        }
-                    }
-                }
-            }
-            if room.voice && room.id == root.voice-channel: VerticalLayout {
-                padding-left: 32px; padding-bottom: 4px; spacing: 0px;
-                for person in root.participants: Rectangle {
-                    // A click opens their profile and a right click their
-                    // menu, as above.
-                    height: 30px; border-radius: 4px;
-                    background: participant-touch.has-hover ? Theme.hover : transparent;
-                    animate background { duration: 90ms; }
-                    accessible-role: button; accessible-label: person.name;
-                    accessible-description: "Show their profile";
-                    accessible-action-default => {
-                        root.open-voice-profile(person, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
-                    }
-                    participant-touch := TouchArea {
-                        mouse-cursor: MouseCursor.pointer;
-                        clicked => {
-                            root.open-voice-profile(person, parent.absolute-position.x, parent.absolute-position.y, parent.width, parent.height);
-                        }
-                        pointer-event(event) => {
-                            if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
-                                root.open-voice-menu(root.voice-channel, person, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
-                            }
-                        }
-                    }
-                    HorizontalLayout {
-                        spacing: 8px; padding-left: 4px; padding-right: 8px;
-                        Middle { Avatar { size: 22px; initial: person.initial; tint: person.tint; picture: person.picture; speaking: person.speaking; } }
-                        Text {
-                            text: person.name; font-size: 15px; font-weight: person.speaking ? 700 : 500;
-                            color: person.speaking ? Theme.text : person.connected ? Theme.secondary : Theme.muted;
-                            vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
-                        }
-                        if person.video: Image {
-                            source: @image-url("icons/video.svg"); width: 16px; image-fit: contain;
-                            colorize: Theme.muted; accessible-role: image; accessible-label: person.name + "'s camera is on";
-                        }
-                        if person.live: Middle {
-                            LivePill {
-                                clickable: !person.local; label: "Watch " + person.name + "'s stream";
-                                clicked => { root.show-voice-person(room.id, person.id); }
-                            }
-                        }
-                        if person.muted || person.deafened: Image {
-                            source: @image-url("icons/mic-off.svg"); width: 16px; image-fit: contain;
-                            colorize: person.server-muted ? Theme.danger : Theme.muted; accessible-role: image;
-                            accessible-label: person.name + (person.server-muted ? " is server muted" : " is muted");
-                        }
-                        if person.deafened: Image {
-                            source: @image-url("icons/headphone-off.svg"); width: 16px; image-fit: contain;
-                            colorize: person.server-deafened ? Theme.danger : Theme.muted; accessible-role: image;
-                            accessible-label: person.name + (person.server-deafened ? " is server deafened" : " is deafened");
-                        }
-                    }
-                }
+        }
+        if !root.dragged-category: HorizontalLayout {
+            padding-left: 8px; padding-right: 8px; spacing: 8px;
+            Image { source: root.dragged-row.icon; width: 20px; image-fit: contain; colorize: Theme.secondary; }
+            Text {
+                text: root.dragged-row.name; color: Theme.text; font-size: 16px; font-weight: 500;
+                vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
             }
         }
     }
