@@ -1040,10 +1040,10 @@ export component SoundSettings inherits VerticalLayout {
     callback each-changed(int, int);
     /// Plays a sound by its index in `names`, as it's set.
     callback play(int);
-    property <[string]> names: ["Someone joins the call", "Someone leaves the call", "Muting", "Unmuting", "Deafening", "Undeafening", "A message", "A mention", "Someone starts watching a stream", "Someone stops watching a stream", "Someone starts streaming"];
+    property <[string]> names: ["Someone joins the call", "Someone leaves the call", "Muting", "Unmuting", "Deafening", "Undeafening", "A message", "A mention", "Someone starts watching a stream", "Someone stops watching a stream", "Someone starts streaming", "Someone stops streaming"];
     spacing: 16px;
     SettingsTitle { text: "Sounds"; }
-    Label { text: "Yapfast plays these as you and others join and leave a call, as you mute and deafen, as others go live and start and stop watching your stream or the one you watch, and for messages that notify, except in the conversation in front of you. They play on the speakers chosen for calls."; }
+    Label { text: "Yapfast plays these as you and others join and leave a call, as you mute and deafen, as others start and stop streaming, as they start and stop watching your stream or the one you watch, and for messages that notify, except in the conversation in front of you. They play on the speakers chosen for calls."; }
     VerticalLayout {
         spacing: 8px;
         SettingsHeading { text: "SOUND SET"; }

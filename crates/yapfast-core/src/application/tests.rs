@@ -2196,7 +2196,7 @@ fn streams_sound_as_others_start_and_stop_watching() {
 }
 
 #[test]
-fn others_going_live_sounds_but_not_as_anyone_arrives_streaming() {
+fn others_going_live_and_ending_sounds_but_not_as_anyone_comes_or_goes_streaming() {
     let mut app = connected();
     let person = |id: &str, local: bool, streaming: bool| voice::Participant {
         id: id.into(),
@@ -2234,14 +2234,24 @@ fn others_going_live_sounds_but_not_as_anyone_arrives_streaming() {
         heard(call(false, &[("sam", true), ("kim", true)])),
         [Sound::Join]
     );
-    assert_eq!(heard(call(false, &[("sam", true), ("kim", false)])), []);
+    assert_eq!(
+        heard(call(false, &[("sam", true), ("kim", false)])),
+        [Sound::StreamStop]
+    );
     assert_eq!(
         heard(call(false, &[("sam", true), ("kim", true)])),
         [Sound::StreamStart]
     );
     assert_eq!(heard(call(false, &[("sam", true), ("kim", true)])), []);
-    // This account going live makes none.
-    assert_eq!(heard(call(true, &[("sam", true), ("kim", true)])), []);
+    assert_eq!(
+        heard(call(false, &[("sam", false), ("kim", true)])),
+        [Sound::StreamStop]
+    );
+    // Kim leaving mid-stream makes only the sound of leaving.
+    assert_eq!(heard(call(false, &[("sam", false)])), [Sound::Leave]);
+    // This account going live and ending makes none.
+    assert_eq!(heard(call(true, &[("sam", false)])), []);
+    assert_eq!(heard(call(false, &[("sam", false)])), []);
 }
 
 #[test]

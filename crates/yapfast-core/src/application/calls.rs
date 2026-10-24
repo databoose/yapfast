@@ -4,8 +4,8 @@ use super::*;
 use crate::sounds::Sound;
 
 /// The sound a change in the call makes: this account joining or leaving it,
-/// or, while it's there, someone else connecting or going, or starting a
-/// stream. People arriving together make one sound. Reconnecting makes none,
+/// or, while it's there, someone else connecting or going, or starting or
+/// stopping a stream. People arriving together make one sound. Reconnecting makes none,
 /// and nor do those a DM call is still ringing, until they answer.
 pub(super) fn call_sounds(before: &voice::State, after: &voice::State) -> Vec<Effect> {
     let here = |state: &voice::State| matches!(state.phase, Phase::Connected | Phase::Reconnecting);
@@ -39,9 +39,10 @@ pub(super) fn call_sounds(before: &voice::State, after: &voice::State) -> Vec<Ef
     sound.map(Effect::Sound).into_iter().collect()
 }
 
-/// Someone else already in the call going live. Those streaming as this
-/// account arrives, or as they arrive, make only the sound of joining, which
-/// comes first.
+/// Someone else already in the call going live, or ending their stream.
+/// Those streaming as this account arrives, or as they arrive, make only the
+/// sound of joining, and those leaving mid-stream the sound of leaving, which
+/// come first.
 fn stream_sound(before: &voice::State, after: &voice::State) -> Option<Sound> {
     if before.phase != Phase::Connected
         || after.phase != Phase::Connected
@@ -58,7 +59,13 @@ fn stream_sound(before: &voice::State, after: &voice::State) -> Option<Sound> {
             .collect()
     }
     let (before, after) = (streaming(before), streaming(after));
-    (!after.is_subset(&before)).then_some(Sound::StreamStart)
+    if !after.is_subset(&before) {
+        Some(Sound::StreamStart)
+    } else if !before.is_subset(&after) {
+        Some(Sound::StreamStop)
+    } else {
+        None
+    }
 }
 
 /// Someone else starting or stopping watching this account's stream, or the

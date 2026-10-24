@@ -574,7 +574,10 @@ fn each_sounds_own_volume_counts_only_while_adjusting_each() {
     assert_eq!(window.get_sound_volume(), 50);
     assert!(window.get_adjust_each_sound());
     let each: Vec<i32> = window.get_each_sound().iter().collect();
-    assert_eq!(each, [100, 100, 50, 100, 100, 100, 100, 100, 100, 100, 100]);
+    assert_eq!(
+        each,
+        [100, 100, 50, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+    );
     let saved = serde_json::to_value(&layout).unwrap();
     assert_eq!(saved["sound_set"], "rhodes");
     assert_eq!(saved["each_sound"]["mute"], 50);
