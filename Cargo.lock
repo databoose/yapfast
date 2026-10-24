@@ -11231,6 +11231,7 @@ dependencies = [
  "tracing",
  "wayland-backend",
  "wayland-client",
+ "wayland-protocols",
  "wayland-scanner",
  "webbrowser",
  "windows-sys 0.61.2",

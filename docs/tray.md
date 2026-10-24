@@ -12,6 +12,29 @@ closing the window quits Yapfast, as it did before; the setting's description
 says when there's no tray. A tray that starts after Yapfast, or comes back,
 still gets the icon.
 
+## Starting again
+
+Starting Yapfast while it runs on the same data folder brings the running
+one's window forward, making it again if it was closed to the tray, and the
+new start ends (`src/instance.rs`). A start with `--background`, as at
+sign-in, just ends. Settings → Advanced → "Allow multiple windows"
+(`multiple_windows` in `layout.json`, off unless turned on) starts another
+Yapfast instead, with its own window and tray icon. Each folder is its own:
+another `--data-dir` always starts. The preview never asks.
+
+The first start holds a lock on `instance.lock` in the folder, which the
+system lets go of when the process ends, so a crash leaves nothing to clean
+up. It listens on `instance.socket` beside it on Linux; on Windows on a
+named event, `Local\yapfast-` and a hash of the folder's path. A later start
+that finds the lock taken asks for the window there, trying for 5 seconds
+while the first may still be starting or restarting with another renderer,
+and starts anyway if nothing answers. On Linux it passes on the activation
+token the desktop launched it with (`XDG_ACTIVATION_TOKEN` on Wayland,
+`DESKTOP_STARTUP_ID` on X11), so the window can take the focus: a window made
+again takes it through winit, and a shown one through Yapfast's own
+`xdg_activation_v1` on winit's Wayland connection. On Windows the later start
+lets any process take the foreground, which the first then does.
+
 ## Starting at sign-in
 
 Settings → Advanced → "Start when you sign in" starts Yapfast with

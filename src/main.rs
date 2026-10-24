@@ -23,6 +23,8 @@ mod graphics;
 #[cfg(feature = "desktop")]
 mod icon;
 #[cfg(feature = "desktop")]
+mod instance;
+#[cfg(feature = "desktop")]
 mod notify;
 #[cfg(feature = "desktop")]
 mod paste;

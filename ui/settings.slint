@@ -1085,6 +1085,7 @@ export component AdvancedSettings inherits VerticalLayout {
     in property <bool> gpu-running;
     in-out property <bool> close-to-tray;
     in property <bool> tray-available;
+    in-out property <bool> multiple-windows;
     in-out property <bool> start-on-sign-in;
     in property <bool> autostart-available;
     callback preferences-changed;
@@ -1103,6 +1104,12 @@ export component AdvancedSettings inherits VerticalLayout {
             ? "Closing the window keeps Yapfast running in the system tray, with any call. Quit from the tray icon's menu."
             : "No system tray is running, so closing the window quits Yapfast.";
         checked <=> root.close-to-tray;
+        toggled => { root.preferences-changed(); }
+    }
+    SettingsSwitch {
+        text: "Allow multiple windows";
+        description: "Starting Yapfast while it runs opens another Yapfast, with its own window and tray icon. Off, it brings the open window forward.";
+        checked <=> root.multiple-windows;
         toggled => { root.preferences-changed(); }
     }
     SettingsSwitch {

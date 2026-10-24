@@ -17,7 +17,7 @@ default = ["desktop", "matrix", "discord"]
 # Each network is optional, so a build can carry Matrix, Discord or both.
 matrix = ["yapfast-core/matrix"]
 discord = ["yapfast-core/discord", "dep:qrcode"]
-desktop = ["dep:slint", "dep:yapfast-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis", "dep:webbrowser", "dep:i-slint-core", "dep:zbus", "dep:arboard", "dep:image", "dep:tempfile", "dep:wl-clipboard-rs", "dep:wayland-client", "dep:wayland-backend", "dep:ksni", "dep:windows-sys", "dep:futures-util", "dep:x11rb", "dep:xkeysym"]
+desktop = ["dep:slint", "dep:yapfast-ui", "dep:skia-safe", "dep:rfd", "dep:memmap2", "dep:emojis", "dep:webbrowser", "dep:i-slint-core", "dep:zbus", "dep:arboard", "dep:image", "dep:tempfile", "dep:wl-clipboard-rs", "dep:wayland-client", "dep:wayland-backend", "dep:wayland-protocols", "dep:ksni", "dep:windows-sys", "dep:futures-util", "dep:x11rb", "dep:xkeysym"]
 # The desktop app with a window that reloads ui/ on each save, for UI work;
 # see docs/building.md.
 live-preview = ["desktop", "yapfast-ui/live-preview"]
@@ -63,6 +63,9 @@ wl-clipboard-rs = { version = "0.9.4", optional = true }
 # device on winit's own connection; see src/drop.rs. Already in the tree through winit.
 wayland-client = { version = "0.31.15", optional = true }
 wayland-backend = { version = "0.3.17", features = ["client_system"], optional = true }
+# Bringing the window forward when Yapfast starts again, with the token the
+# desktop gave that start; see src/instance.rs. Already in the tree through winit.
+wayland-protocols = { version = "0.32.13", features = ["client", "staging"], optional = true }
 # The tray icon, as a StatusNotifierItem on the same bus; pure Rust, on the zbus above.
 ksni = { version = "0.3.6", default-features = false, features = ["async-io", "blocking"], optional = true }
 # The push-to-talk key in any app: the GlobalShortcuts portal's signals as a
@@ -72,10 +75,10 @@ futures-util = { workspace = true, optional = true }
 x11rb = { version = "0.13.2", default-features = false, features = ["xinput"], optional = true }
 xkeysym = { version = "0.2.1", optional = true }
 
-# The tray icon and giving memory back while the window is closed. Already in the tree
-# through winit.
+# The tray icon, giving memory back while the window is closed, and the event a
+# later start sets to show the window. Already in the tree through winit.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"], optional = true }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_Security", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"], optional = true }
 
 # A stand-in tray on the private test bus; see testing/tray_host.rs.
 [[example]]

@@ -324,6 +324,30 @@ pub(super) fn remake_window() {
     }
 }
 
+/// Yapfast started again on this folder, and the new start asked for the
+/// window: shows it, taking the focus with the token the desktop gave that
+/// start.
+pub(super) fn launched(token: Option<String>) {
+    let Some(shell) = SHELL.with(|shell| shell.borrow().upgrade()) else {
+        return;
+    };
+    tracing::info!("Yapfast started again; showing the window");
+    let Some(window) = shell.window() else {
+        crate::instance::give_next_window(token);
+        shell.open();
+        return;
+    };
+    shell.open();
+    #[cfg(target_os = "linux")]
+    if let Some(token) = token {
+        window
+            .window()
+            .with_winit_window(|winit| crate::instance::activate(winit, &token));
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (window, token);
+}
+
 /// What the person chose in the tray.
 fn chosen(choice: Choice) {
     let Some(shell) = SHELL.with(|shell| shell.borrow().upgrade()) else {

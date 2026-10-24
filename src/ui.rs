@@ -92,15 +92,23 @@ pub fn run(
     gpu_failure: Option<String>,
     background: bool,
 ) -> Result<Exit> {
-    let (plan, placement, system_title_bar) = {
+    let (plan, placement, system_title_bar, mut instance) = {
         let mut layout = Layout::read(&root);
+        let instance = if preview {
+            crate::instance::Instance::default()
+        } else {
+            match crate::instance::claim(&root, !layout.multiple_windows, background) {
+                crate::instance::Start::Run(instance) => instance,
+                crate::instance::Start::Handed => return Ok(Exit::Closed),
+            }
+        };
         let plan = graphics::plan(renderer, layout.gpu_rendering, gpu_failure);
         if plan.forget_gpu {
             layout.gpu_rendering = false;
             layout.write(&root);
         }
         title_bar::choose(layout.system_title_bar);
-        (plan, layout.window, layout.system_title_bar)
+        (plan, layout.window, layout.system_title_bar, instance)
     };
     decode_into_slint_buffers();
     pictures::make_frames_in_slint_buffers();
@@ -114,7 +122,7 @@ pub fn run(
         .backend_name("winit".into())
         .renderer_name(renderer.into())
         .with_winit_window_attributes_hook(|attributes| {
-            title_bar::attributes(crate::icon::attributes(attributes))
+            crate::instance::attributes(title_bar::attributes(crate::icon::attributes(attributes)))
         })
         .select()
         .context("could not select the Slint desktop backend")?;
@@ -191,6 +199,9 @@ pub fn run(
     if hidden {
         shell.start_in_tray();
     }
+    instance.listen(|token| {
+        let _ = slint::invoke_from_event_loop(move || shell::launched(token));
+    });
     tracing::info!(renderer, hidden, "starting the Slint desktop window");
     let _control = test_control().map(|path| control(path, shell.clone()));
     // Until quit: closing the window to the tray doesn't end Yapfast.
@@ -940,6 +951,9 @@ struct Layout {
     custom_themes: Vec<theme::Custom>,
     /// Closing the window leaves Yapfast in the system tray; on unless turned off.
     close_to_tray: Option<bool>,
+    /// Starting Yapfast again on this folder starts another, rather than
+    /// showing the running one's window; see [`crate::instance`].
+    multiple_windows: bool,
     /// The desktop draws the window's title bar; unset, Yapfast draws its own
     /// on desktops that give windows one. See [`title_bar`].
     system_title_bar: Option<bool>,
@@ -1151,6 +1165,7 @@ impl Layout {
         window.set_adjust_each_sound(self.adjust_each_sound);
         window.set_gpu_rendering(self.gpu_rendering);
         window.set_close_to_tray(self.close_to_tray.unwrap_or(true));
+        window.set_multiple_windows(self.multiple_windows);
         title_bar::show(window, self.system_title_bar);
         let each: Vec<i32> = Sound::ALL
             .iter()
