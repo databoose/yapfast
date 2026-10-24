@@ -187,104 +187,112 @@ export global VideoPlayer {
 }
 
 // A playing video's controls: play or pause, its time, a bar to move
-// through it, mute, and full screen.
-component VideoControls inherits HorizontalLayout {
-    padding-left: 4px; padding-right: 6px; spacing: 6px;
-    Middle {
-        IconButton {
-            size: 28px; glyph: 16px; tint: #ffffff; tip-side: 0;
-            icon: VideoPlayer.playing ? @image-url("icons/pause.svg") : @image-url("icons/play.svg");
-            label: VideoPlayer.playing ? "Pause" : "Play";
-            clicked => { VideoPlayer.toggle(); }
-        }
-    }
-    Text { text: VideoPlayer.time; color: #ffffff; font-size: 12px; vertical-alignment: center; }
-    Rectangle {
-        horizontal-stretch: 1;
-        accessible-role: slider;
-        accessible-label: "Position";
-        accessible-value: round(VideoPlayer.progress * 100) + "%";
-        Rectangle {
-            height: 4px; border-radius: 2px; background: #ffffff4d;
-            Rectangle { x: 0; width: parent.width * clamp(VideoPlayer.progress, 0, 1); border-radius: 2px; background: #ffffff; }
-        }
-        TouchArea {
-            mouse-cursor: MouseCursor.pointer;
-            clicked => { VideoPlayer.seek(clamp(self.mouse-x / self.width, 0, 1)); }
-            moved => { if self.pressed { VideoPlayer.seek(clamp(self.mouse-x / self.width, 0, 1)); } }
-        }
-    }
-    // Mute, with a slider over it for how loud, while the pointer is on
-    // either; the wheel turns it too.
-    if VideoPlayer.sound: Rectangle {
-        width: 28px;
-        sound := TouchArea {
-            property <bool> open: self.has-hover || level.pressed;
-            property <length> rise: 112px;
-            property <float> shown: level.pressed ? level.dragged : VideoPlayer.muted ? 0 : VideoPlayer.volume;
-            y: (parent.height - 28px) / 2 - (self.open ? self.rise : 0px);
-            height: 28px + (self.open ? self.rise : 0px);
-            scroll-event(event) => {
-                if event.delta-y == 0 { return reject; }
-                VideoPlayer.change-volume(clamp(self.shown + (event.delta-y > 0 ? 0.05 : -0.05), 0, 1));
-                return accept;
-            }
-            Rectangle {
-                y: 0; width: 28px; height: sound.rise - 4px;
-                visible: sound.open;
-                border-radius: 6px; background: #000000cc;
-                accessible-role: slider;
-                accessible-label: "Volume";
-                accessible-value: round(sound.shown * 100) + "%";
-                accessible-value-minimum: 0;
-                accessible-value-maximum: 100;
-                accessible-action-set-value(value) => { VideoPlayer.change-volume(clamp(value.to-float() / 100, 0, 1)); }
-                track := Rectangle {
-                    x: (parent.width - self.width) / 2; y: 14px; width: 4px; height: parent.height - 28px;
-                    border-radius: 2px; background: #ffffff4d;
-                    Rectangle {
-                        y: parent.height * (1 - sound.shown); height: parent.height * sound.shown;
-                        border-radius: 2px; background: #ffffff;
-                    }
-                    Rectangle {
-                        width: 12px; height: 12px; border-radius: 6px; background: #ffffff;
-                        x: (parent.width - self.width) / 2; y: parent.height * (1 - sound.shown) - self.height / 2;
-                    }
-                }
-                level := TouchArea {
-                    enabled: sound.open;
-                    mouse-cursor: MouseCursor.pointer;
-                    property <float> dragged;
-                    property <float> at: clamp(1 - (self.mouse-y - track.y) / track.height, 0, 1);
-                    pointer-event(event) => {
-                        if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                            self.dragged = self.at;
-                            VideoPlayer.change-volume(self.at);
-                        }
-                    }
-                    moved => {
-                        if self.pressed {
-                            self.dragged = self.at;
-                            VideoPlayer.change-volume(self.at);
-                        }
-                    }
-                }
-            }
+// through it, mute, and full screen. A narrow video, such as one filmed
+// upright, leaves out the time and then mute, so full screen stays in it.
+component VideoControls inherits Rectangle {
+    // Play, full screen, the padding and their spacing; the bar keeps 32px.
+    property <length> fixed: 4px + 28px + 6px + 32px + 6px + 28px + 6px;
+    property <bool> show-mute: VideoPlayer.sound && root.width >= root.fixed + 34px;
+    property <bool> show-time: root.width >= root.fixed + (root.show-mute ? 34px : 0px) + clock.preferred-width + 6px;
+    clock := Text { visible: false; text: VideoPlayer.time; font-size: 12px; }
+    HorizontalLayout {
+        padding-left: 4px; padding-right: 6px; spacing: 6px;
+        Middle {
             IconButton {
-                y: parent.height - 28px; height: 28px;
-                size: 28px; glyph: 16px; tint: #ffffff; tip-side: 2;
-                icon: VideoPlayer.muted ? @image-url("icons/volume-x.svg") : @image-url("icons/volume-2.svg");
-                label: VideoPlayer.muted ? "Unmute" : "Mute";
-                clicked => { VideoPlayer.mute(!VideoPlayer.muted); }
+                size: 28px; glyph: 16px; tint: #ffffff; tip-side: 0;
+                icon: VideoPlayer.playing ? @image-url("icons/pause.svg") : @image-url("icons/play.svg");
+                label: VideoPlayer.playing ? "Pause" : "Play";
+                clicked => { VideoPlayer.toggle(); }
             }
         }
-    }
-    Middle {
-        IconButton {
-            size: 28px; glyph: 16px; tint: #ffffff; tip-side: 0;
-            icon: VideoPlayer.expanded ? @image-url("icons/minimize.svg") : @image-url("icons/maximize.svg");
-            label: VideoPlayer.expanded ? "Exit full screen" : "Full screen";
-            clicked => { VideoPlayer.expand(!VideoPlayer.expanded); }
+        if root.show-time: Text { text: VideoPlayer.time; color: #ffffff; font-size: 12px; vertical-alignment: center; }
+        Rectangle {
+            horizontal-stretch: 1;
+            accessible-role: slider;
+            accessible-label: "Position";
+            accessible-value: round(VideoPlayer.progress * 100) + "%";
+            Rectangle {
+                height: 4px; border-radius: 2px; background: #ffffff4d;
+                Rectangle { x: 0; width: parent.width * clamp(VideoPlayer.progress, 0, 1); border-radius: 2px; background: #ffffff; }
+            }
+            TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                clicked => { VideoPlayer.seek(clamp(self.mouse-x / self.width, 0, 1)); }
+                moved => { if self.pressed { VideoPlayer.seek(clamp(self.mouse-x / self.width, 0, 1)); } }
+            }
+        }
+        // Mute, with a slider over it for how loud, while the pointer is on
+        // either; the wheel turns it too.
+        if root.show-mute: Rectangle {
+            width: 28px;
+            sound := TouchArea {
+                property <bool> open: self.has-hover || level.pressed;
+                property <length> rise: 112px;
+                property <float> shown: level.pressed ? level.dragged : VideoPlayer.muted ? 0 : VideoPlayer.volume;
+                y: (parent.height - 28px) / 2 - (self.open ? self.rise : 0px);
+                height: 28px + (self.open ? self.rise : 0px);
+                scroll-event(event) => {
+                    if event.delta-y == 0 { return reject; }
+                    VideoPlayer.change-volume(clamp(self.shown + (event.delta-y > 0 ? 0.05 : -0.05), 0, 1));
+                    return accept;
+                }
+                Rectangle {
+                    y: 0; width: 28px; height: sound.rise - 4px;
+                    visible: sound.open;
+                    border-radius: 6px; background: #000000cc;
+                    accessible-role: slider;
+                    accessible-label: "Volume";
+                    accessible-value: round(sound.shown * 100) + "%";
+                    accessible-value-minimum: 0;
+                    accessible-value-maximum: 100;
+                    accessible-action-set-value(value) => { VideoPlayer.change-volume(clamp(value.to-float() / 100, 0, 1)); }
+                    track := Rectangle {
+                        x: (parent.width - self.width) / 2; y: 14px; width: 4px; height: parent.height - 28px;
+                        border-radius: 2px; background: #ffffff4d;
+                        Rectangle {
+                            y: parent.height * (1 - sound.shown); height: parent.height * sound.shown;
+                            border-radius: 2px; background: #ffffff;
+                        }
+                        Rectangle {
+                            width: 12px; height: 12px; border-radius: 6px; background: #ffffff;
+                            x: (parent.width - self.width) / 2; y: parent.height * (1 - sound.shown) - self.height / 2;
+                        }
+                    }
+                    level := TouchArea {
+                        enabled: sound.open;
+                        mouse-cursor: MouseCursor.pointer;
+                        property <float> dragged;
+                        property <float> at: clamp(1 - (self.mouse-y - track.y) / track.height, 0, 1);
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                                self.dragged = self.at;
+                                VideoPlayer.change-volume(self.at);
+                            }
+                        }
+                        moved => {
+                            if self.pressed {
+                                self.dragged = self.at;
+                                VideoPlayer.change-volume(self.at);
+                            }
+                        }
+                    }
+                }
+                IconButton {
+                    y: parent.height - 28px; height: 28px;
+                    size: 28px; glyph: 16px; tint: #ffffff; tip-side: 2;
+                    icon: VideoPlayer.muted ? @image-url("icons/volume-x.svg") : @image-url("icons/volume-2.svg");
+                    label: VideoPlayer.muted ? "Unmute" : "Mute";
+                    clicked => { VideoPlayer.mute(!VideoPlayer.muted); }
+                }
+            }
+        }
+        Middle {
+            IconButton {
+                size: 28px; glyph: 16px; tint: #ffffff; tip-side: 0;
+                icon: VideoPlayer.expanded ? @image-url("icons/minimize.svg") : @image-url("icons/maximize.svg");
+                label: VideoPlayer.expanded ? "Exit full screen" : "Full screen";
+                clicked => { VideoPlayer.expand(!VideoPlayer.expanded); }
+            }
         }
     }
 }
