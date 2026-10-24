@@ -1,6 +1,6 @@
 //! Yapfast's own short sounds for calls and messages: joining and leaving, mute and
-//! deafen, a new message or mention, and someone starting or stopping
-//! watching a stream. They come in six sets with one
+//! deafen, a new message or mention, someone starting a stream, and someone
+//! starting or stopping watching one. They come in six sets with one
 //! character each, all in F major pentatonic so any two sound well together.
 //! Four are synthesized as they play; two play the score on one recorded
 //! note each, the only sound bundled.
@@ -119,10 +119,12 @@ pub enum Sound {
     ViewerJoin,
     /// Someone else stopped watching it.
     ViewerLeave,
+    /// Someone else in the call started streaming.
+    StreamStart,
 }
 
 impl Sound {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Join,
         Self::Leave,
         Self::Mute,
@@ -133,6 +135,7 @@ impl Sound {
         Self::Mention,
         Self::ViewerJoin,
         Self::ViewerLeave,
+        Self::StreamStart,
     ];
 }
 
@@ -167,6 +170,12 @@ fn score(sound: Sound) -> (&'static [(f32, f32, f32)], f32, f32) {
         // and goes more lightly than someone joining the call.
         Sound::ViewerJoin => (&[(0.0, C5, 0.7), (0.1, F5, 0.85)], 0.7, -4.0),
         Sound::ViewerLeave => (&[(0.0, F5, 0.75), (0.11, C5, 0.65)], 0.7, -5.0),
+        // An open fifth, then the octave above it: something opening up.
+        Sound::StreamStart => (
+            &[(0.0, F4, 0.7), (0.0, C5, 0.6), (0.12, F5, 0.85)],
+            0.9,
+            -2.0,
+        ),
     }
 }
 

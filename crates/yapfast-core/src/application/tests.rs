@@ -2196,6 +2196,55 @@ fn streams_sound_as_others_start_and_stop_watching() {
 }
 
 #[test]
+fn others_going_live_sounds_but_not_as_anyone_arrives_streaming() {
+    let mut app = connected();
+    let person = |id: &str, local: bool, streaming: bool| voice::Participant {
+        id: id.into(),
+        user: id.into(),
+        person: id.into(),
+        local,
+        muted: false,
+        deafened: false,
+        server_muted: false,
+        server_deafened: false,
+        speaking: false,
+        connected: true,
+        problem: None,
+        streaming,
+        video: None,
+        avatar: None,
+    };
+    let call = |me: bool, people: &[(&str, bool)]| voice::State {
+        phase: Phase::Connected,
+        room: Some("lounge".into()),
+        name: "Lounge".into(),
+        participants: std::iter::once(person("me", true, me))
+            .chain(
+                people
+                    .iter()
+                    .map(|&(id, streaming)| person(id, false, streaming)),
+            )
+            .collect(),
+        ..Default::default()
+    };
+    let mut heard = |state: voice::State| sounds(&app.apply(Event::Voice(state)));
+    // Sam streams already as this account joins, and Kim as they arrive.
+    assert_eq!(heard(call(false, &[("sam", true)])), [Sound::Join]);
+    assert_eq!(
+        heard(call(false, &[("sam", true), ("kim", true)])),
+        [Sound::Join]
+    );
+    assert_eq!(heard(call(false, &[("sam", true), ("kim", false)])), []);
+    assert_eq!(
+        heard(call(false, &[("sam", true), ("kim", true)])),
+        [Sound::StreamStart]
+    );
+    assert_eq!(heard(call(false, &[("sam", true), ("kim", true)])), []);
+    // This account going live makes none.
+    assert_eq!(heard(call(true, &[("sam", true), ("kim", true)])), []);
+}
+
+#[test]
 fn calls_sound_as_people_come_and_go_but_not_while_reconnecting_or_ringing() {
     let mut app = connected();
     let person = |id: &str, local: bool, connected: bool| voice::Participant {
