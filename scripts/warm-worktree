@@ -28,8 +28,14 @@ mapfile -t local_crates < <(cargo metadata --locked --format-version 1 |
   jq -r '.packages[] | select(.source == null) | "-p\n\(.name)"')
 
 mkdir -p target
-# Cargo cleans only a target directory that has this tag.
-cp -n "$main/target/CACHEDIR.TAG" target/ 2>/dev/null || true
+# Cargo cleans only a target directory that has this tag, which the main
+# checkout's may lack, so it's written here as Cargo writes it.
+if [[ ! -e target/CACHEDIR.TAG ]]; then
+  printf '%s\n' 'Signature: 8a477f597d28d172789f06886806bc55' \
+    '# This file is a cache directory tag created by cargo.' \
+    '# For information about cache directory tags see https://bford.info/cachedir/' \
+    >target/CACHEDIR.TAG
+fi
 for dir in fast check-combinations; do
   if [[ ! -d "$main/target/$dir" ]]; then
     echo "$dir: the main checkout has none"
