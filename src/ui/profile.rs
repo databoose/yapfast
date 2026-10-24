@@ -280,7 +280,7 @@ pub(super) fn profile_data(
                 })
                 .collect::<Vec<_>>(),
         )),
-        note: if view.loading {
+        note: if view.loading && !view.kept {
             "Loading the profile...".into()
         } else {
             view.note.clone().unwrap_or_default().into()

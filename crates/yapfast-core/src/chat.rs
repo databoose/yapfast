@@ -2971,6 +2971,12 @@ pub enum Event {
         user: String,
         result: Result<Profile, String>,
     },
+    /// The profile Yapfast kept of someone [`DiscordCommand::Profile`] asked
+    /// for, to show until [`Event::Profile`] comes.
+    KeptProfile {
+        user: String,
+        profile: Profile,
+    },
     /// Discord's servers, voice channels and who is in them.
     #[cfg(feature = "discord")]
     Discord(Arc<yapfast_discord::service::Snapshot>),

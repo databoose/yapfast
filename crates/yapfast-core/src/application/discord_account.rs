@@ -105,6 +105,7 @@ impl Application {
             profile,
             large: false,
             loading: fetch,
+            kept: false,
             note: None,
         });
         if fetch {

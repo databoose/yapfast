@@ -267,7 +267,7 @@ async fn shows_the_example_environment() {
 
     // A profile: bio, pronouns, banner and the servers shared.
     let maya = members[0].user_id.clone();
-    let profile = discord.profile(&guild, &maya).await.unwrap();
+    let profile = discord.profile(&guild, &maya, |_| {}).await.unwrap();
     assert_eq!(
         profile.bio.as_deref(),
         Some("Draws tiny worlds, one pixel at a time.")

@@ -345,6 +345,8 @@ pub struct ProfileView {
     pub large: bool,
     /// The rest of a Discord profile is on its way.
     pub loading: bool,
+    /// It shows the profile Yapfast kept from before while Discord's comes.
+    pub kept: bool,
     /// Why Discord didn't give the rest.
     pub note: Option<String>,
 }
@@ -3025,6 +3027,7 @@ impl Application {
                 }
             }
             Event::Profile { user, result } => self.show_fetched_profile(user, result),
+            Event::KeptProfile { user, profile } => self.show_kept_profile(user, profile),
             Event::Members { room, members } => {
                 // A list that came stays when a later check finds none came.
                 let listed = members.is_err() && matches!(self.state.members, Some(Ok(_)));

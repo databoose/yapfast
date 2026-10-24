@@ -8,7 +8,10 @@
 //!   then. Written at most every [`SAVE_DELAY`] while connected.
 //! - `discord-messages/`: each channel shown lately, its newest
 //!   [`CHANNEL_MESSAGES`] messages, for the [`CHANNELS`] used last.
-//! - `discord-pictures/`: avatars, server icons, emoji and stickers, and the
+//! - `discord-profiles/`: each profile shown lately, outside servers or in
+//!   one, as Discord last gave it, for the [`PROFILES`] shown last. A card
+//!   shows it at once while Discord's answer comes.
+//! - `discord-pictures/`: avatars, banners, server icons, emoji and stickers, and the
 //!   media proxy's previews of attachments and links. Discord gives each
 //!   version of a picture its own address, so a kept one never goes stale.
 //!   The least lately shown go past [`PICTURES_SIZE`].
@@ -36,16 +39,18 @@ use tokio::sync::watch;
 use crate::{
     member_list::MemberList,
     message::{Message, Names, SavedNames},
+    profile::Profile,
     service::{Snapshot, Status},
 };
 
 /// Changes within this long go to disk together.
 const SAVE_DELAY: Duration = Duration::from_secs(20);
 /// Where on Discord's CDN the pictures Yapfast keeps live.
-const PICTURE_PATHS: [&str; 8] = [
+const PICTURE_PATHS: [&str; 9] = [
     "/app-assets/",
     "/app-icons/",
     "/avatars/",
+    "/banners/",
     "/embed/avatars/",
     "/guilds/",
     "/icons/",
@@ -63,6 +68,8 @@ const LARGEST_PICTURE: usize = 8 * 1024 * 1024;
 const CHANNELS: usize = 300;
 /// Of each channel, the newest messages kept.
 pub const CHANNEL_MESSAGES: usize = 100;
+/// The most profiles kept; the least lately shown go. One takes 1-5 KB.
+const PROFILES: usize = 500;
 
 /// How each file naming its login starts, before the login: it's the first
 /// field of each.
@@ -129,6 +136,12 @@ struct SavedChannel {
     messages: Vec<Message>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct SavedProfile<P> {
+    login: String,
+    profile: P,
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
@@ -138,13 +151,18 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// Keeps the account in `file` from now on, and the rest beside it.
 pub fn keep_in(file: PathBuf) {
     *lock(&FILE) = Some(file);
-    if let (Some(pictures), Some(gifs), Some(messages), Some(videos)) =
-        (pictures(), gifs(), messages_directory(), videos())
-    {
+    if let (Some(pictures), Some(gifs), Some(messages), Some(profiles), Some(videos)) = (
+        pictures(),
+        gifs(),
+        messages_directory(),
+        profiles_directory(),
+        videos(),
+    ) {
         std::thread::spawn(move || {
             prune(&pictures, PICTURES_SIZE, usize::MAX);
             prune(&gifs, GIFS_SIZE, usize::MAX);
             prune(&messages, u64::MAX, CHANNELS);
+            prune(&profiles, u64::MAX, PROFILES);
             // Videos played before Yapfast last closed.
             prune(&videos, 0, 0);
         });
@@ -258,6 +276,10 @@ fn messages_directory() -> Option<PathBuf> {
     Some(file()?.with_file_name("discord-messages"))
 }
 
+fn profiles_directory() -> Option<PathBuf> {
+    Some(file()?.with_file_name("discord-profiles"))
+}
+
 /// Where a video downloads while it plays, on disk rather than in memory,
 /// as the temporary directory may be. The file goes when playing stops.
 pub fn videos() -> Option<PathBuf> {
@@ -314,15 +336,16 @@ pub(crate) fn relogin(token: &str) {
     let Some(earlier) = lock(&LOGIN).replace(login.clone()) else {
         return;
     };
-    let channels = messages_directory()
-        .and_then(|directory| std::fs::read_dir(directory).ok())
+    let kept = [messages_directory(), profiles_directory()]
         .into_iter()
+        .flatten()
+        .filter_map(|directory| std::fs::read_dir(directory).ok())
         .flatten()
         .filter_map(|entry| Some(entry.ok()?.path()));
     for file in [file(), favorite_gifs_file()]
         .into_iter()
         .flatten()
-        .chain(channels)
+        .chain(kept)
     {
         if let Err(error) = relabel(&file, &earlier, &login)
             && error.kind() != std::io::ErrorKind::NotFound
@@ -429,6 +452,56 @@ pub fn save_messages(channel: &str, mut messages: Vec<Message>) {
         .and_then(|()| write_bytes(&file, &serde_json::to_vec(&saved)?));
     if let Err(error) = written {
         tracing::warn!(%error, "could not save a Discord channel");
+    }
+}
+
+/// Where a user's profile in a server is kept, or with [`PRIVATE`] outside
+/// any. Ids are numbers, which keeps the name a plain file name.
+///
+/// [`PRIVATE`]: crate::ready::PRIVATE
+fn profile_file(guild: &str, user: &str) -> Option<PathBuf> {
+    let number = |id: &str| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit());
+    let name = match guild {
+        crate::ready::PRIVATE if number(user) => format!("{user}.json"),
+        _ if number(user) && number(guild) => format!("{user}-{guild}.json"),
+        _ => return None,
+    };
+    Some(profiles_directory()?.join(name))
+}
+
+/// The profile kept of a user in a server, or outside any, for this login.
+/// It reads the disk, so the async side calls it off its threads.
+pub(crate) fn profile(guild: &str, user: &str) -> Option<Profile> {
+    let (file, login) = (profile_file(guild, user)?, current_login()?);
+    let data = std::fs::read(&file).ok()?;
+    match serde_json::from_slice::<SavedProfile<Profile>>(&data) {
+        Ok(saved) if saved.login == login => {
+            // Shown now, so pruning keeps it longer.
+            touch(&file);
+            Some(saved.profile)
+        }
+        Ok(_) => None,
+        Err(error) => {
+            tracing::warn!(%error, "could not read a saved Discord profile");
+            None
+        }
+    }
+}
+
+/// Keeps a user's profile as [`profile`] reads it. It writes to disk, so the
+/// async side calls it off its threads.
+pub(crate) fn save_profile(guild: &str, user: &str, profile: &Profile) {
+    let (Some(file), Some(login)) = (profile_file(guild, user), current_login()) else {
+        return;
+    };
+    let saved = SavedProfile { login, profile };
+    let written = file
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .map_err(anyhow::Error::from)
+        .and_then(|()| write_with(&file, |writer| Ok(serde_json::to_writer(writer, &saved)?)));
+    if let Err(error) = written {
+        tracing::warn!(%error, "could not save a Discord profile");
     }
 }
 
@@ -552,9 +625,15 @@ pub fn forget() {
             Err(error) => tracing::warn!(%error, "could not delete the saved Discord account"),
         }
     }
-    for directory in [pictures(), gifs(), messages_directory(), videos()]
-        .into_iter()
-        .flatten()
+    for directory in [
+        pictures(),
+        gifs(),
+        messages_directory(),
+        profiles_directory(),
+        videos(),
+    ]
+    .into_iter()
+    .flatten()
     {
         match std::fs::remove_dir_all(&directory) {
             Ok(()) => {}
@@ -687,6 +766,19 @@ mod tests {
         assert_eq!(kept[0].id, "6", "the oldest go");
         assert!(messages("../40").is_empty() && messages("41").is_empty());
 
+        // Profiles, in a server and outside any.
+        let bob = |name: &str| Profile {
+            user_id: "2".into(),
+            name: name.into(),
+            ..Default::default()
+        };
+        save_profile("10", "2", &bob("Bobby"));
+        save_profile(crate::ready::PRIVATE, "2", &bob("Bob"));
+        assert_eq!(profile("10", "2"), Some(bob("Bobby")));
+        assert_eq!(profile(crate::ready::PRIVATE, "2"), Some(bob("Bob")));
+        assert_eq!(profile("11", "2"), None);
+        assert_eq!(profile("10", "../2"), None);
+
         // The favourite GIFs.
         assert_eq!(favorite_gifs(), None);
         let favorite = crate::gifs::Favorite {
@@ -739,12 +831,14 @@ mod tests {
         relogin("refreshed");
         assert_eq!(load("refreshed").snapshot.servers[0].name, "Server");
         assert_eq!(messages("40").len(), CHANNEL_MESSAGES);
+        assert_eq!(profile("10", "2"), Some(bob("Bobby")));
         assert!(favorite_gifs().is_some());
         assert!(load("token").snapshot.servers.is_empty());
 
         // Another login sees none of it.
         assert!(load("another").snapshot.servers.is_empty());
         assert!(messages("40").is_empty());
+        assert_eq!(profile("10", "2"), None);
         assert_eq!(favorite_gifs(), None);
         load("token");
         forget();
@@ -752,6 +846,7 @@ mod tests {
         assert!(messages("40").is_empty());
         assert_eq!(favorite_gifs(), None);
         assert!(!pictures().unwrap().exists());
+        assert!(!profiles_directory().unwrap().exists());
         assert_eq!(kept_gif(gif), None);
         std::fs::remove_dir_all(&directory).unwrap();
     }

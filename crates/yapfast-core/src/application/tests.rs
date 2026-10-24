@@ -3601,6 +3601,60 @@ fn discord_profiles_load_the_rest_from_discord() {
 
 #[test]
 #[cfg(feature = "discord")]
+fn discord_profiles_show_the_kept_one_until_discord_answers() {
+    use yapfast_discord::service::{Conversation, Snapshot, Status};
+    let mut app = Application::default();
+    app.apply(discord_event(Snapshot {
+        status: Status::Online,
+        conversations: vec![Conversation {
+            id: "30".into(),
+            name: "Ann".into(),
+            person: Some("7".into()),
+            people: 2,
+            ..Default::default()
+        }],
+        ..Default::default()
+    }));
+    let ann = |bio: &str| Profile {
+        id: "7".into(),
+        name: "Ann".into(),
+        handle: "ann".into(),
+        bio: bio.into(),
+        ..Default::default()
+    };
+    app.dispatch(Action::ShowDmProfile("discord:@me:30".into()));
+    app.apply(Event::KeptProfile {
+        user: "7".into(),
+        profile: ann("Old"),
+    });
+    let view = app.state.profile.as_ref().unwrap();
+    assert!(view.loading && view.kept);
+    assert_eq!(view.profile.bio, "Old");
+    app.apply(Event::Profile {
+        user: "7".into(),
+        result: Ok(ann("New")),
+    });
+    let view = app.state.profile.as_ref().unwrap();
+    assert!(!view.loading && !view.kept);
+    assert_eq!(view.profile.bio, "New");
+
+    // Offline, the kept one stays, without a note.
+    app.dispatch(Action::ShowDmProfile("discord:@me:30".into()));
+    app.apply(Event::KeptProfile {
+        user: "7".into(),
+        profile: ann("Old"),
+    });
+    app.apply(Event::Profile {
+        user: "7".into(),
+        result: Err("offline".into()),
+    });
+    let view = app.state.profile.as_ref().unwrap();
+    assert!(!view.loading && view.note.is_none());
+    assert_eq!(view.profile.bio, "Old");
+}
+
+#[test]
+#[cfg(feature = "discord")]
 fn discord_friends_are_listed_and_messaged() {
     use yapfast_discord::{
         member_list::Presence as Discord,
@@ -4330,6 +4384,7 @@ fn discord_dialogs_stop_waiting_when_the_backend_cant_answer() {
         },
         large: false,
         loading: true,
+        kept: false,
         note: None,
     });
     app.stopped();

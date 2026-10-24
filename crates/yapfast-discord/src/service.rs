@@ -1157,34 +1157,60 @@ impl Discord {
     }
 
     /// A user's profile, in a server or with [`PRIVATE`] outside any. One
-    /// fetched in the last few minutes is given again.
-    pub async fn profile(&self, guild: &str, user: &str) -> Result<Profile> {
-        let kept = |kept: &&Kept| kept.user == user && kept.guild == guild;
+    /// fetched in the last few minutes is given again. Otherwise `kept` gets
+    /// the one fetched last, if there's one, even before Yapfast started,
+    /// to show while Discord answers.
+    pub async fn profile(
+        &self,
+        guild: &str,
+        user: &str,
+        kept: impl FnOnce(Profile),
+    ) -> Result<Profile> {
+        let same = |kept: &&Kept| kept.user == user && kept.guild == guild;
         let member = self.member_face(guild, user);
-        if let Some(fresh) = self
-            .lock_profiles()
-            .iter()
-            .filter(kept)
-            .find(|fresh| fresh.at.elapsed() < PROFILE_AGE && fresh.member == member)
-        {
-            return Ok(fresh.profile.clone());
+        let earlier = {
+            let profiles = self.lock_profiles();
+            let earlier = profiles.iter().find(same);
+            if let Some(fresh) =
+                earlier.filter(|fresh| fresh.at.elapsed() < PROFILE_AGE && fresh.member == member)
+            {
+                return Ok(fresh.profile.clone());
+            }
+            earlier.map(|earlier| earlier.profile.clone())
+        };
+        let earlier = match earlier {
+            Some(earlier) => Some(earlier),
+            None => {
+                let (guild, user) = (guild.to_owned(), user.to_owned());
+                tokio::task::spawn_blocking(move || cache::profile(&guild, &user))
+                    .await
+                    .ok()
+                    .flatten()
+            }
+        };
+        if let Some(earlier) = earlier {
+            kept(earlier);
         }
         let value = self.api.profile(user, server(guild)).await?;
         self.write_names().learn_user(&value["user"]);
         let profile = profile::parse(&value, server(guild))
             .ok_or_else(|| anyhow!("could not understand Discord's answer"))?;
-        let mut profiles = self.lock_profiles();
-        profiles.retain(|old| !kept(&old));
-        profiles.push(Kept {
-            user: user.to_owned(),
-            guild: guild.to_owned(),
-            at: Instant::now(),
-            member: self.member_face(guild, user),
-            profile: profile.clone(),
-        });
-        if profiles.len() > PROFILES {
-            profiles.remove(0);
+        {
+            let mut profiles = self.lock_profiles();
+            profiles.retain(|old| !same(&old));
+            profiles.push(Kept {
+                user: user.to_owned(),
+                guild: guild.to_owned(),
+                at: Instant::now(),
+                member: self.member_face(guild, user),
+                profile: profile.clone(),
+            });
+            if profiles.len() > PROFILES {
+                profiles.remove(0);
+            }
         }
+        let (guild, user, saving) = (guild.to_owned(), user.to_owned(), profile.clone());
+        tokio::task::spawn_blocking(move || cache::save_profile(&guild, &user, &saving));
         Ok(profile)
     }
 

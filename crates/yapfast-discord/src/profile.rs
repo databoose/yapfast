@@ -8,7 +8,7 @@ use crate::{
     ready,
 };
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Profile {
     pub user_id: String,
     /// Their nickname in the server, else their display name or username.
@@ -36,7 +36,7 @@ pub struct Profile {
 }
 
 /// A server this account shares with someone.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MutualServer {
     pub id: String,
     /// Their nickname there, when they set one.
@@ -44,7 +44,7 @@ pub struct MutualServer {
 }
 
 /// A friend this account shares with someone.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MutualFriend {
     pub id: String,
     pub name: String,

@@ -159,8 +159,14 @@ pub(super) fn command(
             (Ok(discord), Some((guild, _))) => {
                 let (discord, events, guild) = (discord.clone(), events.clone(), guild.to_owned());
                 tokio::spawn(async move {
+                    let kept = |profile| {
+                        let _ = events.send(Event::KeptProfile {
+                            user: user.clone(),
+                            profile: chat_profile(&discord, &guild, profile),
+                        });
+                    };
                     let result = discord
-                        .profile(&guild, &user)
+                        .profile(&guild, &user, kept)
                         .await
                         .map(|profile| chat_profile(&discord, &guild, profile))
                         .map_err(|error| {

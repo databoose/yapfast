@@ -1614,7 +1614,7 @@ async fn talks_to_the_fake_server() {
 
     // Bob's profile: in the server, his server bio wins over his own; from
     // a DM, his own shows.
-    let in_server = discord.profile(&guild, &bob).await.unwrap();
+    let in_server = discord.profile(&guild, &bob, |_| {}).await.unwrap();
     assert_eq!(in_server.name, "Bob");
     assert_eq!(in_server.pronouns.as_deref(), Some("he/him"));
     assert_eq!(in_server.bio.as_deref(), Some("Keeps #general tidy."));
@@ -1629,7 +1629,7 @@ async fn talks_to_the_fake_server() {
     assert_eq!(in_server.mutual_servers[0].id, guild);
     assert_eq!(in_server.mutual_friends.len(), 1);
     assert_eq!(in_server.mutual_friends[0].name, "Carol");
-    let own = discord.profile(PRIVATE, &bob).await.unwrap();
+    let own = discord.profile(PRIVATE, &bob, |_| {}).await.unwrap();
     assert!(own.bio.is_some_and(|bio| bio.starts_with("Plays bass")));
     assert!(own.roles.is_empty() && own.joined.is_none());
 
@@ -3166,7 +3166,7 @@ async fn talks_to_the_fake_server() {
             .as_deref()
             .is_some_and(|banner| banner.contains("/banners/"))
     );
-    let card = discord.profile(&guild, &me).await.unwrap();
+    let card = discord.profile(&guild, &me, |_| {}).await.unwrap();
     assert_eq!(card.bio.as_deref(), Some("Here for #general."));
     assert_eq!(card.pronouns.as_deref(), Some("she/her"));
     // Empty texts and no pictures go by her main profile again.

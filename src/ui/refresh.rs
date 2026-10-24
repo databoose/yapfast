@@ -1768,6 +1768,7 @@ impl Adapter {
             },
             large: false,
             loading: false,
+            kept: false,
             note: None,
         };
         let mut preview = profile_data(&mut self.pictures, &self.app.state, &view);

@@ -142,6 +142,7 @@ impl Application {
             profile,
             large,
             loading: fetch,
+            kept: false,
             note: None,
         });
         if fetch {
@@ -154,32 +155,49 @@ impl Application {
         }
     }
 
-    /// Fills in a profile on screen with the rest Discord sent, or says it didn't.
+    /// Fills in a profile on screen with the rest Discord sent, or says it
+    /// didn't, unless it shows the one kept from before.
     pub(super) fn show_fetched_profile(&mut self, user: String, result: Result<Profile, String>) {
-        let views = [&mut self.state.profile, &mut self.state.panel_profile];
-        for view in views
-            .into_iter()
-            .filter_map(Option::as_mut)
-            .filter(|view| view.profile.id == user && view.loading)
-        {
+        for view in self.loading_profiles(&user) {
             view.loading = false;
             match &result {
-                // Presence and activities come from the member list; the
-                // profile doesn't carry them.
-                Ok(profile) => {
-                    view.profile = Profile {
-                        presence: profile.presence.or(view.profile.presence),
-                        activity: profile.activity.clone().or(view.profile.activity.take()),
-                        activities: std::mem::take(&mut view.profile.activities),
-                        ..profile.clone()
-                    };
-                }
+                Ok(profile) => fill_profile(view, profile),
+                Err(_) if view.kept => {}
                 Err(_) => {
                     view.note = Some("Discord didn't share the rest of this profile.".into());
                 }
             }
+            view.kept = false;
         }
     }
+
+    /// Fills in a profile on screen with the one kept from before, until
+    /// Discord's comes.
+    pub(super) fn show_kept_profile(&mut self, user: String, profile: Profile) {
+        for view in self.loading_profiles(&user) {
+            fill_profile(view, &profile);
+            view.kept = true;
+        }
+    }
+
+    /// The profiles on screen of `user` waiting for Discord's.
+    fn loading_profiles(&mut self, user: &str) -> impl Iterator<Item = &mut ProfileView> {
+        [&mut self.state.profile, &mut self.state.panel_profile]
+            .into_iter()
+            .filter_map(Option::as_mut)
+            .filter(move |view| view.profile.id == user && view.loading)
+    }
+}
+
+/// Puts `profile` on screen in `view`. Presence and activities come from the
+/// member list; the profile doesn't carry them.
+fn fill_profile(view: &mut ProfileView, profile: &Profile) {
+    view.profile = Profile {
+        presence: profile.presence.or(view.profile.presence),
+        activity: profile.activity.clone().or(view.profile.activity.take()),
+        activities: std::mem::take(&mut view.profile.activities),
+        ..profile.clone()
+    };
 }
 
 /// What a one-to-one DM knows of its other person's profile.
