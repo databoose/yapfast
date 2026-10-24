@@ -2469,8 +2469,11 @@ export component YapfastWindow inherits Window {
                                             // The space that holds a short history down stays outside the row.
                                             property <length> top: index == 0 ? root.lead : 0px;
                                             height: col.preferred-height + self.top;
+                                            // The last row's tints stop above the space it leaves at the end,
+                                            // where the typing line sits on the chat's own colour.
+                                            property <length> tail: index == root.messages.length - 1 ? (root.detached ? 74px : 20px) : 0px;
                                             Rectangle {
-                                                y: parent.top; height: parent.height - parent.top;
+                                                y: parent.top; height: parent.height - parent.top - parent.tail;
                                                 background: parent.jumped && root.jump-lit ? Theme.accent.transparentize(0.86) : parent.lit ? Theme.row-hover : transparent;
                                                 animate background { duration: 400ms; }
                                             }
@@ -2481,7 +2484,7 @@ export component YapfastWindow inherits Window {
                                                 + (message.day != "" || message.unread-start ? 26px : 0px);
                                             if message.highlighted: Rectangle {
                                                 y: parent.top + (parent.head > 0 ? col.padding-top + parent.head : 0px);
-                                                height: parent.height - self.y - (index == root.messages.length - 1 && root.detached ? 74px : 0px);
+                                                height: parent.height - self.y - parent.tail;
                                                 background: Theme.accent.transparentize(0.9);
                                                 Rectangle { x: 0px; width: 2px; background: Theme.accent; }
                                             }
