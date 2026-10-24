@@ -1463,9 +1463,9 @@ export component YapfastWindow inherits Window {
             go-live(source, resolution, fps) => { root.go-live(source, resolution, fps); share-menu.close(); }
         }
     }
-    // The emoji picker and a message's menu open beside the control that asked for
-    // them, flipping above it near the bottom of the window. A menu opened by a
-    // right click starts at the pointer.
+    // The emoji picker opens below the control that asked for it, flipping above
+    // it near the bottom of the window; a message's menu opens beside it. A menu
+    // opened by a right click starts at the pointer.
     property <length> anchor-x;
     property <length> anchor-y;
     property <length> anchor-width;
@@ -1768,11 +1768,15 @@ export component YapfastWindow inherits Window {
             close => { voice-menu.close(); }
         }
     }
+    // From a button, the menu opens left of it, level with its top, or right of
+    // it when there isn't room.
     message-menu := PopupWindow {
         width: 224px; height: menu-content.content-height;
-        x: max(8px, min(root.width - self.width - 8px, root.anchor-pointer ? root.anchor-x : root.anchor-x + root.anchor-width - self.width));
-        y: root.anchor-y + root.anchor-height + 4px + self.height <= root.height - 8px
-            ? root.anchor-y + root.anchor-height + (root.anchor-pointer ? 0px : 4px) : max(8px, root.anchor-y - self.height - 4px);
+        x: root.anchor-pointer ? max(8px, min(root.width - self.width - 8px, root.anchor-x))
+            : root.anchor-x - self.width - 8px >= 8px ? root.anchor-x - self.width - 8px
+            : max(8px, min(root.width - self.width - 8px, root.anchor-x + root.anchor-width + 8px));
+        y: !root.anchor-pointer ? max(8px, min(root.height - self.height - 8px, root.anchor-y))
+            : root.anchor-y + 4px + self.height <= root.height - 8px ? root.anchor-y : max(8px, root.anchor-y - self.height - 4px);
         close-policy: PopupClosePolicy.close-on-click-outside;
         menu-content := MessageMenu {
             menu-message: root.menu-message; selection: root.menu-selection; menu-can-react: root.menu-can-react; menu-reactions: root.menu-reactions;
