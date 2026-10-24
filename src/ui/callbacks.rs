@@ -1930,6 +1930,23 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     });
     let state = adapter.clone();
     let weak = window.as_weak();
+    window.on_switch_live(move |source| {
+        if let Some(window) = weak.upgrade() {
+            #[cfg(feature = "discord")]
+            if let Some(picked) =
+                SHAREABLE.with_borrow(|shareable| shareable.get(source as usize).copied())
+            {
+                yapfast_core::stream_worker::pick(picked);
+            }
+            #[cfg(not(feature = "discord"))]
+            let _ = source;
+            state
+                .borrow_mut()
+                .action(&window, Action::Voice(voice::Command::SwitchLive));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
     window.on_show_voice_person(move |room, user| {
         if let Some(window) = weak.upgrade() {
             state.borrow_mut().action(

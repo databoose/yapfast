@@ -294,6 +294,9 @@ pub enum Command {
     /// Share a screen or window with Discord's Go Live, at this quality,
     /// which is remembered for next time.
     GoLive(StreamQuality),
+    /// Share the screen or window picked last in place of the one shared,
+    /// keeping the stream; on Linux, what the system's dialog picks.
+    SwitchLive,
     StopLive,
     /// Watch the participant with this id's stream.
     Watch(String),

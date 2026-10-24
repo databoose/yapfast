@@ -323,7 +323,8 @@ export component VoiceDock inherits Rectangle {
     callback dismiss-voice-error;
     callback toggle-camera;
     callback toggle-share;
-    /// Sharing starts from a menu, opened at this point in the window.
+    /// Sharing starts from a menu, opened at this point in the window, and
+    /// while sharing, the same menu switches what's shared.
     callback open-share-menu(length, length);
     /// The call's connection in detail, from where its status is.
     callback open-call-link(length, length, length, length);
@@ -401,17 +402,13 @@ export component VoiceDock inherits Rectangle {
                 opacity: root.camera-starting ? (0.6 + 0.4 * sin(animation-tick() / 1ms * 0.36deg)) : 1;
                 clicked => { root.toggle-camera(); }
             }
+            // Stopping is beside "Your screen"; while the system's dialog
+            // first picks what to share, there's nothing to switch yet.
             if root.can-share || root.sharing: DockButton {
-                horizontal-stretch: 1; enabled: root.voice-ready; on: root.sharing;
-                icon: root.sharing ? @image-url("icons/screen-share-off.svg") : @image-url("icons/screen-share.svg");
-                label: root.sharing ? "Stop sharing" : "Share your screen";
-                clicked => {
-                    if root.sharing {
-                        root.toggle-share();
-                    } else {
-                        root.open-share-menu(self.absolute-position.x, self.absolute-position.y);
-                    }
-                }
+                horizontal-stretch: 1; enabled: root.voice-ready && (!root.sharing || root.share-live); on: root.sharing;
+                icon: @image-url("icons/screen-share.svg");
+                label: root.sharing ? "Switch screen or window" : "Share your screen";
+                clicked => { root.open-share-menu(self.absolute-position.x, self.absolute-position.y); }
             }
         }
         // Wrapped in the dock's width; a scroll view would neither wrap nor stay short.
@@ -1162,12 +1159,14 @@ component ScreenCard inherits Rectangle {
 }
 
 // Going live: what to share, where Yapfast lists it, and the resolution and frame
-// rate to share it at.
+// rate to share it at; or while sharing, what to share instead.
 export component ShareMenu inherits Rectangle {
     /// The screens, then the windows, to share; a pick counts the screens
     /// first.
     in property <[ShareScreen]> screens;
     in property <[string]> windows;
+    /// Switching what's shared, at the stream's quality.
+    in property <bool> switching;
     in-out property <int> pick-source;
     in-out property <int> pick-resolution;
     in-out property <int> pick-fps;
@@ -1208,26 +1207,32 @@ export component ShareMenu inherits Rectangle {
                 }
             }
         }
-        HorizontalLayout {
+        if !root.switching: HorizontalLayout {
             padding-left: 8px; padding-top: root.screens.length + root.windows.length > 0 ? 8px : 4px; padding-bottom: 4px;
             Text { text: "RESOLUTION"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
         }
-        for choice[index] in ["720p", "1080p", "Source"]: MenuItem {
-            text: choice; checked: index == root.pick-resolution;
-            clicked => { root.pick-resolution = index; }
+        if !root.switching: VerticalLayout {
+            spacing: 2px;
+            for choice[index] in ["720p", "1080p", "Source"]: MenuItem {
+                text: choice; checked: index == root.pick-resolution;
+                clicked => { root.pick-resolution = index; }
+            }
         }
-        HorizontalLayout {
+        if !root.switching: HorizontalLayout {
             padding-left: 8px; padding-top: 8px; padding-bottom: 4px;
             Text { text: "FRAME RATE"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
         }
-        for fps in [15, 30, 60]: MenuItem {
-            text: fps + " fps"; checked: fps == root.pick-fps;
-            clicked => { root.pick-fps = fps; }
+        if !root.switching: VerticalLayout {
+            spacing: 2px;
+            for fps in [15, 30, 60]: MenuItem {
+                text: fps + " fps"; checked: fps == root.pick-fps;
+                clicked => { root.pick-fps = fps; }
+            }
         }
         HorizontalLayout {
             padding: 4px; padding-top: 8px;
             ActionButton {
-                text: "Go Live"; icon: @image-url("icons/screen-share.svg"); primary: true; horizontal-stretch: 1;
+                text: root.switching ? "Switch" : "Go Live"; icon: @image-url("icons/screen-share.svg"); primary: true; horizontal-stretch: 1;
                 clicked => { root.go-live(root.pick-source, root.pick-resolution, root.pick-fps); }
             }
         }

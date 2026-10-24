@@ -723,6 +723,11 @@ no such dialog, so the share menu lists the screens and windows libwebrtc's
 capturers find (`stream_worker::shareable`), and the worker captures the one
 picked by its id; see the
 [Windows guide](windows-beta.md#go-live-on-windows).
+While live, the voice dock's share button switches what's shared without
+ending the stream: the worker starts a second capturer (on Linux, through the
+dialog again) and keeps sending the first one's frames. When the second one
+gives a frame, it replaces the first. If the dialog is cancelled, the first
+one goes on. The encoder takes the new size on the same connection.
 `YAPFAST_STREAM_TEST_PATTERN=1` shares moving colour bars instead of a screen.
 
 Once Discord has started the stream, Yapfast unpauses it with op 22, as

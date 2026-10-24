@@ -1101,6 +1101,10 @@ export component YapfastWindow inherits Window {
     /// the screen when they list none, at this resolution, as in
     /// share-resolution, and frame rate.
     callback go-live(int, int, int);
+    /// While sharing, share what share-screens, then share-windows, list at
+    /// this index in place of what's shared, or what the system's dialog
+    /// picks when they list none.
+    callback switch-live(int);
     /// The screens and windows to share, where Yapfast lists them (share-lists):
     /// asked for as the share menu opens, which shows once they're in, with
     /// the first picked. The screens' pictures come after.
@@ -1452,13 +1456,19 @@ export component YapfastWindow inherits Window {
     property <int> pick-source;
     property <int> pick-resolution;
     property <int> pick-fps;
+    // The menu switches what's shared, as it was when it opened.
+    property <bool> pick-switch;
     function open-share-menu(x: length, y: length) {
         root.menu-x = x; root.menu-y = y;
         root.pick-source = 0;
         root.pick-resolution = root.share-resolution;
         root.pick-fps = root.share-fps;
-        // Shown once the list is in, so it opens at its full height.
-        if root.share-lists {
+        root.pick-switch = root.sharing;
+        // Shown once the list is in, so it opens at its full height. Where
+        // the system's dialog picks what to share, a switch goes straight to it.
+        if root.sharing && !root.share-lists {
+            root.switch-live(-1);
+        } else if root.share-lists {
             root.list-share-sources();
         } else {
             share-menu.show();
@@ -1471,9 +1481,16 @@ export component YapfastWindow inherits Window {
         width: root.share-screens.length > 0 ? 336px : 240px;
         close-policy: PopupClosePolicy.close-on-click-outside;
         ShareMenu {
-            screens: root.share-screens; windows: root.share-windows; pick-source <=> root.pick-source;
-            pick-resolution <=> root.pick-resolution; pick-fps <=> root.pick-fps;
-            go-live(source, resolution, fps) => { root.go-live(source, resolution, fps); share-menu.close(); }
+            screens: root.share-screens; windows: root.share-windows; switching: root.pick-switch;
+            pick-source <=> root.pick-source; pick-resolution <=> root.pick-resolution; pick-fps <=> root.pick-fps;
+            go-live(source, resolution, fps) => {
+                if root.pick-switch {
+                    root.switch-live(source);
+                } else {
+                    root.go-live(source, resolution, fps);
+                }
+                share-menu.close();
+            }
         }
     }
     // The emoji picker opens below the control that asked for it, flipping above

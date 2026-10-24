@@ -7,8 +7,9 @@
 //! Yapfast starts the worker with one [`Job`] as a JSON line on its standard
 //! input, and reads [`Report`]s back from its standard output. Once Discord
 //! has started the stream, a [`Control::Send`] line hands the worker the
-//! stream's server, and it sends the video there. A `stop` line, or closing
-//! its input, ends the job. Frames go to the UI through [`crate::frames`].
+//! stream's server, and it sends the video there; a [`Control::Switch`] line
+//! shares another screen or window on the same stream. A `stop` line, or
+//! closing its input, ends the job. Frames go to the UI through [`crate::frames`].
 
 use std::{
     io::{BufRead, BufReader, Write},
@@ -210,12 +211,26 @@ pub fn pick(source: Source) {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = source;
 }
 
+/// `source`, with [`Source::Screen`] as what was picked.
+fn picked(source: Source) -> Source {
+    match source {
+        Source::Screen => *PICKED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        source => source,
+    }
+}
+
 /// What Yapfast tells a running job.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Control {
     /// Send the video to the server Discord started the stream on.
     Send(StreamServer),
+    /// Share this screen or window in place of the one shared, once it gives
+    /// a picture; on Linux, what the system's dialog picks. The stream goes
+    /// on with the one shared until then, and when the dialog is cancelled.
+    Switch(Source),
     /// Play a watched stream's sound, or not, as being deafened changes.
     Hear(bool),
     /// Play a watched stream's or a video's sound this loud.
@@ -334,6 +349,7 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
             let sink = Sink {
                 writer: Writer::open(&frames)?,
                 controls: received,
+                server: None,
                 sound: source != Source::TestPattern,
                 video: None,
                 fps,
@@ -411,6 +427,8 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
 struct Sink {
     writer: Writer,
     controls: channel::Receiver<Control>,
+    /// The server to send to from the next frame, which gives the stream its size.
+    server: Option<StreamServer>,
     /// Whether to share other applications' sound too: not for the test
     /// pattern.
     sound: bool,
@@ -467,7 +485,7 @@ impl Sink {
             }
             self.preview_due = Some(Instant::now() + THUMBNAIL_EVERY);
         }
-        if let Ok(Control::Send(server)) = self.controls.try_recv() {
+        if let Some(server) = self.server.take() {
             let sender = StreamSender::start(server, width, height, self.fps)?;
             let sound = if self.sound {
                 stream_audio::Capture::start(sender.sound())
@@ -527,8 +545,17 @@ impl Sink {
         Ok(())
     }
 
-    /// Reports the stream starting, and fails once its connection ended.
-    fn check(&mut self, report: &mut dyn FnMut(Report)) -> Result<()> {
+    /// Takes Yapfast's controls, reports the stream starting, and fails once
+    /// its connection ended. Gives the source a [`Control::Switch`] asked for.
+    fn check(&mut self, report: &mut dyn FnMut(Report)) -> Result<Option<Source>> {
+        let mut switch = None;
+        while let Ok(control) = self.controls.try_recv() {
+            match control {
+                Control::Send(server) => self.server = Some(server),
+                Control::Switch(source) => switch = Some(source),
+                _ => {}
+            }
+        }
         match self.video.as_ref().map(|video| video.sender.link()) {
             Some(Link::Connected) if !self.streaming => {
                 self.streaming = true;
@@ -548,7 +575,7 @@ impl Sink {
         if let Some(thumbnail) = self.thumbnail.take() {
             report(Report::Preview { thumbnail });
         }
-        Ok(())
+        Ok(switch)
     }
 }
 
@@ -734,7 +761,8 @@ fn test_pattern(
             height as i32,
         );
         sink.frame(&mut picture)?;
-        sink.check(report)?;
+        // Colour bars are all it shares.
+        let _switch = sink.check(report)?;
         frame += 1;
     }
     Ok(())
@@ -823,76 +851,22 @@ fn capture_screen(
     stop: &AtomicBool,
     report: &mut dyn FnMut(Report),
 ) -> Result<()> {
-    use livekit::webrtc::desktop_capturer::{
-        CaptureError, DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions,
-    };
-    // On Linux the system's screen sharing dialog picks a screen or window.
-    #[cfg(target_os = "linux")]
-    let kind = DesktopCaptureSourceType::Generic;
-    #[cfg(not(target_os = "linux"))]
-    let kind = match source {
-        Source::Window(_) => DesktopCaptureSourceType::Window,
-        _ => DesktopCaptureSourceType::Screen,
-    };
-    let mut options = DesktopCapturerOptions::new(kind);
-    options.set_include_cursor(true);
-    let mut capturer =
-        DesktopCapturer::new(options).context("Screen sharing isn't available on this system.")?;
     let fps = sink.fps;
     let sink = Arc::new(Mutex::new(sink));
-    let captured = Arc::new(Mutex::new(Captured::default()));
-    let (into, seen) = (sink.clone(), captured.clone());
-    #[cfg(target_os = "linux")]
-    let source = {
-        let _ = source;
-        None
-    };
-    #[cfg(not(target_os = "linux"))]
-    let source = {
-        let mut listed = capturer.get_source_list().into_iter();
-        let found = match source {
-            Source::Display(id) | Source::Window(id) => listed.find(|listed| listed.id() == id),
-            _ => listed.next(),
-        };
-        Some(found.context("That screen or window is gone.")?)
-    };
-    capturer.start_capture(source, move |result| {
-        let mut seen = seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        match result {
-            Ok(frame) => {
-                let mut picture = picture_of(&frame);
-                let (width, height) = (picture.width(), picture.height());
-                let size = fit(width, height, max_width, max_height);
-                if size != (width, height) {
-                    picture = picture.scale(size.0 as i32, size.1 as i32);
-                }
-                let taken = into
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .frame(&mut picture);
-                match taken {
-                    Ok(()) => seen.size = Some(size),
-                    Err(error) => seen.failed = Some(format!("{error:#}")),
-                }
-            }
-            // While the dialog is open, or between frames.
-            Err(CaptureError::Temporary) => {}
-            Err(CaptureError::Permanent) => {
-                seen.failed
-                    .get_or_insert_with(|| "Screen sharing stopped.".into());
-            }
-        }
-    });
+    let mut capture = Capture::start(source, &sink, max_width, max_height)?;
+    // A screen or window to share in its place, until it gives a picture.
+    let mut switching: Option<Capture> = None;
     let started = Instant::now();
     let mut frame = 0u64;
     let mut reported = None;
     while next_frame(started, frame, fps, stop) {
         run_glib();
-        capturer.capture_frame();
+        capture.capturer.capture_frame();
+        if let Some(next) = &mut switching {
+            next.capturer.capture_frame();
+        }
         frame += 1;
-        let seen = captured
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let seen = capture.seen();
         if let Some(failure) = &seen.failed {
             bail!(if reported.is_none() {
                 "Screen sharing was cancelled, or this desktop has no screen sharing dialog."
@@ -908,11 +882,122 @@ fn capture_screen(
             report(Report::Sharing { width, height });
         }
         drop(seen);
-        sink.lock()
+        if let Some(next) = &switching {
+            let seen = next.seen();
+            if let Some(failure) = &seen.failed {
+                tracing::info!(failure, "sharing the same screen or window");
+                drop(seen);
+                switching = None;
+            } else if seen.size.is_some() {
+                drop(seen);
+                capture = switching.take().expect("switching");
+                // Discord shows what's shared now.
+                let mut sink = sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if sink.streaming {
+                    sink.preview_due = Some(Instant::now());
+                }
+            }
+        }
+        let switch = sink
+            .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .check(report)?;
+        if let Some(source) = switch {
+            // A switch asked for while another waits replaces it.
+            switching = None;
+            match Capture::start(source, &sink, max_width, max_height) {
+                Ok(next) => switching = Some(next),
+                Err(error) => tracing::warn!(
+                    error = format!("{error:#}"),
+                    "sharing the same screen or window"
+                ),
+            }
+        }
     }
     Ok(())
+}
+
+/// A capturer sending a screen's or window's frames to the sink.
+struct Capture {
+    capturer: livekit::webrtc::desktop_capturer::DesktopCapturer,
+    captured: Arc<Mutex<Captured>>,
+}
+
+impl Capture {
+    /// Starts capturing `source`, fitting its frames in `max_width` by
+    /// `max_height`; on Linux, what the system's dialog picks.
+    fn start(
+        source: Source,
+        sink: &Arc<Mutex<Sink>>,
+        max_width: u32,
+        max_height: u32,
+    ) -> Result<Self> {
+        use livekit::webrtc::desktop_capturer::{
+            CaptureError, DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions,
+        };
+        // On Linux the system's screen sharing dialog picks a screen or window.
+        #[cfg(target_os = "linux")]
+        let kind = DesktopCaptureSourceType::Generic;
+        #[cfg(not(target_os = "linux"))]
+        let kind = match source {
+            Source::Window(_) => DesktopCaptureSourceType::Window,
+            _ => DesktopCaptureSourceType::Screen,
+        };
+        let mut options = DesktopCapturerOptions::new(kind);
+        options.set_include_cursor(true);
+        let mut capturer = DesktopCapturer::new(options)
+            .context("Screen sharing isn't available on this system.")?;
+        let captured = Arc::new(Mutex::new(Captured::default()));
+        let (into, seen) = (sink.clone(), captured.clone());
+        #[cfg(target_os = "linux")]
+        let source = {
+            let _ = source;
+            None
+        };
+        #[cfg(not(target_os = "linux"))]
+        let source = {
+            let mut listed = capturer.get_source_list().into_iter();
+            let found = match source {
+                Source::Display(id) | Source::Window(id) => listed.find(|listed| listed.id() == id),
+                _ => listed.next(),
+            };
+            Some(found.context("That screen or window is gone.")?)
+        };
+        capturer.start_capture(source, move |result| {
+            let mut seen = seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            match result {
+                Ok(frame) => {
+                    let mut picture = picture_of(&frame);
+                    let (width, height) = (picture.width(), picture.height());
+                    let size = fit(width, height, max_width, max_height);
+                    if size != (width, height) {
+                        picture = picture.scale(size.0 as i32, size.1 as i32);
+                    }
+                    let taken = into
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .frame(&mut picture);
+                    match taken {
+                        Ok(()) => seen.size = Some(size),
+                        Err(error) => seen.failed = Some(format!("{error:#}")),
+                    }
+                }
+                // While the dialog is open, or between frames.
+                Err(CaptureError::Temporary) => {}
+                Err(CaptureError::Permanent) => {
+                    seen.failed
+                        .get_or_insert_with(|| "Screen sharing stopped.".into());
+                }
+            }
+        });
+        Ok(Self { capturer, captured })
+    }
+
+    fn seen(&self) -> std::sync::MutexGuard<'_, Captured> {
+        self.captured
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 /// A captured frame as an I420 picture of its size.
@@ -1052,12 +1137,7 @@ impl Worker {
         source: Source,
         quality: StreamQuality,
     ) -> Result<(Self, Frames, mpsc::UnboundedReceiver<Report>)> {
-        let source = match source {
-            Source::Screen => *PICKED
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-            source => source,
-        };
+        let source = picked(source);
         let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT)?;
         let (width, height) = bounds(quality.resolution);
         let job = Job::Share {
@@ -1150,6 +1230,11 @@ impl Worker {
     /// Hands the worker the server Discord started the stream on.
     pub fn send(&mut self, server: &StreamServer) -> Result<()> {
         self.control(&Control::Send(server.clone()))
+    }
+
+    /// Tells a sharing worker to share `source` in place of what it shares.
+    pub fn switch(&mut self, source: Source) -> Result<()> {
+        self.control(&Control::Switch(picked(source)))
     }
 
     fn control(&mut self, control: &Control) -> Result<()> {
@@ -1284,6 +1369,7 @@ mod tests {
         let mut sink = Sink {
             writer: Writer::open(&frames.path().unwrap()).unwrap(),
             controls: received,
+            server: None,
             sound: false,
             video: None,
             fps: 30,
@@ -1312,12 +1398,38 @@ mod tests {
     }
 
     #[test]
+    fn switches_to_the_last_source_asked_for() {
+        let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT).unwrap();
+        let (controls, received) = channel::channel();
+        let mut sink = Sink {
+            writer: Writer::open(&frames.path().unwrap()).unwrap(),
+            controls: received,
+            server: None,
+            sound: false,
+            video: None,
+            fps: 30,
+            started: Instant::now(),
+            streaming: false,
+            preview_due: None,
+            thumbnail: None,
+            lost: None,
+        };
+        let mut report = |_| {};
+        assert_eq!(sink.check(&mut report).unwrap(), None);
+        controls.send(Control::Switch(Source::Display(1))).unwrap();
+        controls.send(Control::Switch(Source::Window(2))).unwrap();
+        assert_eq!(sink.check(&mut report).unwrap(), Some(Source::Window(2)));
+        assert_eq!(sink.check(&mut report).unwrap(), None);
+    }
+
+    #[test]
     fn previews_a_stream_once_its_picture_shows() {
         let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT).unwrap();
         let (_controls, received) = channel::channel();
         let mut sink = Sink {
             writer: Writer::open(&frames.path().unwrap()).unwrap(),
             controls: received,
+            server: None,
             sound: false,
             video: None,
             fps: 30,

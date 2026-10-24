@@ -533,6 +533,16 @@ pub(crate) async fn call(
                                 }
                             }
                         }
+                        // Not while the first dialog is open, which would open another.
+                        Some(Command::SwitchLive) => {
+                            let choosing = state.sharing.as_ref().is_none_or(|sharing| sharing.phase == SharePhase::Choosing);
+                            if let Some(going) = share.as_mut()
+                                && !choosing
+                                && let Err(error) = going.worker.switch(stream_worker::Source::Screen)
+                            {
+                                tracing::warn!(error = format!("{error:#}"), "could not switch what's shared");
+                            }
+                        }
                         Some(Command::StopLive) => {
                             if let Some(stopped) = share.take() {
                                 stopped.stop(discord, state);
