@@ -3,7 +3,7 @@ import { Theme, Middle } from "theme.slint";
 import { IconButton, PingToggle, ActionButton, MessagesSkeleton, TextField } from "controls.slint";
 import { FoundRow, FoundCard } from "header.slint";
 import { SettingsSwitch } from "settings.slint";
-import { Composer } from "composer.slint";
+import { Composer, StagedFile, StagedTile } from "composer.slint";
 import { EmojiCell, EmojiButton, MessageRow, MessageContent, HistoryEdge } from "messages.slint";
 
 /// A Discord thread beside the open channel, in place of its member list, as
@@ -27,6 +27,18 @@ export component ThreadPanel inherits Rectangle {
     in property <bool> reply-ping;
     callback toggle-reply-ping;
     in-out property <string> draft;
+    /// Files waiting to go with the next message.
+    in property <[StagedFile]> staged;
+    in property <bool> can-attach;
+    in property <bool> can-mark-spoilers;
+    callback attach;
+    callback unstage(int);
+    callback toggle-spoiler(int);
+    /// The window pastes the clipboard's files, or counts `paste-tick` up
+    /// for its text.
+    callback paste;
+    in property <int> paste-tick;
+    changed paste-tick => { composer.paste-text(); }
     in property <string> emoji-font;
     in property <length> message-font-size;
     in property <[EmojiCell]> bar-reactions;
@@ -273,23 +285,46 @@ export component ThreadPanel inherits Rectangle {
                 border-radius: 10px;
                 border-top-left-radius: root.compose-label != "" ? 0px : 10px;
                 border-top-right-radius: root.compose-label != "" ? 0px : 10px;
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; spacing: 6px;
-                    composer := Composer {
-                        text <=> root.draft; enabled: root.composer-enabled; label: "Message " + root.name;
-                        placeholder: root.is-editing ? "Edit your message" : root.compose-label != "" ? "Write a reply" : "Message " + root.name;
-                        edited(text) => { root.draft-edited(text); }
-                        accepted => { root.send(); }
-                        // A thread stages no files, so only text pastes.
-                        paste => { self.paste-text(); }
+                VerticalLayout {
+                    spacing: 0px;
+                    // Files waiting to go with the message, in a row that scrolls sideways.
+                    if root.staged.length > 0: Flickable {
+                        height: 152px;
+                        content-width: max(self.width, staged-row.preferred-width);
+                        staged-row := HorizontalLayout {
+                            padding: 10px; padding-bottom: 2px; spacing: 8px; alignment: LayoutAlignment.start;
+                            for file[index] in root.staged: StagedTile {
+                                file: file; can-spoil: root.can-mark-spoilers;
+                                remove => { root.unstage(index); }
+                                toggle-spoiler => { root.toggle-spoiler(index); }
+                            }
+                        }
                     }
-                    VerticalLayout {
-                        alignment: end; padding-bottom: 8px;
-                        IconButton {
-                            icon: @image-url("icons/send-horizontal.svg");
-                            label: root.sending ? "Sending..." : root.is-editing ? "Save" : "Send";
-                            enabled: root.can-send; emphasis: root.can-send;
-                            clicked => { root.send(); }
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; spacing: 6px;
+                        VerticalLayout {
+                            alignment: end; padding-bottom: 8px;
+                            IconButton {
+                                icon: @image-url("icons/circle-plus.svg"); label: "Attach files";
+                                glyph: 22px; enabled: root.can-attach;
+                                clicked => { root.attach(); }
+                            }
+                        }
+                        composer := Composer {
+                            text <=> root.draft; enabled: root.composer-enabled; label: "Message " + root.name;
+                            placeholder: root.is-editing ? "Edit your message" : root.compose-label != "" ? "Write a reply" : "Message " + root.name;
+                            edited(text) => { root.draft-edited(text); }
+                            accepted => { root.send(); }
+                            paste => { root.paste(); }
+                        }
+                        VerticalLayout {
+                            alignment: end; padding-bottom: 8px;
+                            IconButton {
+                                icon: @image-url("icons/send-horizontal.svg");
+                                label: root.sending ? "Sending..." : root.is-editing ? "Save" : "Send";
+                                enabled: root.can-send; emphasis: root.can-send;
+                                clicked => { root.send(); }
+                            }
                         }
                     }
                 }

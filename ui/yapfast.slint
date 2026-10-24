@@ -403,6 +403,18 @@ export component YapfastWindow inherits Window {
     callback aside-draft-edited(string);
     callback aside-send;
     callback aside-cancel-compose;
+    /// Files waiting to go with the thread's next message, as `staged` are
+    /// the channel's.
+    in property <[StagedFile]> aside-staged;
+    in property <bool> aside-can-attach;
+    in property <bool> aside-can-mark-spoilers;
+    callback aside-attach;
+    callback aside-unstage(int);
+    callback aside-toggle-spoiler(int);
+    callback aside-paste;
+    /// Counts up for the thread's composer to paste the clipboard's text,
+    /// when it holds no files.
+    in property <int> aside-paste-tick;
     /// The thread's rows at the top and bottom of its view.
     callback aside-viewport(int, int);
     // The timeline is a window of older messages that doesn't reach the
@@ -2878,6 +2890,12 @@ export component YapfastWindow inherits Window {
                         busy: root.busy; composer-enabled: root.aside-composer-enabled; can-send: root.aside-can-send;
                         sending: root.sending; compose-label: root.aside-compose-label; draft <=> root.aside-draft;
                         reply-ping: root.aside-reply-ping; toggle-reply-ping => { root.aside-toggle-reply-ping(); }
+                        staged: root.aside-staged; can-attach: root.aside-can-attach; can-mark-spoilers: root.aside-can-mark-spoilers;
+                        paste-tick: root.aside-paste-tick;
+                        attach => { root.aside-attach(); }
+                        unstage(index) => { root.aside-unstage(index); }
+                        toggle-spoiler(index) => { root.aside-toggle-spoiler(index); }
+                        paste => { root.aside-paste(); }
                         emoji-font: root.emoji-font; message-font-size: root.message-font-size; bar-reactions: root.bar-reactions;
                         active-item <=> root.active-item; react-item: root.react-item; menu-item: root.menu-item; confirm-delete: root.confirm-delete;
                         close => { root.aside-close(); }

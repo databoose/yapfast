@@ -43,6 +43,30 @@ impl AppState {
         self.compose.get(&self.aside.as_ref()?.room)
     }
 
+    /// The files waiting in the thread beside's composer.
+    pub fn aside_staged(&self) -> &[chat::Staged] {
+        self.aside
+            .as_ref()
+            .and_then(|aside| self.staged.get(&aside.room))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether files can be added to the thread beside's next message.
+    pub fn aside_can_attach(&self) -> bool {
+        self.aside.as_ref().is_some_and(|aside| {
+            self.can_write_in(&aside.room)
+                && !self.preview
+                && !matches!(self.aside_compose(), Some(Compose::Edit { .. }))
+                && self.aside_staged().len() < chat::MAX_FILES
+        })
+    }
+
+    /// Whether the thread beside's next files can be marked as spoilers.
+    pub fn aside_can_mark_spoilers(&self) -> bool {
+        self.aside_room()
+            .is_some_and(|room| room.capabilities.spoilers)
+    }
+
     /// The room whose timeline shows an item: the thread beside the open
     /// channel, or the selected room.
     pub fn room_of(&self, item: &str) -> Option<&String> {

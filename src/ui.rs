@@ -753,6 +753,16 @@ fn control(path: PathBuf, shell: Rc<shell::Shell>) -> slint::Timer {
                         }
                         Ok(())
                     }
+                    // A file for the thread beside's next message.
+                    command if command.starts_with("stage-aside ") => {
+                        if let Some(window) = window {
+                            let path = PathBuf::from(&command["stage-aside ".len()..]);
+                            adapter
+                                .borrow_mut()
+                                .action(&window, Action::StageAside(vec![path]));
+                        }
+                        Ok(())
+                    }
                     _ => Ok(()),
                 };
                 if let Err(error) = result {
@@ -1239,6 +1249,7 @@ struct Models {
     speakers: Rc<VecModel<SharedString>>,
     cameras: Rc<VecModel<SharedString>>,
     staged: Rc<VecModel<StagedFile>>,
+    aside_staged: Rc<VecModel<StagedFile>>,
 }
 
 impl Models {
@@ -1284,6 +1295,7 @@ impl Models {
         window.set_speakers(ModelRc::from(self.speakers.clone()));
         window.set_cameras(ModelRc::from(self.cameras.clone()));
         window.set_staged(ModelRc::from(self.staged.clone()));
+        window.set_aside_staged(ModelRc::from(self.aside_staged.clone()));
     }
 }
 
@@ -1722,9 +1734,10 @@ impl Adapter {
         self.window = window.as_weak();
     }
 
-    /// Ctrl+V in the composer: files and pictures on the clipboard wait to go
-    /// with the message, and anything else is pasted as text.
-    fn paste(&mut self) {
+    /// Ctrl+V in the composer, or with `aside` the thread beside's: files and
+    /// pictures on the clipboard wait to go with the message, and anything
+    /// else is pasted as text.
+    fn paste(&mut self, aside: bool) {
         if self.pasted.is_none() {
             self.pasted = tempfile::Builder::new()
                 .prefix("yapfast-pasted-")
@@ -1763,7 +1776,11 @@ impl Adapter {
                 return;
             };
             match files {
+                Some(files) if aside => adapter
+                    .borrow_mut()
+                    .action(&window, Action::StageAside(files)),
                 Some(files) => adapter.borrow_mut().action(&window, Action::Stage(files)),
+                None if aside => window.set_aside_paste_tick(window.get_aside_paste_tick() + 1),
                 None => window.invoke_paste_composer_text(),
             }
         });

@@ -1151,6 +1151,13 @@ pub enum Action {
     SendAside,
     /// Leave reply or edit mode in the thread beside.
     CancelAsideCompose,
+    /// Add files to the thread beside's next message.
+    StageAside(Vec<PathBuf>),
+    /// Take the file at this index out of the thread beside's next message.
+    UnstageAside(usize),
+    /// Mark the file at this index of the thread beside's next message as a
+    /// spoiler, or not.
+    ToggleAsideSpoiler(usize),
     SetDraft(String),
     /// The `@` word being typed in the composer changed, or there's none now.
     MentionQuery(Option<String>),
@@ -2303,6 +2310,18 @@ impl Application {
                 }
                 vec![]
             }
+            Action::StageAside(paths) => {
+                self.stage_aside(paths);
+                vec![]
+            }
+            Action::UnstageAside(index) => match self.state.aside.as_ref() {
+                Some(aside) => self.unstage_in(aside.room.clone(), index),
+                None => vec![],
+            },
+            Action::ToggleAsideSpoiler(index) => match self.state.aside.as_ref() {
+                Some(aside) => self.toggle_spoiler_in(aside.room.clone(), index),
+                None => vec![],
+            },
             Action::SelectRoom(id) => self.select_room(id),
             Action::MarkRead(id) => self.mark_read(id),
             Action::EditLast => self.edit_last(),

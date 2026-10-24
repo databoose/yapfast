@@ -1243,23 +1243,27 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
             adapter.action(&window, Action::SyncDiscordReads(sync));
         }
     });
-    let state = adapter.clone();
-    window.on_attach(move || {
-        let weak = Rc::downgrade(&state);
-        state.borrow_mut().dialog(async move {
-            let files = rfd::AsyncFileDialog::new()
-                .set_title("Attach files")
-                .pick_files()
-                .await;
-            if let (Some(files), Some(adapter)) = (files, weak.upgrade()) {
-                let window = adapter.borrow().window.upgrade();
-                if let Some(window) = window {
-                    let paths = files.iter().map(|file| file.path().to_owned()).collect();
-                    adapter.borrow_mut().action(&window, Action::Stage(paths));
+    // The channel's composer and the thread beside's pick files alike.
+    let pick = |state: Rc<RefCell<Adapter>>, stage: fn(Vec<PathBuf>) -> Action| {
+        move || {
+            let weak = Rc::downgrade(&state);
+            state.borrow_mut().dialog(async move {
+                let files = rfd::AsyncFileDialog::new()
+                    .set_title("Attach files")
+                    .pick_files()
+                    .await;
+                if let (Some(files), Some(adapter)) = (files, weak.upgrade()) {
+                    let window = adapter.borrow().window.upgrade();
+                    if let Some(window) = window {
+                        let paths = files.iter().map(|file| file.path().to_owned()).collect();
+                        adapter.borrow_mut().action(&window, stage(paths));
+                    }
                 }
-            }
-        });
-    });
+            });
+        }
+    };
+    window.on_attach(pick(adapter.clone(), Action::Stage));
+    window.on_aside_attach(pick(adapter.clone(), Action::StageAside));
     let state = adapter.clone();
     window.on_unstage(move |index| {
         let mut adapter = state.borrow_mut();
@@ -1275,7 +1279,23 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
         }
     });
     let state = adapter.clone();
-    window.on_paste_into_composer(move || state.borrow_mut().paste());
+    window.on_aside_unstage(move |index| {
+        let mut adapter = state.borrow_mut();
+        if let (Ok(index), Some(window)) = (usize::try_from(index), adapter.window.upgrade()) {
+            adapter.action(&window, Action::UnstageAside(index));
+        }
+    });
+    let state = adapter.clone();
+    window.on_aside_toggle_spoiler(move |index| {
+        let mut adapter = state.borrow_mut();
+        if let (Ok(index), Some(window)) = (usize::try_from(index), adapter.window.upgrade()) {
+            adapter.action(&window, Action::ToggleAsideSpoiler(index));
+        }
+    });
+    let state = adapter.clone();
+    window.on_paste_into_composer(move || state.borrow_mut().paste(false));
+    let state = adapter.clone();
+    window.on_aside_paste(move || state.borrow_mut().paste(true));
     let state = adapter.clone();
     window.on_copy_attachment(move |item, index| {
         let mut adapter = state.borrow_mut();

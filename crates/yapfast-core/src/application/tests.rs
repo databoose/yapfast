@@ -3277,6 +3277,38 @@ fn discord_threads_show_beside_their_channel() {
         result: Ok(()),
     });
 
+    // Files go with its next message, not the channel's.
+    let folder = tempfile::tempdir().unwrap();
+    let file = |name: &str| {
+        let path = folder.path().join(name);
+        std::fs::write(&path, b"png").unwrap();
+        path
+    };
+    let (picture, notes) = (file("map.png"), file("notes.txt"));
+    assert!(app.state.aside_can_attach());
+    app.dispatch(Action::StageAside(vec![picture.clone(), notes]));
+    assert!(
+        app.state.staged().is_empty(),
+        "the channel's composer stays"
+    );
+    assert_eq!(app.state.aside_staged().len(), 2);
+    app.dispatch(Action::ToggleAsideSpoiler(0));
+    app.dispatch(Action::UnstageAside(1));
+    assert!(app.state.can_send_in("discord:10:30"), "files alone send");
+    let effects = app.dispatch(Action::SendAside);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::Backend(Command::Send { room, files, .. })]
+            if room == "discord:10:30"
+                && matches!(files.as_slice(), [chat::OutgoingFile { path, spoiler: true }] if *path == picture)
+    ));
+    app.apply(Event::SendResult {
+        room: "discord:10:30".into(),
+        body: String::new(),
+        result: Ok(()),
+    });
+    assert!(app.state.aside_staged().is_empty(), "sent with the message");
+
     // Expanding it shows it in place of its channel.
     let effects = app.dispatch(Action::ExpandAside);
     assert!(app.state.aside.is_none());

@@ -59,6 +59,8 @@ do commands, run in order; the first error stops the rest:
   stage PATH   adds the file to the composer's next message, as a paste would;
       PATH is relative to the repository, outside .local/ui-session, which
       start empties
+  stage-aside PATH   adds the file to the next message of the thread beside
+      the channel, as stage does to the channel's
   theme ID   chooses a theme, such as yap, sakura or custom:1, as Appearance does
   window close|open|destroy|create|hide|show|trim|stats   acts on the window:
       close as its close button does (to the tray, or quit without one),

@@ -437,12 +437,12 @@ def perform(command):
         with window_control.open('a') as window:
             window.write(f'pick {kind} {path}\n')
         time.sleep(.8)
-    elif verb == 'stage':
+    elif verb in ('stage', 'stage-aside'):
         path = (ROOT / rest).resolve()
         if not path.is_file():
             raise ValueError(f'no file at {path}')
         with window_control.open('a') as window:
-            window.write(f'stage {path}\n')
+            window.write(f'{verb} {path}\n')
         # Yapfast reads the file every half second.
         time.sleep(.8)
     elif verb == 'theme':

@@ -123,8 +123,15 @@ impl Application {
     }
 
     pub(super) fn unstage(&mut self, index: usize) -> Vec<Effect> {
-        if let Some(id) = self.state.selected.clone()
-            && let Some(staged) = self.state.staged.get_mut(&id)
+        match self.state.selected.clone() {
+            Some(id) => self.unstage_in(id, index),
+            None => vec![],
+        }
+    }
+
+    /// Takes the file at `index` out of a room's next message.
+    pub(super) fn unstage_in(&mut self, room: String, index: usize) -> Vec<Effect> {
+        if let Some(staged) = self.state.staged.get_mut(&room)
             && index < staged.len()
         {
             staged.remove(index);
@@ -133,12 +140,26 @@ impl Application {
     }
 
     pub(super) fn toggle_spoiler(&mut self, index: usize) -> Vec<Effect> {
-        if self.state.can_mark_spoilers()
-            && let Some(id) = self.state.selected.clone()
+        match self.state.selected.clone() {
+            Some(id) => self.toggle_spoiler_in(id, index),
+            None => vec![],
+        }
+    }
+
+    /// Marks the file at `index` of a room's next message as a spoiler, or
+    /// not, where the room has them.
+    pub(super) fn toggle_spoiler_in(&mut self, room: String, index: usize) -> Vec<Effect> {
+        let spoilers = self
+            .state
+            .rooms
+            .iter()
+            .find(|listed| listed.id == room)
+            .is_some_and(|listed| listed.capabilities.spoilers);
+        if spoilers
             && let Some(file) = self
                 .state
                 .staged
-                .get_mut(&id)
+                .get_mut(&room)
                 .and_then(|staged| staged.get_mut(index))
         {
             file.spoiler = !file.spoiler;
@@ -330,10 +351,35 @@ impl Application {
                 return;
             }
         }
-        let Some((id, limit)) = self
+        if let Some(id) = self.state.selected.clone() {
+            self.stage_in(id, paths);
+        }
+    }
+
+    /// Adds files to the thread beside's next message, saying why any can't go.
+    pub(super) fn stage_aside(&mut self, paths: Vec<PathBuf>) {
+        let Some(id) = self.state.aside.as_ref().map(|aside| aside.room.clone()) else {
+            return;
+        };
+        if !self.state.can_write_in(&id) || self.state.preview || paths.is_empty() {
+            return;
+        }
+        if matches!(self.state.aside_compose(), Some(Compose::Edit { .. })) {
+            self.state.notice = Some("Files can't be added to a message being edited.".into());
+            return;
+        }
+        self.stage_in(id, paths);
+    }
+
+    /// Adds files to a room's next message, up to as many and as large as
+    /// it takes, saying why any can't go.
+    fn stage_in(&mut self, id: String, paths: Vec<PathBuf>) {
+        let Some(limit) = self
             .state
-            .selected_room()
-            .map(|room| (room.id.clone(), room.upload_limit))
+            .rooms
+            .iter()
+            .find(|room| room.id == id)
+            .map(|room| room.upload_limit)
         else {
             return;
         };

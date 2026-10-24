@@ -2209,10 +2209,20 @@ impl Adapter {
                 self.aside_messages = Arc::new(Vec::new());
                 self.aside_rows.clear();
                 self.models.aside_messages.clear();
+                self.models.aside_staged.clear();
             }
             return;
         };
         let room = &aside.room;
+        window.set_aside_can_attach(state.aside_can_attach());
+        window.set_aside_can_mark_spoilers(state.aside_can_mark_spoilers());
+        let rows = staged_rows(
+            &mut self.thumbnails,
+            &self.runtime,
+            &self.weak,
+            state.aside_staged(),
+        );
+        update_model(&self.models.aside_staged, rows);
         let name = state.aside_room().map_or("", |listed| listed.name.as_str());
         window.set_aside_open(true);
         if window.get_aside_room() != room.as_str() {
@@ -2329,34 +2339,15 @@ impl Adapter {
         window.set_can_attach(state.can_attach());
         window.set_can_mark_spoilers(state.can_mark_spoilers());
         let staged = state.staged();
-        self.thumbnails
-            .retain(|path, _| staged.iter().any(|file| &file.path == path));
-        let mut rows = Vec::with_capacity(staged.len());
-        for file in staged {
-            let picture = match self.thumbnails.get(&file.path) {
-                Some(thumbnail) => thumbnail.as_ref().map(|thumbnail| {
-                    if file.spoiler {
-                        thumbnail.covered.clone()
-                    } else {
-                        thumbnail.picture.clone()
-                    }
-                }),
-                None => {
-                    if file.image {
-                        self.thumbnails.insert(file.path.clone(), None);
-                        load_thumbnail(&self.runtime, self.weak.clone(), file.path.clone());
-                    }
-                    None
-                }
-            };
-            rows.push(StagedFile {
-                name: file.name.as_str().into(),
-                size: file_size(file.size).into(),
-                has_picture: picture.is_some(),
-                picture: picture.unwrap_or_default(),
-                spoiler: file.spoiler,
-            });
-        }
+        // The thread beside keeps its files' pictures too.
+        let aside_staged = state.aside_staged();
+        self.thumbnails.retain(|path, _| {
+            staged
+                .iter()
+                .chain(aside_staged)
+                .any(|file| &file.path == path)
+        });
+        let rows = staged_rows(&mut self.thumbnails, &self.runtime, &self.weak, staged);
         update_model(&self.models.staged, rows);
         window.set_confirm_delete(state.confirm_delete.clone().unwrap_or_default().into());
         window
@@ -3615,6 +3606,43 @@ fn joining_muted(window: &YapfastWindow) -> &'static str {
     } else {
         ""
     }
+}
+
+/// A composer's waiting files, each with its picture once decoded; those not
+/// decoded yet start decoding.
+fn staged_rows(
+    thumbnails: &mut HashMap<PathBuf, Option<pictures::Thumbnail>>,
+    runtime: &BackgroundRuntime,
+    weak: &std::rc::Weak<RefCell<Adapter>>,
+    staged: &[yapfast_core::chat::Staged],
+) -> Vec<StagedFile> {
+    let mut rows = Vec::with_capacity(staged.len());
+    for file in staged {
+        let picture = match thumbnails.get(&file.path) {
+            Some(thumbnail) => thumbnail.as_ref().map(|thumbnail| {
+                if file.spoiler {
+                    thumbnail.covered.clone()
+                } else {
+                    thumbnail.picture.clone()
+                }
+            }),
+            None => {
+                if file.image {
+                    thumbnails.insert(file.path.clone(), None);
+                    load_thumbnail(runtime, weak.clone(), file.path.clone());
+                }
+                None
+            }
+        };
+        rows.push(StagedFile {
+            name: file.name.as_str().into(),
+            size: file_size(file.size).into(),
+            has_picture: picture.is_some(),
+            picture: picture.unwrap_or_default(),
+            spoiler: file.spoiler,
+        });
+    }
+    rows
 }
 
 fn arrived<'a>(
