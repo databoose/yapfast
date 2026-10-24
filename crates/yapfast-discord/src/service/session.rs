@@ -473,6 +473,18 @@ impl Session<'_> {
                 self.custom_status_changed();
                 self.show_presence().await
             }
+            Request::Place {
+                guild,
+                placements,
+                reply,
+            } => {
+                let was = self.tracker.place(&guild, &placements);
+                if let Some(reply) = reply {
+                    let _ = reply.send(was);
+                }
+                self.publisher.changed();
+                Ok(())
+            }
             Request::Status(status) => {
                 self.tracker.status = status;
                 self.publisher.changed();

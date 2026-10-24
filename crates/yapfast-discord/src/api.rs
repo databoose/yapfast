@@ -1745,6 +1745,15 @@ impl Api {
             .map(drop)
     }
 
+    /// Moves a server's channels and categories, `[{"id", "position",
+    /// "parent_id", "lock_permissions"}, ...]`, the last two optional;
+    /// Discord sends CHANNEL_UPDATE for each that changed.
+    pub async fn move_channels(&self, guild: &str, moves: &Value) -> Result<()> {
+        let path = format!("/guilds/{guild}/channels");
+        self.empty(with_json(self.request(Method::PATCH, &path), moves))
+            .await
+    }
+
     /// Deletes a server's channel or category for good; Discord sends
     /// CHANNEL_DELETE, and moves a category's channels out of it.
     pub async fn delete_channel(&self, channel: &str) -> Result<()> {

@@ -427,16 +427,20 @@ impl Application {
     /// calls a channel synced; one that changes nothing, as Sync Now gives
     /// @everyone, doesn't count.
     pub fn synced(&self, room: &str) -> bool {
-        let Some(category) = self.category_of(room) else {
-            return true;
-        };
+        self.category_of(room)
+            .is_none_or(|category| self.same_overwrites(room, &category))
+    }
+
+    /// Whether two channels' or categories' overwrites match, by their room
+    /// ids, as [`Self::synced`] compares them.
+    pub(super) fn same_overwrites(&self, room: &str, other: &str) -> bool {
         let sorted = |mut overwrites: Vec<ChannelOverwrite>| {
             overwrites.retain(|known| known.allow != 0 || known.deny != 0);
             overwrites.sort_by(|a, b| a.id.cmp(&b.id));
             overwrites
         };
         let own = self.snapshot_overwrites(room).map(sorted);
-        let theirs = self.snapshot_overwrites(&category).map(sorted);
+        let theirs = self.snapshot_overwrites(other).map(sorted);
         own == theirs
     }
 

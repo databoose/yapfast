@@ -16,6 +16,7 @@ use crate::{
     voice::{self, Phase},
 };
 
+mod arrange;
 mod aside;
 mod browse;
 mod calls;
@@ -43,6 +44,7 @@ mod server_settings;
 mod session;
 mod threads;
 
+pub use arrange::{Landing, MoveSync};
 pub use browse::{BrowseChannels, BrowsedChannel, BrowsedKind};
 pub use channel_settings::{
     ChannelInput, ChannelSection, ChannelSettingsScreen, OverwriteConfirm, OverwriteRules,
@@ -412,6 +414,9 @@ pub struct AppState {
     pub channel_dialog: Option<ChannelDialog>,
     /// Asks before leaving a Discord server, while it's open.
     pub leave: Option<LeaveDialog>,
+    /// Asks whether a channel dragged into a category takes its
+    /// permissions, while it's open.
+    pub move_sync: Option<MoveSync>,
     /// The editor of this account's Discord profile, its main one or one
     /// server's, while it's open; its pictures go when it closes.
     pub profile_editor: Option<ProfileEditor>,
@@ -1461,6 +1466,16 @@ pub enum Action {
         room: String,
         pinned: bool,
     },
+    /// Move a Discord server's channel or category, by its room id, where
+    /// dropping it in the channel list lands it; see
+    /// [`Application::landing`].
+    MoveChannel {
+        room: String,
+        landing: Landing,
+    },
+    /// Answer whether a channel dragged into a category takes its
+    /// permissions: with `Some(sync)` it moves, and with none it stays.
+    AnswerMoveSync(Option<bool>),
     /// Add a Discord server's channel or category, by its room id, to the
     /// channel list that shows only those this account follows, or remove
     /// it with `follow` false.
@@ -2582,6 +2597,8 @@ impl Application {
                 self.change_notifications(place, change)
             }
             Action::PinChannel { room, pinned } => self.pin_channel(room, pinned),
+            Action::MoveChannel { room, landing } => self.move_channel(room, landing),
+            Action::AnswerMoveSync(sync) => self.answer_move_sync(sync),
             Action::FollowChannel { room, follow } => self.follow_channel(room, follow),
             Action::ShowAllChannels { server, show } => self.show_all_channels(server, show),
             Action::JoinThread {

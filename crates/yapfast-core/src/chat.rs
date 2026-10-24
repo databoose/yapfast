@@ -396,6 +396,17 @@ pub struct ChatServer {
     pub pinned: Vec<String>,
 }
 
+/// Where a Discord channel or category goes in its server's channel list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelPlacement {
+    pub room: String,
+    /// Its position among those it lists with.
+    pub position: i64,
+    /// For a channel moving to another category, that category's room id,
+    /// none for none.
+    pub parent: Option<Option<String>>,
+}
+
 /// A Discord server's role, as a roles menu lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerRole {
@@ -2000,6 +2011,16 @@ pub enum DiscordCommand {
         room: String,
         join: bool,
         location: &'static str,
+    },
+    /// Move a Discord server's channels and categories, by the server's id,
+    /// as dragging them in its channel list does, locking the permissions
+    /// of the channel `lock` names, by room id, to its new category's.
+    /// Snapshots show them moved at once, and as they were again if Discord
+    /// refuses, which comes back as [`Event::Error`].
+    MoveChannels {
+        server: String,
+        placements: Vec<ChannelPlacement>,
+        lock: Option<String>,
     },
     /// Set the flags of this account's override for a Discord server's
     /// channel, by its room id, which pins it to the top of the channel

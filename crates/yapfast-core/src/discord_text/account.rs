@@ -934,6 +934,7 @@ pub(super) fn command(
         | DiscordCommand::Mute { .. }
         | DiscordCommand::Notifications { .. }
         | DiscordCommand::PinChannel { .. }
+        | DiscordCommand::MoveChannels { .. }
         | DiscordCommand::FollowChannel { .. }
         | DiscordCommand::ShowAllChannels { .. }
         | DiscordCommand::JoinThread { .. }
@@ -1293,6 +1294,38 @@ fn change_person(
                         "unpin the channel"
                     },
                 )
+            }
+            DiscordCommand::MoveChannels {
+                server,
+                placements,
+                lock,
+            } => {
+                let id = |room: &str| {
+                    discord::parse_room(room).map_or_else(String::new, |(_, id)| id.to_owned())
+                };
+                let placements: Vec<_> = placements
+                    .iter()
+                    .map(|placement| yapfast_discord::ready::Placement {
+                        id: id(&placement.room),
+                        position: placement.position,
+                        parent: placement
+                            .parent
+                            .as_ref()
+                            .map(|parent| parent.as_deref().map(id)),
+                    })
+                    .collect();
+                let lock = lock.as_deref().map(id);
+                let result = match discord::parse_server(&server) {
+                    Some(guild) => {
+                        discord
+                            .stepping_up(|| {
+                                discord.move_channels(guild, placements.clone(), lock.as_deref())
+                            })
+                            .await
+                    }
+                    None => Err(anyhow::anyhow!(NOT_DISCORD)),
+                };
+                (result, "move the channel")
             }
             DiscordCommand::FollowChannel { room, flags } => {
                 let result = match discord::parse_room(&room) {

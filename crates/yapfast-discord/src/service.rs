@@ -556,6 +556,13 @@ enum Request {
     Inactive(Option<u64>, bool),
     /// This gateway session's id, from READY.
     Session(oneshot::Sender<Option<String>>),
+    /// Channels and categories moved, shown before Discord confirms it;
+    /// `reply` gives where they were.
+    Place {
+        guild: String,
+        placements: Vec<ready::Placement>,
+        reply: Option<oneshot::Sender<Vec<ready::Placement>>>,
+    },
 }
 
 /// What a channel's dialog edits; see [`Discord::channel_settings`].
@@ -2142,6 +2149,48 @@ impl Discord {
             body["nsfw"] = json!(settings.nsfw);
         }
         self.api.edit_channel(channel, &body).await
+    }
+
+    /// Moves a server's channels and categories, as dragging them in the
+    /// channel list does, locking the permissions of the channel `lock`
+    /// names to its new category's. The list shows them moved at once,
+    /// and as they were again if Discord refuses.
+    pub async fn move_channels(
+        &self,
+        guild: &str,
+        placements: Vec<ready::Placement>,
+        lock: Option<&str>,
+    ) -> Result<()> {
+        let body: Vec<Value> = placements
+            .iter()
+            .map(|placement| {
+                let mut entry = json!({"id": placement.id, "position": placement.position});
+                if let Some(parent) = &placement.parent {
+                    entry["parent_id"] = json!(parent);
+                }
+                if lock == Some(placement.id.as_str()) {
+                    entry["lock_permissions"] = json!(true);
+                }
+                entry
+            })
+            .collect();
+        let (reply, was) = oneshot::channel();
+        let _ = self.requests.send(Request::Place {
+            guild: guild.into(),
+            placements,
+            reply: Some(reply),
+        });
+        let result = self.api.move_channels(guild, &Value::Array(body)).await;
+        if result.is_err()
+            && let Ok(placements) = was.await
+        {
+            let _ = self.requests.send(Request::Place {
+                guild: guild.into(),
+                placements,
+                reply: None,
+            });
+        }
+        result
     }
 
     /// Deletes a server's channel or category for good.

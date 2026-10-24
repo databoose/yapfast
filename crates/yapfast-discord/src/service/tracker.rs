@@ -229,6 +229,18 @@ impl Tracker {
         }
     }
 
+    /// Puts a server's channels and categories where `placements` say,
+    /// giving where they were.
+    pub(super) fn place(
+        &mut self,
+        guild: &str,
+        placements: &[ready::Placement],
+    ) -> Vec<ready::Placement> {
+        self.server_mut(guild)
+            .map(|server| server.place(placements))
+            .unwrap_or_default()
+    }
+
     /// Applies one dispatched event; returns whether anything visible changed.
     pub(super) fn apply(&mut self, event: &Event, data: &Value) -> bool {
         let unreads = self.unreads.apply(event, data, &self.me, &self.my_roles);

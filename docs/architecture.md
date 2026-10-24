@@ -45,7 +45,9 @@ channel's list of its threads, `server`, which
 answers what the account may do in a Discord server and how the server
 notifies it, `members`, which builds a server member's menu and carries
 out its choices, and `places`, which builds the menus of Discord servers,
-categories and channels from those answers.
+categories and channels from those answers, and `arrange`, which moves
+channels and categories dragged in a server's channel list, as Discord's
+client does.
 
 The Slint adapter in [`src/ui.rs`](../src/ui.rs) and [`src/ui/`](../src/ui), with
 the interface in [`ui/*.slint`](../ui), owns input widgets, password masking,
@@ -124,7 +126,7 @@ A visible change usually touches each of these steps:
    action to the module for its area in `crates/yapfast-core/src/application/`:
    `compose.rs`, `messages.rs`, `rooms.rs`, `profiles.rs`, `polls.rs`, `calls.rs`,
    `session.rs`, `preview.rs`, `discord_account.rs`, `header.rs`,
-   `threads.rs`, `server.rs`, `members.rs` or `places.rs`.
+   `threads.rs`, `server.rs`, `members.rs`, `places.rs` or `arrange.rs`.
 5. **Backend.** An `Effect::Backend(Command)` goes through `Backend::send` to
    the chat actor in `crates/yapfast-core/src/chat.rs`, which routes it to the
    network its room id names, or to voice. Matrix lives

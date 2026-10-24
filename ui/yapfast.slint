@@ -243,6 +243,13 @@ export component YapfastWindow inherits Window {
     callback confirm-mfa;
     callback cancel-mfa;
     // Asks before leaving a Discord server, in a ChannelDialog.
+    // Asks whether a channel dragged into a category takes its
+    // permissions, in a ChannelDialog: `answer-move-sync` with whether it
+    // does, and closing it leaves the channel where it was.
+    in property <bool> move-sync-open;
+    in property <ChannelPrompt> move-sync-prompt;
+    callback answer-move-sync(bool);
+    callback close-move-sync;
     in property <bool> leave-open;
     in property <ChannelPrompt> leave-prompt;
     callback leave-server;
@@ -1114,6 +1121,12 @@ export component YapfastWindow inherits Window {
     callback show-voice-person(string, string);
     /// A channel category's heading was clicked; see RoomList.
     callback toggle-category(string);
+    /// Dragging a Discord server's channels and categories; see RoomList.
+    in property <int> room-arranging;
+    in property <[bool]> room-droppable;
+    callback start-arranging(int) -> bool;
+    callback arrange-room(int);
+    callback stop-arranging;
     // Someone's volumes, from a right click on them in a call, as percentages.
     callback volume-of(string, bool) -> int;
     /// A person, whether it's their stream, the volume, and whether it's
@@ -1902,6 +1915,10 @@ export component YapfastWindow inherits Window {
                                         root.show-profile(person.person);
                                     }
                                 }
+                                arranging: root.room-arranging; droppable: root.room-droppable;
+                                start-arranging(place) => { return root.start-arranging(place); }
+                                arrange(place) => { root.arrange-room(place); }
+                                stop-arranging => { root.stop-arranging(); }
                                 toggle-category(category) => { root.toggle-category(category); }
                                 open-category-menu(id, x, y) => {
                                     if root.category-of(id) != "" { root.open-context-menu(root.category-of(id), false, x, y); }
@@ -3525,6 +3542,14 @@ export component YapfastWindow inherits Window {
         undo => { root.undo-profile(); }
         save => { root.save-profile(); }
         close => { root.close-profile-editor(); }
+    }
+    move-sync-motion := PopupMotion { open: root.move-sync-open; }
+    if move-sync-motion.shown: ChannelDialog {
+        motion: move-sync-motion.amount;
+        prompt: root.move-sync-prompt;
+        save => { root.answer-move-sync(true); }
+        alternative => { root.answer-move-sync(false); }
+        close => { root.close-move-sync(); }
     }
     leave-motion := PopupMotion { open: root.leave-open; }
     if leave-motion.shown: ChannelDialog {

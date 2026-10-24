@@ -1681,6 +1681,59 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
         adapter.sidebar = None;
         adapter.show_sidebar(&window);
     });
+    // Dragging a Discord server's channels and categories, by their places
+    // in its channel list; see RoomList.
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_start_arranging(move |place| {
+        let Some(window) = weak.upgrade() else {
+            return false;
+        };
+        let mut adapter = state.borrow_mut();
+        let room = usize::try_from(place - 1)
+            .ok()
+            .and_then(|at| adapter.places.get(at))
+            .cloned();
+        adapter.arranging = room;
+        adapter.show_arranging(&window);
+        adapter.arranging.is_some()
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_arrange_room(move |place| {
+        let Some(window) = weak.upgrade() else { return };
+        let mut adapter = state.borrow_mut();
+        window.set_room_arranging(0);
+        let Some(room) = adapter.arranging.take() else {
+            return;
+        };
+        let landing = adapter
+            .places
+            .iter()
+            .position(|known| *known == room)
+            .zip(usize::try_from(place - 1).ok())
+            .and_then(|(dragged, onto)| adapter.app.landing(&adapter.places, dragged, onto));
+        if let Some(landing) = landing {
+            adapter.action(&window, Action::MoveChannel { room, landing });
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_stop_arranging(move || {
+        let Some(window) = weak.upgrade() else { return };
+        state.borrow_mut().arranging = None;
+        window.set_room_arranging(0);
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_answer_move_sync(move |sync| {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .action(&window, Action::AnswerMoveSync(Some(sync)));
+        }
+    });
+    bind!(on_close_move_sync, Action::AnswerMoveSync(None));
     let state = adapter.clone();
     let weak = window.as_weak();
     window.on_friend_filter_edited(move || {

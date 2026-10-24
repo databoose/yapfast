@@ -74,6 +74,10 @@ export struct RoomRow {
     /// that channel's threads follows it.
     thread: bool,
     thread-continues: bool,
+    /// Where its channel, and its heading's category, come among the rows
+    /// a Discord channel list drags and drops, counting from 1; 0 for
+    /// neither, such as a thread or a pinned channel.
+    place: int, heading-place: int,
 }
 
 // A call going on in a server: a white speaker on green, on a thin ring of
@@ -394,6 +398,21 @@ export component ChannelRow inherits Rectangle {
     in property <bool> thread;
     /// A voice channel with a chat, which a button on the row opens.
     in property <bool> chat;
+    /// It may be dragged: once the pointer has moved a few pixels with the
+    /// button down, `start-drag` asks whether it may, `dragged` says where
+    /// the pointer is in the window, and `dropped` that the button went
+    /// up, which doesn't click it.
+    in property <bool> draggable;
+    callback start-drag() -> bool;
+    callback dragged(length);
+    callback dropped;
+    /// Another row is being dragged, which may have scrolled out of the
+    /// list and stopped following the pointer: this row says where the
+    /// pointer is and when the button goes up in its place.
+    in property <bool> tracking;
+    property <bool> dragging;
+    // Refused until the button goes down again.
+    property <bool> refused;
     callback clicked;
     /// Their person's voice channel was clicked, to go to it.
     callback open-voice;
@@ -432,11 +451,32 @@ export component ChannelRow inherits Rectangle {
             return reject;
         }
         pointer := TouchArea {
-            mouse-cursor: MouseCursor.pointer;
-            clicked => { root.clicked(); }
+            mouse-cursor: root.dragging ? MouseCursor.grabbing : MouseCursor.pointer;
+            // Slint reports the click before the button going up, which
+            // ends a drag.
+            clicked => {
+                if !root.dragging { root.clicked(); }
+            }
+            moved => {
+                if self.pressed && root.draggable && !root.dragging && !root.refused && abs(self.mouse-y - self.pressed-y) > 4px {
+                    root.dragging = root.start-drag();
+                    root.refused = !root.dragging;
+                }
+                if root.dragging { root.dragged(self.absolute-position.y + self.mouse-y); }
+            }
             pointer-event(event) => {
                 if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                     root.context-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    root.refused = false;
+                }
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.up && (root.dragging || root.tracking) {
+                    root.dragging = false;
+                    root.dropped();
+                }
+                if event.kind == PointerEventKind.move && root.tracking && !root.dragging {
+                    root.dragged(self.absolute-position.y + self.mouse-y);
                 }
             }
             // The row's contents sit in its pointer area, so a voice spot in
@@ -531,11 +571,26 @@ export component ChannelRow inherits Rectangle {
     }
 }
 
+// Where a channel or category dragged in the channel list would drop: a
+// line across the edge of the row it's over, as Discord draws it.
+component DropLine inherits Rectangle {
+    height: 4px; border-radius: 2px; background: Theme.live;
+    drop-shadow-blur: 3px; drop-shadow-color: #00000066;
+}
+
 // A channel category's heading. Clicking it collapses the category, or opens
 // it again; a right click, or the Menu key or Shift+F10, opens its menu.
 component CategoryHeading inherits Rectangle {
     in property <string> text;
     in property <bool> collapsed;
+    /// It may be dragged, as ChannelRow may.
+    in property <bool> draggable;
+    callback start-drag() -> bool;
+    callback dragged(length);
+    callback dropped;
+    in property <bool> tracking;
+    property <bool> dragging;
+    property <bool> refused;
     callback toggled;
     callback context-menu(length, length);
     height: 36px;
@@ -567,11 +622,32 @@ component CategoryHeading inherits Rectangle {
             return reject;
         }
         touch := TouchArea {
-            mouse-cursor: MouseCursor.pointer;
-            clicked => { root.toggled(); }
+            mouse-cursor: root.dragging ? MouseCursor.grabbing : MouseCursor.pointer;
+            // Slint reports the click before the button going up, which
+            // ends a drag.
+            clicked => {
+                if !root.dragging { root.toggled(); }
+            }
+            moved => {
+                if self.pressed && root.draggable && !root.dragging && !root.refused && abs(self.mouse-y - self.pressed-y) > 4px {
+                    root.dragging = root.start-drag();
+                    root.refused = !root.dragging;
+                }
+                if root.dragging { root.dragged(self.absolute-position.y + self.mouse-y); }
+            }
             pointer-event(event) => {
                 if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                     root.context-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    root.refused = false;
+                }
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.up && (root.dragging || root.tracking) {
+                    root.dragging = false;
+                    root.dropped();
+                }
+                if event.kind == PointerEventKind.move && root.tracking && !root.dragging {
+                    root.dragged(self.absolute-position.y + self.mouse-y);
                 }
             }
         }
@@ -799,6 +875,61 @@ export component RoomList inherits VerticalLayout {
     callback toggle-category(string);
     /// A category's menu was asked for, by its first channel's id.
     callback open-category-menu(string, length, length);
+    /// Dragging a Discord server's channels and categories, by their rows'
+    /// places: `start-arranging` asks whether one may be dragged, and
+    /// `arranging` is the one being dragged, 0 for none, with the places it
+    /// may drop on, from the first, in `droppable`. `arrange` drops it on a
+    /// place, and `stop-arranging` nowhere.
+    in property <int> arranging;
+    in property <[bool]> droppable;
+    callback start-arranging(int) -> bool;
+    callback arrange(int);
+    callback stop-arranging;
+    // Where the pointer is in the window while dragging, the place it's
+    // over, and whether a voice channel or a category is dragged, which
+    // dims the rows it can't drop among. Each step of scrolling counts,
+    // as it moves the rows under a pointer that stays still.
+    property <length> drag-y;
+    property <int> hovered;
+    property <bool> dragged-voice;
+    property <bool> dragged-category;
+    property <int> scrolled;
+    function begin(place: int, voice: bool, category: bool) -> bool {
+        root.dragged-voice = voice;
+        root.dragged-category = category;
+        root.hovered = place;
+        return root.start-arranging(place);
+    }
+    // Drops what's dragged on the place it's over, if it may drop there and
+    // the pointer is still over the list.
+    function finish() {
+        if root.hovered > 0 && root.hovered != root.arranging && root.droppable[root.hovered - 1]
+            && root.drag-y >= list.absolute-position.y && root.drag-y < list.absolute-position.y + list.height {
+            root.arrange(root.hovered);
+        } else {
+            root.stop-arranging();
+        }
+        root.hovered = 0;
+    }
+    pure function aimed(place: int) -> bool {
+        return root.arranging > 0 && place > 0 && root.hovered == place && place != root.arranging && root.droppable[place - 1];
+    }
+    pure function dimmed(voice: bool) -> bool {
+        return root.arranging > 0 && (root.dragged-category || voice != root.dragged-voice);
+    }
+    // Near the list's top or bottom, it scrolls while dragging.
+    Timer {
+        interval: 16ms;
+        running: root.arranging > 0 && (root.drag-y < list.absolute-position.y + 40px || root.drag-y > list.absolute-position.y + list.height - 40px);
+        triggered => {
+            if root.drag-y < list.absolute-position.y + 40px {
+                list.content-y = min(0px, list.content-y + 8px);
+            } else {
+                list.content-y = max(list.visible-height - list.content-height, list.content-y - 8px);
+            }
+            root.scrolled += 1;
+        }
+    }
     min-height: 96px; vertical-stretch: 1;
     property <bool> screens: root.dms-selected && root.discord-linked && !root.preview;
     // With no rooms the list is empty; what it would start with shows above it.
@@ -816,7 +947,7 @@ export component RoomList inherits VerticalLayout {
         if root.sidebar-empty != "": HorizontalLayout { padding: 8px; Label { text: root.sidebar-empty; } }
     }
     // A list view makes only the rows in sight, which matters with hundreds of DMs.
-    ListView {
+    list := ListView {
         vertical-stretch: 1;
         for room[index] in root.rooms: VerticalLayout {
             padding-left: 8px; padding-right: 8px;
@@ -848,6 +979,23 @@ export component RoomList inherits VerticalLayout {
                 text: room.heading; collapsed: room.collapsed;
                 toggled => { root.toggle-category(room.category); }
                 context-menu(x, y) => { root.open-category-menu(room.id, x, y); }
+                draggable: room.heading-place > 0; tracking: root.arranging > 0;
+                start-drag => { return root.begin(room.heading-place, false, true); }
+                dragged(y) => { root.drag-y = y; }
+                dropped => { root.finish(); }
+                // The pointer is over it, or the gap above it.
+                property <bool> over: root.arranging > 0 && room.heading-place > 0 && root.scrolled >= 0
+                    && root.drag-y >= self.absolute-position.y - 2px && root.drag-y < self.absolute-position.y + self.height;
+                changed over => {
+                    if self.over { root.hovered = room.heading-place; }
+                    else if root.hovered == room.heading-place { root.hovered = 0; }
+                }
+                // Dragged up, it drops above the row; dragged down, below.
+                if root.aimed(room.heading-place): DropLine {
+                    x: 8px; width: parent.width - 8px;
+                    // The list's first row has no gap above it to draw in.
+                    y: room.heading-place > root.arranging ? parent.height - 1px : index == 0 && !root.browse-offered ? 0px : -3px;
+                }
             }
             // A thread hangs from its channel's icon on a line that runs on
             // to the next of its threads.
@@ -864,6 +1012,10 @@ export component RoomList inherits VerticalLayout {
                 }
                 ChannelRow {
                     text: room.name; thread: true;
+                    opacity: root.dimmed(false) ? 0.3 : 1;
+                    tracking: root.arranging > 0;
+                    dragged(y) => { root.drag-y = y; }
+                    dropped => { root.finish(); }
                     label: room.name + ", thread" + (room.muted ? ", muted" : "")
                         + (room.badge != "" ? ", " + room.badge + " mentions" : room.unread ? ", unread" : "");
                     selected: room.selected; unread: room.unread; badge: room.badge; muted: room.muted;
@@ -891,6 +1043,25 @@ export component RoomList inherits VerticalLayout {
                 clicked => { root.select-room(room.id); }
                 open-voice => { root.open-voice(room.voice-room); }
                 context-menu(x, y) => { root.open-room-menu(room.id, x, y); }
+                opacity: root.dimmed(room.voice) ? 0.3 : 1;
+                draggable: room.place > 0; tracking: root.arranging > 0;
+                start-drag => { return root.begin(room.place, room.voice, false); }
+                dragged(y) => { root.drag-y = y; }
+                dropped => { root.finish(); }
+                // Who is in a voice channel lists under it, as part of it.
+                property <length> people: !room.voice ? 0px
+                    : room.id == root.voice-channel ? root.participants.length * 30px + 4px
+                    : room.people.length > 0 ? room.people.length * 30px + 4px : 0px;
+                property <bool> over: root.arranging > 0 && room.place > 0 && root.scrolled >= 0
+                    && root.drag-y >= self.absolute-position.y - 2px && root.drag-y < self.absolute-position.y + self.height + self.people;
+                changed over => {
+                    if self.over { root.hovered = room.place; }
+                    else if root.hovered == room.place { root.hovered = 0; }
+                }
+                if root.aimed(room.place): DropLine {
+                    x: 8px; width: parent.width - 8px;
+                    y: room.place < root.arranging ? -3px : parent.height + parent.people - 1px;
+                }
             }
             // Discord reports who is in every voice channel; Matrix
             // only shows the call Yapfast is in, below.

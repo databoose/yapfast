@@ -1419,6 +1419,11 @@ struct Adapter {
     aside_restyle: bool,
     /// What the sidebar showed last, so it's built again only once that changes.
     sidebar: Option<SidebarShown>,
+    /// The room ids of the rows a Discord server's channel list drags and
+    /// drops, by their places; see RoomRow.
+    places: Vec<String>,
+    /// The channel or category being dragged there, by room id.
+    arranging: Option<String>,
     /// The voice channel of the call the rail last showed, so a voice event
     /// builds the rail again only when the call moves.
     rail_call: Option<String>,
@@ -1646,6 +1651,8 @@ impl Adapter {
                 messages: Arc::new(Vec::new()),
                 rows: Vec::new(),
                 sidebar: None,
+                places: Vec::new(),
+                arranging: None,
                 rail_call: None,
                 picker_shown: None,
                 threads_shown: None,

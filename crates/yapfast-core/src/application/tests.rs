@@ -8717,6 +8717,8 @@ fn going_idle_while_signed_out_tells_nobody() {
 }
 
 #[cfg(feature = "discord")]
+mod arrange;
+#[cfg(feature = "discord")]
 mod audit_log;
 #[cfg(feature = "discord")]
 mod channel_settings;

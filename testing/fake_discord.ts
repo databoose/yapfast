@@ -160,7 +160,10 @@
 // Alice's Crew role may manage channels: POST /guilds/{id}/channels makes a
 // channel or category in "Server", and GET, PATCH and DELETE /channels/{id}
 // read, change and delete one, each with its CHANNEL_ event. Deleting a
-// category leaves its channels outside any, as Discord does. DELETE
+// category leaves its channels outside any, as Discord does. PATCH
+// /guilds/{id}/channels moves channels and categories, as dragging them in
+// the channel list does, and GET /_control/channel-moves lists each body
+// sent. DELETE
 // /users/@me/guilds/{id} leaves "Server", owned by Bob, with GUILD_DELETE and
 // GUILD_MEMBER_REMOVE, and READY leaves it out until POST /_control/rejoin
 // brings her back with its GUILD_CREATE. So does joining by an invite: GET
@@ -1883,6 +1886,8 @@ type GuildChannel = ReturnType<typeof guildChannel>;
 const madeChannels = new Map<string, GuildChannel>();
 const channelEdits = new Map<string, Partial<GuildChannel>>();
 const deletedChannels = new Set<string>();
+// Each body of PATCH /guilds/{id}/channels, for GET /_control/channel-moves.
+const channelMoves: unknown[] = [];
 
 // Whether Alice left "Server"; see DELETE /users/@me/guilds/{id}.
 let leftServer = false;
@@ -2039,7 +2044,7 @@ function needsMfa(method: string, path: string): boolean {
   if (!mfa.on) return false;
   if (method === "PATCH" && /^\/guilds\/\d+(\/profile)?$/.test(path)) return true;
   if (method !== "GET" && /^\/guilds\/\d+\/roles/.test(path)) return true;
-  if (method === "POST" && /^\/guilds\/\d+\/channels$/.test(path)) return true;
+  if ((method === "POST" || method === "PATCH") && /^\/guilds\/\d+\/channels$/.test(path)) return true;
   if ((method === "PATCH" || method === "DELETE") && /^\/channels\/\d+$/.test(path)) return true;
   if ((method === "PUT" || method === "DELETE") && /^\/channels\/\d+\/permissions\/\d+$/.test(path)) return true;
   return method !== "GET" && /^\/guilds\/\d+\/(members|bans)\/\d+/.test(path);
@@ -5368,6 +5373,37 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     dispatch("CHANNEL_CREATE", channel);
     return json(channel, 201);
   }
+  // Dragging channels and categories in the channel list moves them, each
+  // `{id, position, parent_id?, lock_permissions?}`, with CHANNEL_UPDATE
+  // for each one that changed. Locking a channel's permissions gives it
+  // its new category's overwrites.
+  if (method === "PATCH" && path === `/guilds/${GUILD}/channels`) {
+    const body: any = await req.json().catch(() => null);
+    const known = guildChannels();
+    const valid = Array.isArray(body) && body.every((entry: any) => {
+      const channel = known.find((channel) => channel.id === entry?.id);
+      const parent = entry?.parent_id;
+      return channel !== undefined && (entry.position === undefined || Number.isInteger(entry.position)) &&
+        (parent === undefined || parent === null ||
+          (channel.type !== 4 && known.some((other) => other.id === parent && other.type === 4)));
+    });
+    if (!valid) return json({ message: "Invalid Form Body", code: 50035 }, 400);
+    const manageChannels = 1n << 4n;
+    if ((serverPermissions(ALICE) & manageChannels) === 0n) return json({ message: "Missing Permissions", code: 50013 }, 403);
+    channelMoves.push(body);
+    for (const entry of body) {
+      const before = known.find((channel) => channel.id === entry.id)!;
+      const edit: Partial<GuildChannel> = { ...channelEdits.get(entry.id) };
+      if (entry.position !== undefined) edit.position = entry.position;
+      if (entry.parent_id !== undefined) edit.parent_id = entry.parent_id;
+      const parent = known.find((channel) => channel.id === (edit.parent_id ?? before.parent_id));
+      if (entry.lock_permissions === true && parent) edit.permission_overwrites = parent.permission_overwrites;
+      channelEdits.set(entry.id, edit);
+      const after = guildChannels().find((channel) => channel.id === entry.id)!;
+      if (JSON.stringify(after) !== JSON.stringify(before)) dispatch("CHANNEL_UPDATE", after);
+    }
+    return empty();
+  }
   if (method === "GET" && (m = path.match(/^\/channels\/(\d+)$/)) && threads.has(m[1]!)) {
     return json(wireThread(threads.get(m[1]!)!));
   }
@@ -7371,6 +7407,9 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "GET" && path === "/_control/invites") {
       return Response.json(invites);
+    }
+    if (req.method === "GET" && path === "/_control/channel-moves") {
+      return Response.json(channelMoves);
     }
     if (req.method === "GET" && path === "/_control/invite-joins") {
       return Response.json(inviteJoins);

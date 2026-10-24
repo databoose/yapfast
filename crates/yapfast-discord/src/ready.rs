@@ -454,6 +454,16 @@ impl Thread {
     }
 }
 
+/// Where a channel or category goes in its server's list: its position,
+/// and for a channel moving to another category, that category, none for
+/// none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placement {
+    pub id: String,
+    pub position: i64,
+    pub parent: Option<Option<String>>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Category {
     pub name: String,
@@ -751,6 +761,40 @@ impl Server {
             _ => {}
         }
         self.sort_channels();
+    }
+
+    /// Puts channels and categories where `placements` say, as the
+    /// CHANNEL_UPDATE for each would, and gives where they were.
+    pub fn place(&mut self, placements: &[Placement]) -> Vec<Placement> {
+        let mut was = Vec::with_capacity(placements.len());
+        for placement in placements {
+            let id = placement.id.as_str();
+            if let Some(channel) = self
+                .text_channels
+                .iter_mut()
+                .chain(&mut self.voice_channels)
+                .find(|channel| channel.id == id)
+            {
+                was.push(Placement {
+                    id: id.to_owned(),
+                    position: std::mem::replace(&mut channel.position, placement.position),
+                    parent: placement
+                        .parent
+                        .clone()
+                        .map(|parent| std::mem::replace(&mut channel.parent, parent)),
+                });
+            } else if self.categories.contains_key(id)
+                && let Some(category) = Arc::make_mut(&mut self.categories).get_mut(id)
+            {
+                was.push(Placement {
+                    id: id.to_owned(),
+                    position: std::mem::replace(&mut category.position, placement.position),
+                    parent: None,
+                });
+            }
+        }
+        self.sort_channels();
+        was
     }
 
     /// Removes a deleted channel, category or thread, and a channel's
@@ -1778,6 +1822,52 @@ mod tests {
             ..message("1", None)
         };
         assert!(!Deletes::Any.allow(&call, "1"));
+    }
+
+    #[test]
+    fn placing_channels_moves_them_and_says_where_they_were() {
+        let mut server = server(&json!({
+            "id": "10",
+            "channels": [
+                {"id": "4", "type": 4, "name": "Talk", "position": 0},
+                {"id": "5", "type": 4, "name": "Games", "position": 1},
+                {"id": "11", "type": 0, "name": "general", "position": 0, "parent_id": "4"},
+                {"id": "12", "type": 0, "name": "news", "position": 1, "parent_id": "4"},
+            ],
+        }))
+        .unwrap();
+        let placement = |id: &str, position, parent: Option<Option<&str>>| Placement {
+            id: id.into(),
+            position,
+            parent: parent.map(|parent| parent.map(str::to_owned)),
+        };
+        let was = server.place(&[
+            placement("12", 0, Some(Some("5"))),
+            placement("11", 1, None),
+            placement("5", 0, None),
+            placement("4", 1, None),
+        ]);
+        assert_eq!(
+            was,
+            [
+                placement("12", 1, Some(Some("4"))),
+                placement("11", 0, None),
+                placement("5", 1, None),
+                placement("4", 0, None),
+            ]
+        );
+        let order: Vec<_> = server
+            .text_channels
+            .iter()
+            .map(|channel| (channel.id.as_str(), channel.parent.as_deref()))
+            .collect();
+        assert_eq!(
+            order,
+            [("12", Some("5")), ("11", Some("4"))],
+            "Games comes first"
+        );
+        server.place(&was);
+        assert_eq!(server.text_channels[0].id, "11");
     }
 
     #[test]

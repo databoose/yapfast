@@ -255,6 +255,7 @@ impl Adapter {
         self.show_join(window);
         self.show_channel_dialog(window);
         self.show_leave(window);
+        self.show_move_sync(window);
         self.show_profile_editor(window);
         self.show_server_settings(window);
         self.show_channel_settings(window);
@@ -730,6 +731,30 @@ impl Adapter {
             else if state.navigation == Navigation::DirectMessages { "No direct messages yet. Existing DMs appear here after syncing." }
             else if state.servers.iter().any(|server| server.discord && state.navigation == Navigation::Server(server.id.clone())) { "No channels in this server that you can see." }
             else { "No joined channels in this server. Join a channel in another Matrix client to see it here." }.into());
+        // A Discord server's channels and categories drag to move, by their
+        // places in the list: each category, and each channel that shows
+        // outside a collapsed one, as Discord's client lists them to drop
+        // on. Pinned channels and threads stay where they are.
+        let mut rows = rows;
+        let mut places = Vec::new();
+        if let Navigation::Server(server) = &state.navigation
+            && query.is_empty()
+            && state
+                .servers
+                .iter()
+                .any(|known| known.discord && &known.id == server)
+        {
+            for row in rows.iter_mut().skip(in_pinned) {
+                if !row.heading.is_empty() {
+                    places.push(row.category.to_string());
+                    row.heading_place = places.len() as i32;
+                }
+                if !row.hidden && !row.thread && !row.collapsed {
+                    places.push(row.id.to_string());
+                    row.place = places.len() as i32;
+                }
+            }
+        }
         // A voice channel's people come as a new list each time; the one on
         // screen stays while they're the same, so its row counts as unchanged.
         let rows = rows
@@ -745,6 +770,35 @@ impl Adapter {
             })
             .collect();
         update_model(&self.models.rooms, rows);
+        self.places = places;
+        // What's being dragged keeps going, at its new place.
+        if self.arranging.is_some() {
+            self.show_arranging(window);
+        }
+    }
+
+    /// The channel or category being dragged in a Discord server's channel
+    /// list, by its place, and the places it may drop on; it stops if it
+    /// left the list.
+    pub(super) fn show_arranging(&mut self, window: &YapfastWindow) {
+        let dragged = self
+            .arranging
+            .as_ref()
+            .and_then(|room| self.places.iter().position(|place| place == room))
+            .filter(|_| {
+                self.arranging
+                    .as_deref()
+                    .is_some_and(|room| self.app.draggable(room))
+            });
+        let Some(dragged) = dragged else {
+            self.arranging = None;
+            window.set_room_arranging(0);
+            return;
+        };
+        window.set_room_arranging(dragged as i32 + 1);
+        window.set_room_droppable(ModelRc::new(VecModel::from(
+            self.app.droppable(&self.places, dragged),
+        )));
     }
 
     /// The account at the bottom of the sidebar, and the notice.
@@ -1679,6 +1733,7 @@ impl Adapter {
             .into(),
             saving: dialog.saving,
             error: dialog.error.as_deref().unwrap_or_default().into(),
+            alternative: SharedString::default(),
         });
     }
 
@@ -1875,6 +1930,27 @@ impl Adapter {
             danger: true,
             saving: leave.leaving,
             error: leave.error.as_deref().unwrap_or_default().into(),
+            ..Default::default()
+        });
+    }
+
+    /// Asks whether a channel dragged into a category takes its
+    /// permissions, as Discord's client does.
+    fn show_move_sync(&self, window: &YapfastWindow) {
+        let asked = self.app.state.move_sync.as_ref();
+        window.set_move_sync_open(asked.is_some());
+        let Some(asked) = asked else {
+            return;
+        };
+        window.set_move_sync_prompt(ChannelPrompt {
+            title: "Sync permissions?".into(),
+            detail: format!(
+                "Would you like to sync {} permissions with {}?",
+                asked.channel, asked.category
+            )
+            .into(),
+            confirm: "Sync Permissions".into(),
+            alternative: "Keep Current Permissions".into(),
             ..Default::default()
         });
     }

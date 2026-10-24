@@ -212,6 +212,9 @@ export struct ChannelPrompt {
     detail: string,
     /// The button that carries it out, such as "Create channel".
     confirm: string,
+    /// A button in place of Cancel that carries it out another way, such
+    /// as "Keep Current Permissions"; empty for Cancel.
+    alternative: string,
     danger: bool,
     /// Whether it offers text or voice, for a channel it makes.
     kinds: bool,
@@ -232,6 +235,7 @@ export component ChannelDialog inherits Rectangle {
     /// 0 for text, 1 for voice.
     in-out property <int> kind;
     callback save;
+    callback alternative;
     callback close;
     property <bool> ready: !root.prompt.saving;
     /// How far it's open, from 0 to 1; see PopupMotion.
@@ -276,7 +280,10 @@ export component ChannelDialog inherits Rectangle {
                 if root.prompt.error != "": Text { text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
                 HorizontalLayout {
                     alignment: end; spacing: 8px; padding-top: 4px;
-                    ActionButton { text: "Cancel"; ghost: true; clicked => { root.close(); } }
+                    ActionButton {
+                        text: root.prompt.alternative != "" ? root.prompt.alternative : "Cancel"; ghost: true;
+                        clicked => { if root.prompt.alternative != "" { root.alternative(); } else { root.close(); } }
+                    }
                     ActionButton {
                         text: root.prompt.confirm; primary: !root.prompt.danger; danger: root.prompt.danger;
                         enabled: root.ready;
