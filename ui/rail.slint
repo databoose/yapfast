@@ -886,7 +886,8 @@ export component RoomList inherits VerticalLayout {
                 selected: room.selected; unread: room.unread; badge: room.badge; locked: room.locked;
                 call: room.call; presence: room.presence; detail: room.detail; detail-emoji: room.detail-emoji;
                 voice-channel: room.voice-channel; voice-server: room.voice-server;
-                pinned: room.pinned && room.direct; muted: room.muted;
+                // Discord doesn't dim a muted voice channel, only a text one.
+                pinned: room.pinned && room.direct; muted: room.muted && !room.voice;
                 clicked => { root.select-room(room.id); }
                 open-voice => { root.open-voice(room.voice-room); }
                 context-menu(x, y) => { root.open-room-menu(room.id, x, y); }
