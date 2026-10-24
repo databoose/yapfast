@@ -470,6 +470,15 @@ export component YapfastWindow inherits Window {
     /// conversation, which Discord's words name, as `#general`.
     in property <bool> dragging;
     in property <string> drop-destination;
+    /// The files dragged over the window go to the thread beside the
+    /// channel, which the pointer is over.
+    in property <bool> drop-aside;
+    /// Whether a point of the window is over the thread beside the channel,
+    /// below the header.
+    pure public function over-aside(x: length, y: length) -> bool {
+        root.workspace && root.aside-docked && !root.new-thread-open
+            && x >= root.width - root.aside-shown && y >= root.title-height + 48px
+    }
     /// Why the last files dropped were refused, and more, until dismissed.
     in-out property <string> drop-refusal;
     in property <string> drop-refusal-help;
@@ -1212,6 +1221,7 @@ export component YapfastWindow inherits Window {
     // its Reply and Edit focus.
     property <bool> menu-aside;
     property <int> aside-focus-tick;
+    public function focus-aside-composer() { root.aside-focus-tick += 1; }
     function focus-composer-of-menu() {
         if root.menu-aside { root.aside-focus-tick += 1; } else { root.focus-composer(); }
     }
@@ -3668,8 +3678,12 @@ export component YapfastWindow inherits Window {
         accessible-role: groupbox;
         accessible-label: root.dragging ? "Upload to " + root.drop-destination : root.drop-refusal;
         TouchArea { clicked => { root.drop-refusal = ""; } }
+        // Over the part the files go to: the thread beside, or the rest.
+        property <length> aside-part: root.workspace && root.aside-docked ? root.aside-shown : 0px;
         drop-card := Rectangle {
-            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            x: root.drop-aside ? parent.width - parent.aside-part + (parent.aside-part - self.width) / 2 : (parent.width - parent.aside-part - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            animate x { duration: 120ms; easing: ease-out; }
             width: 310px; height: drop-lines.preferred-height + 16px;
             border-radius: 10px; background: root.drop-refusal != "" && !root.dragging ? Theme.danger : Theme.accent;
             drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;

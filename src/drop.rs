@@ -8,10 +8,92 @@ use std::path::PathBuf;
 pub enum Drag {
     /// Files came over the window.
     Entered,
+    /// The pointer dragging them is here, in the window's logical pixels as
+    /// the platform has them, before Yapfast's zoom.
+    Moved { x: f64, y: f64 },
     /// They left it, or the drag ended elsewhere.
     Left,
     /// They were let go over it.
     Dropped(Vec<PathBuf>),
+}
+
+/// Where the pointer is over a window, for the drags winit reports without
+/// it: on X11 and Windows. One is made for each drag and asked while the
+/// files hover.
+pub struct Pointer {
+    source: Source,
+    /// The window's scale, from its physical pixels to its logical ones.
+    scale: f64,
+}
+
+enum Source {
+    /// A connection of its own, and the window.
+    #[cfg(target_os = "linux")]
+    X11(x11rb::rust_connection::RustConnection, u32),
+    #[cfg(windows)]
+    Win32(isize),
+}
+
+impl Pointer {
+    pub fn of(window: &slint::winit_030::winit::window::Window) -> Option<Self> {
+        use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let handle = window.window_handle().ok()?.as_raw();
+        let source = match handle {
+            #[cfg(target_os = "linux")]
+            RawWindowHandle::Xlib(handle) => Self::x11(handle.window as u32)?,
+            #[cfg(target_os = "linux")]
+            RawWindowHandle::Xcb(handle) => Self::x11(handle.window.get())?,
+            #[cfg(windows)]
+            RawWindowHandle::Win32(handle) => Source::Win32(handle.hwnd.get()),
+            _ => return None,
+        };
+        Some(Self {
+            source,
+            scale: window.scale_factor(),
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn x11(window: u32) -> Option<Source> {
+        match x11rb::connect(None) {
+            Ok((connection, _)) => Some(Source::X11(connection, window)),
+            Err(error) => {
+                tracing::warn!(%error, "could not follow files dragged over the window");
+                None
+            }
+        }
+    }
+
+    /// Where it is now, unless the platform won't say.
+    pub fn at(&self) -> Option<Drag> {
+        let (x, y) = match &self.source {
+            #[cfg(target_os = "linux")]
+            Source::X11(connection, window) => {
+                use x11rb::protocol::xproto::ConnectionExt;
+                let pointer = connection.query_pointer(*window).ok()?.reply().ok()?;
+                (f64::from(pointer.win_x), f64::from(pointer.win_y))
+            }
+            #[cfg(windows)]
+            Source::Win32(hwnd) => {
+                use windows_sys::Win32::Foundation::POINT;
+                use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+                use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+                let mut point = POINT { x: 0, y: 0 };
+                // SAFETY: the point outlives both calls, and a window gone
+                // meanwhile makes ScreenToClient fail rather than misbehave.
+                if unsafe { GetCursorPos(&mut point) } == 0
+                    || unsafe { ScreenToClient(*hwnd as _, &mut point) } == 0
+                {
+                    return None;
+                }
+                (f64::from(point.x), f64::from(point.y))
+            }
+        };
+        Some(Drag::Moved {
+            x: x / self.scale,
+            y: y / self.scale,
+        })
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -144,6 +226,8 @@ pub mod wayland {
             match event {
                 wl_data_device::Event::Enter {
                     serial,
+                    x,
+                    y,
                     id: Some(offer),
                     ..
                 } => {
@@ -155,6 +239,8 @@ pub mod wayland {
                         if offer.version() >= 3 {
                             offer.set_actions(DndAction::Copy, DndAction::Copy);
                         }
+                        // Where first, so the window shows the right place.
+                        (state.report)(Drag::Moved { x, y });
                         (state.report)(Drag::Entered);
                     } else {
                         offer.accept(serial, None);
@@ -165,6 +251,11 @@ pub mod wayland {
                         .flatten()
                     {
                         old.destroy();
+                    }
+                }
+                wl_data_device::Event::Motion { x, y, .. } => {
+                    if state.offer.as_ref().is_some_and(|(_, files)| *files) {
+                        (state.report)(Drag::Moved { x, y });
                     }
                 }
                 wl_data_device::Event::Leave => {

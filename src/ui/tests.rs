@@ -280,6 +280,72 @@ fn files_dropped_on_the_window_stage_or_say_why_not() {
 }
 
 #[test]
+#[cfg(feature = "discord")]
+fn files_dropped_on_the_thread_beside_go_with_its_message() {
+    let (window, adapter, folder) = discord_server_window_changed(0, |server| {
+        server
+            .threads
+            .push(yapfast_core::yapfast_discord::ready::Channel {
+                id: "30".into(),
+                name: "Plans".into(),
+                parent: Some("11".into()),
+                thread: Some(Box::new(yapfast_core::yapfast_discord::ready::Thread {
+                    joined: true,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            });
+    });
+    window.show().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1120., 760.));
+    adapter
+        .borrow_mut()
+        .app
+        .dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    adapter
+        .borrow_mut()
+        .action(&window, Action::SelectRoom("discord:10:11".into()));
+    adapter
+        .borrow_mut()
+        .action(&window, Action::OpenAside("discord:10:30".into()));
+    // As once both timelines have come.
+    {
+        let mut adapter = adapter.borrow_mut();
+        adapter.app.state.room_ready = true;
+        adapter.app.state.aside.as_mut().unwrap().ready = true;
+        adapter.refresh(&window);
+    }
+    // As when signed in, which the fixture isn't.
+    window.set_workspace(true);
+    let file = |name: &str| {
+        let path = folder.path().join(name);
+        std::fs::write(&path, b"png").unwrap();
+        path
+    };
+    let drag = |drag| adapter.borrow_mut().drag(&window, drag);
+    // The thread is the window's right 420px, below the header.
+    drag(Drag::Moved { x: 900., y: 400. });
+    drag(Drag::Entered);
+    assert!(window.get_dragging());
+    assert_eq!(window.get_drop_destination(), "\"Plans\"");
+    drag(Drag::Moved { x: 400., y: 400. });
+    assert_eq!(window.get_drop_destination(), "#general");
+    drag(Drag::Moved { x: 900., y: 20. });
+    assert_eq!(
+        window.get_drop_destination(),
+        "#general",
+        "the header is the channel's"
+    );
+    drag(Drag::Moved { x: 900., y: 400. });
+    drag(Drag::Dropped(vec![file("map.png"), file("notes.txt")]));
+    let state = &adapter.borrow().app.state;
+    assert_eq!(state.aside_staged().len(), 2);
+    assert!(state.staged().is_empty(), "the channel's composer stays");
+}
+
+#[test]
 fn the_keyboard_steps_through_messages_and_acts_on_them() {
     use slint::platform::{Key, WindowEvent};
     let window = showing(

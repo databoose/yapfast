@@ -298,6 +298,9 @@ fn watch_window(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
         // Files dropped together arrive one at a time, then go as one drop.
         let dropped = Rc::new(RefCell::new(Vec::new()));
         let mut hovering = false;
+        // winit doesn't say where files hover, so the pointer is asked.
+        let pointer: Rc<RefCell<Option<crate::drop::Pointer>>> = Rc::default();
+        let following = Rc::new(slint::Timer::default());
         let mut made = false;
         let placing = Rc::new(Cell::new(false));
         let weak = window.as_weak();
@@ -337,14 +340,41 @@ fn watch_window(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
                 match event {
                     WindowEvent::HoveredFile(_) if !hovering => {
                         hovering = true;
+                        let found = slint_window
+                            .with_winit_window(crate::drop::Pointer::of)
+                            .flatten();
+                        if let Some(moved) = found.as_ref().and_then(crate::drop::Pointer::at) {
+                            dragged(moved);
+                        }
+                        if found.is_some() {
+                            *pointer.borrow_mut() = found;
+                            let pointer = pointer.clone();
+                            following.start(
+                                slint::TimerMode::Repeated,
+                                Duration::from_millis(40),
+                                move || {
+                                    let moved = pointer.borrow().as_ref().and_then(|p| p.at());
+                                    if let Some(moved) = moved {
+                                        dragged(moved);
+                                    }
+                                },
+                            );
+                        }
                         dragged(Drag::Entered);
                     }
                     WindowEvent::HoveredFileCancelled => {
                         hovering = false;
+                        following.stop();
+                        pointer.take();
                         dragged(Drag::Left);
                     }
                     WindowEvent::DroppedFile(path) => {
                         hovering = false;
+                        following.stop();
+                        // Where it was let go.
+                        if let Some(moved) = pointer.take().as_ref().and_then(|p| p.at()) {
+                            dragged(moved);
+                        }
                         if dropped.borrow().is_empty() {
                             let dropped = dropped.clone();
                             slint::Timer::single_shot(Duration::ZERO, move || {
@@ -1487,6 +1517,8 @@ struct Adapter {
     thumbnails: HashMap<PathBuf, Option<pictures::Thumbnail>>,
     /// Where pasted pictures are saved until they're sent; removed as Yapfast closes.
     pasted: Option<tempfile::TempDir>,
+    /// Files are dragged over the window.
+    drag_over: bool,
     /// Ringing for a DM call that rings this account.
     #[cfg(feature = "discord")]
     ringer: Option<yapfast_core::ring::Ringer>,
@@ -1659,6 +1691,7 @@ impl Adapter {
                 talk_key: None,
                 thumbnails: HashMap::new(),
                 pasted: None,
+                drag_over: false,
                 #[cfg(feature = "discord")]
                 ringer: None,
                 tray: None,
@@ -1790,29 +1823,77 @@ impl Adapter {
     }
 
     /// Files dragged over the window go with the next message, as they do
-    /// in Discord's client: all of them, or none and why.
+    /// in Discord's client: all of them, or none and why. Those over the
+    /// thread beside the channel go with its message.
     fn drag(&mut self, window: &YapfastWindow, drag: Drag) {
         let state = &self.app.state;
         match drag {
             Drag::Entered => {
+                self.drag_over = true;
                 window.set_drop_refusal(SharedString::default());
-                window.set_drop_destination(state.upload_destination().into());
-                window.set_dragging(state.can_attach());
+                self.show_drop_target(window);
             }
-            Drag::Left => window.set_dragging(false),
-            Drag::Dropped(paths) => {
+            Drag::Moved { x, y } => {
+                // From the platform's logical pixels to the zoomed window's.
+                let platform = window
+                    .window()
+                    .with_winit_window(|winit| winit.scale_factor())
+                    .unwrap_or(1.);
+                let zoom = f64::from(window.window().scale_factor()) / platform;
+                let aside = window.invoke_over_aside((x / zoom) as f32, (y / zoom) as f32);
+                if aside != window.get_drop_aside() {
+                    window.set_drop_aside(aside);
+                    if self.drag_over {
+                        self.show_drop_target(window);
+                    }
+                }
+            }
+            Drag::Left => {
+                self.drag_over = false;
                 window.set_dragging(false);
+            }
+            Drag::Dropped(paths) => {
+                self.drag_over = false;
+                window.set_dragging(false);
+                let aside = window.get_drop_aside();
+                let (can_attach, refusal) = if aside {
+                    (state.aside_can_attach(), state.aside_drop_refusal(&paths))
+                } else {
+                    (state.can_attach(), state.drop_refusal(&paths))
+                };
+                let stage = if aside {
+                    Action::StageAside
+                } else {
+                    Action::Stage
+                };
                 // Staging says why it can't, as in a message being edited.
-                if !state.can_attach() {
-                    self.action(window, Action::Stage(paths));
-                } else if let Some(refusal) = state.drop_refusal(&paths) {
+                if !can_attach {
+                    self.action(window, stage(paths));
+                } else if let Some(refusal) = refusal {
                     window.set_drop_refusal(refusal.title().into());
                     window.set_drop_refusal_help(refusal.help().into());
                 } else {
-                    self.action(window, Action::Stage(paths));
-                    window.invoke_focus_composer();
+                    self.action(window, stage(paths));
+                    if aside {
+                        window.invoke_focus_aside_composer();
+                    } else {
+                        window.invoke_focus_composer();
+                    }
                 }
             }
+        }
+    }
+
+    /// Where files dragged over the window would go, and whether they can.
+    fn show_drop_target(&self, window: &YapfastWindow) {
+        let state = &self.app.state;
+        if window.get_drop_aside() {
+            let destination = state.aside_room().map(|room| state.destination(room));
+            window.set_drop_destination(destination.unwrap_or_default().into());
+            window.set_dragging(state.aside_can_attach());
+        } else {
+            window.set_drop_destination(state.upload_destination().into());
+            window.set_dragging(state.can_attach());
         }
     }
 

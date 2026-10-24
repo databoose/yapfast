@@ -61,6 +61,13 @@ impl AppState {
         })
     }
 
+    /// Why files dropped on the thread beside can't go with its next
+    /// message, if they can't.
+    pub fn aside_drop_refusal(&self, paths: &[PathBuf]) -> Option<chat::Refusal> {
+        let limit = self.aside_room().map_or(0, |room| room.upload_limit);
+        chat::Refusal::of(paths, self.aside_staged().len(), limit)
+    }
+
     /// Whether the thread beside's next files can be marked as spoilers.
     pub fn aside_can_mark_spoilers(&self) -> bool {
         self.aside_room()
