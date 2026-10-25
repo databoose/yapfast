@@ -214,6 +214,8 @@ typedef struct VAAPIEncodeContext {
     // Rate control parameters.
     VAEncMiscParameterRateControl rc_params;
     VAEncMiscParameterHRD        hrd_params;
+    // The AVCodecContext bitrate rc_params and hrd_params were made for.
+    int64_t         rc_bit_rate;
     VAEncMiscParameterFrameRate   fr_params;
     VAEncMiscParameterBufferMaxFrameSize mfs_params;
 #if VA_CHECK_VERSION(0, 36, 0)

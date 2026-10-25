@@ -33,6 +33,10 @@ The minimum NVIDIA driver follows the nv-codec-headers version: 12.0 needs
 - `nvenc-bitrate-without-idr.patch`: NVENC changes its bitrate as it runs,
   where FFmpeg resets the encoder, which costs an IDR frame each time. Go
   Live follows Discord's bandwidth estimate, which moves often.
+- `vaapi-bitrate-without-idr.patch`: the same for VA-API. FFmpeg sends the
+  rate control parameters to the driver only with IDR frames; this sends
+  them again with the next picture when the bitrate changes, which VA-API
+  allows with any picture.
 
 ## Updating
 

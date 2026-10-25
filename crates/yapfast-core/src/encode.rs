@@ -251,23 +251,11 @@ impl Encoder {
         self.kbps
     }
 
-    /// Aims for `kbps` from the next frame on. A hardware encoder that can't
-    /// change its bitrate as it runs, such as VA-API's, opens again at the
-    /// new one, starting with a keyframe.
+    /// Aims for `kbps` from the next frame on, without a keyframe.
     pub fn set_bitrate(&mut self, kbps: u32) -> Result<()> {
         // SAFETY: raw came from this codec's constructor and is still live.
         if unsafe { (self.set_bitrate)(self.raw, kbps) } != 0 {
-            let (codec, width, height, fps) = (self.codec, self.width, self.height, self.fps);
-            let opened = if self.hardware() {
-                open_hardware(codec, width, height, fps, kbps)
-                    .filter(|opened| opened.4 == self.engine)
-            } else {
-                None
-            };
-            let Some(opened) = opened else {
-                bail!("the {:?} encoder refused {kbps} kbit/s", self.codec);
-            };
-            self.replace(opened);
+            bail!("the {:?} encoder refused {kbps} kbit/s", self.codec);
         }
         self.kbps = kbps;
         Ok(())

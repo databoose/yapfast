@@ -915,13 +915,22 @@ inside libwebrtc. NVIDIA's driver and libva load only when an encoder opens:
 the binary starts without either, and needs NVIDIA's driver 520 or newer for
 NVENC.
 
+VA-API tries each render node (`/dev/dri/renderD128` on) with the libva
+driver its kernel driver calls for: radeonsi for amdgpu, iHD then i965 for
+Intel's. Naming it overrides `LIBVA_DRIVER_NAME`, which NixOS and others set
+to `nvidia` for browsers, and which would otherwise load NVIDIA's decoding-only
+driver for every GPU, AMD's and Intel's too. NVIDIA's nodes are skipped:
+NVENC encodes there. NixOS keeps libva itself out of the library path, so a
+bare binary there finds no VA-API until a package puts libva on it.
+
 The settings match x264's where they can: low-latency tuning (NVENC's p4
 preset, `ll`), no B-frames, a frame out for each frame in, Main profile,
 keyframes every 3 seconds and when asked, and variable bitrate capped at the
 target over half a second, which leaves a calm screen below the cap rather
-than padding it. NVENC changes its bitrate as it runs, without the IDR
-frame FFmpeg would insert (the one patch to FFmpeg); VA-API's encoders
-can't, so theirs opens again at the new bitrate, starting with a keyframe.
+than padding it. NVENC and VA-API change their bitrate as they run, without
+the IDR frame FFmpeg would insert, with a patch to FFmpeg for each: on the
+AMD chip a drop from 4 to 2 Mbit/s took hold within a second, with no
+keyframe beyond the one every 3 seconds.
 "Higher quality" changes nothing on the GPU: NVENC's slowest preset scored
 within 0.1 VMAF of p4.
 
@@ -944,7 +953,10 @@ busiest minute of an action trailer at 1080p30, NVENC's H264 matched x264 at
 against 92.6, with 2 dips under VMAF 60 in the minute against 11, and at 2.5
 Mbit/s 88.3 against 86.8, with 22 dips against 47, at 0.02 of a core against
 0.26. x264's slower presets, at up to four times the CPU, reached 88.3 too,
-with more bad frames than NVENC. VA-API isn't measured yet.
+with more bad frames than NVENC. On the same minute, the Radeon chip built
+into a Ryzen 9 9900X, through VA-API, came close to NVENC: H264 scored 92.8
+at 4 Mbit/s (6 dips) and 87.8 at 2.5 (40 dips), H265 94.9 and 92.4 against
+NVENC's 95.2 and 92.9, at 0.03 of a core.
 
 ## Servers, channels and messages
 

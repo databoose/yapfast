@@ -8,10 +8,14 @@
  * low-latency tuning, no B-frames, a frame out for each frame in, the
  * bitrate capped over half a second without padding a calm screen, H264's
  * Main profile, and parameter sets before each IDR. */
+#define _POSIX_C_SOURCE 200809L
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef __linux__
+#include <unistd.h>
+#endif
 
 #include "libavcodec/avcodec.h"
 #include "libavutil/hwcontext.h"
@@ -56,9 +60,17 @@ static void close_encoder(struct yapfast_hwenc *h) {
   av_buffer_unref(&h->device);
 }
 
+/* A render node for VA-API, and the libva driver for it. */
+struct va_device {
+  const char *path, *driver;
+};
+
 /* VA-API's device and a pool of NV12 surfaces for the encoder to read. */
-static int open_vaapi(struct yapfast_hwenc *h, AVCodecContext *codec) {
-  int ret = av_hwdevice_ctx_create(&h->device, AV_HWDEVICE_TYPE_VAAPI, NULL, NULL, 0);
+static int open_vaapi(struct yapfast_hwenc *h, AVCodecContext *codec, struct va_device device) {
+  AVDictionary *options = NULL;
+  av_dict_set(&options, "driver", device.driver, 0);
+  int ret = av_hwdevice_ctx_create(&h->device, AV_HWDEVICE_TYPE_VAAPI, device.path, options, 0);
+  av_dict_free(&options);
   if (ret < 0) return ret;
   AVBufferRef *frames = av_hwframe_ctx_alloc(h->device);
   if (!frames) return AVERROR(ENOMEM);
@@ -76,11 +88,12 @@ static int open_vaapi(struct yapfast_hwenc *h, AVCodecContext *codec) {
   return h->surface ? 0 : AVERROR(ENOMEM);
 }
 
-static int open_encoder(struct yapfast_hwenc *h, const char *name, unsigned codec_id,
-                        unsigned width, unsigned height, unsigned fps, unsigned kbps) {
+static int open_encoder(struct yapfast_hwenc *h, const char *name, struct va_device device,
+                        unsigned codec_id, unsigned width, unsigned height, unsigned fps,
+                        unsigned kbps) {
   const AVCodec *found = avcodec_find_encoder_by_name(name);
   if (!found) return AVERROR_ENCODER_NOT_FOUND;
-  int vaapi = strstr(name, "_vaapi") != NULL;
+  int vaapi = device.path != NULL;
   AVCodecContext *codec = h->codec = avcodec_alloc_context3(found);
   if (!codec) return AVERROR(ENOMEM);
   codec->width = (int)width;
@@ -103,7 +116,7 @@ static int open_encoder(struct yapfast_hwenc *h, const char *name, unsigned code
   if (vaapi) {
     av_opt_set(options, "rc_mode", "VBR", 0);
     av_opt_set_int(options, "async_depth", 1, 0);
-    ret = open_vaapi(h, codec);
+    ret = open_vaapi(h, codec, device);
     if (ret < 0) return ret;
   } else {
     av_opt_set(options, "preset", "p4", 0);
@@ -132,8 +145,71 @@ static const char *const ENCODERS[][3] = {
     [CODEC_AV1] = {"av1_nvenc", "av1_vaapi", NULL},
 };
 
-/* Opens the first encoder of `codec_id` that works, and writes its name to
- * `report`, or each one's failure when none does. */
+/* The libva drivers for each kernel driver whose GPUs encode, best first.
+ * Naming the driver overrides LIBVA_DRIVER_NAME, which NixOS and others
+ * set to nvidia for browsers, and which would fail every other GPU. NVIDIA's
+ * own VA-API driver only decodes; NVENC encodes there. */
+static const char *const VA_DRIVERS[][4] = {
+    {"amdgpu", "radeonsi", NULL},
+    {"radeon", "r600", NULL},
+    {"i915", "iHD", "i965"},
+    {"xe", "iHD", NULL},
+    {"virtio_gpu", "virtio_gpu", NULL},
+};
+
+/* The kernel driver of /dev/dri/renderD<128 + n>, or an empty string. */
+static void kernel_driver(int n, char *name, size_t size) {
+  name[0] = 0;
+#ifdef __linux__
+  char link[64], target[256];
+  snprintf(link, sizeof link, "/sys/class/drm/renderD%d/device/driver", 128 + n);
+  ssize_t length = readlink(link, target, sizeof target - 1);
+  if (length <= 0) return;
+  target[length] = 0;
+  const char *base = strrchr(target, '/');
+  base = base ? base + 1 : target;
+  if (strlen(base) < size) memcpy(name, base, strlen(base) + 1);
+#else
+  (void)n;
+  (void)size;
+#endif
+}
+
+struct opening {
+  unsigned codec_id, width, height, fps, kbps;
+  char *report;
+  size_t report_size, used;
+};
+
+/* Opens `name` on `device`, or adds why it didn't open to the report. */
+static struct yapfast_hwenc *try_open(struct opening *o, const char *name,
+                                      struct va_device device) {
+  char label[96];
+  if (device.path)
+    snprintf(label, sizeof label, "%s (%s, %s)", name, device.path + strlen("/dev/dri/"),
+             device.driver);
+  else
+    snprintf(label, sizeof label, "%s", name);
+  struct yapfast_hwenc *h = av_mallocz(sizeof *h);
+  if (!h) return NULL;
+  last_error[0] = 0;
+  int ret = open_encoder(h, name, device, o->codec_id, o->width, o->height, o->fps, o->kbps);
+  if (ret >= 0) {
+    snprintf(o->report, o->report_size, "%s", label);
+    return h;
+  }
+  if (!last_error[0]) av_strerror(ret, last_error, sizeof last_error);
+  if (o->used < o->report_size)
+    o->used += (size_t)snprintf(o->report + o->used, o->report_size - o->used, "%s%s: %s",
+                                o->used ? "; " : "", label, last_error);
+  close_encoder(h);
+  av_free(h);
+  return NULL;
+}
+
+/* Opens the first encoder of `codec_id` that works, VA-API's on each GPU
+ * that has a driver for it, and writes its name to `report`, or each one's
+ * failure when none does. */
 struct yapfast_hwenc *yapfast_hwenc_new(unsigned codec_id, unsigned width, unsigned height,
                                         unsigned fps, unsigned kbps, char *report,
                                         size_t report_size) {
@@ -141,22 +217,26 @@ struct yapfast_hwenc *yapfast_hwenc_new(unsigned codec_id, unsigned width, unsig
   if (codec_id > CODEC_AV1) return NULL;
   av_log_set_level(AV_LOG_ERROR);
   av_log_set_callback(keep_error);
-  size_t used = 0;
+  struct opening o = {codec_id, width, height, fps, kbps, report, report_size, 0};
   for (const char *const *name = ENCODERS[codec_id]; *name; name++) {
-    struct yapfast_hwenc *h = av_mallocz(sizeof *h);
-    if (!h) return NULL;
-    last_error[0] = 0;
-    int ret = open_encoder(h, *name, codec_id, width, height, fps, kbps);
-    if (ret >= 0) {
-      snprintf(report, report_size, "%s", *name);
-      return h;
+    struct yapfast_hwenc *h = NULL;
+    if (!strstr(*name, "_vaapi")) {
+      h = try_open(&o, *name, (struct va_device){NULL, NULL});
+      if (h) return h;
+      continue;
     }
-    if (!last_error[0]) av_strerror(ret, last_error, sizeof last_error);
-    if (used < report_size)
-      used += (size_t)snprintf(report + used, report_size - used, "%s%s: %s",
-                               used ? "; " : "", *name, last_error);
-    close_encoder(h);
-    av_free(h);
+    for (int n = 0; n < 8; n++) {
+      char kernel[32], path[32];
+      kernel_driver(n, kernel, sizeof kernel);
+      snprintf(path, sizeof path, "/dev/dri/renderD%d", 128 + n);
+      for (size_t i = 0; i < sizeof VA_DRIVERS / sizeof *VA_DRIVERS; i++) {
+        if (strcmp(kernel, VA_DRIVERS[i][0])) continue;
+        for (const char *const *driver = VA_DRIVERS[i] + 1; *driver; driver++) {
+          h = try_open(&o, *name, (struct va_device){path, *driver});
+          if (h) return h;
+        }
+      }
+    }
   }
   return NULL;
 }
@@ -225,11 +305,10 @@ long yapfast_hwenc_encode(struct yapfast_hwenc *h, const unsigned char *y, int y
   return (long)size;
 }
 
-/* Changes the bitrate aimed for. NVENC takes it on the next frame; VA-API's
- * encoders can't change it, so they keep theirs. Returns 0, or nonzero when
- * the bitrate stays as it was. */
+/* Changes the bitrate aimed for, from the next frame on, without a
+ * keyframe: patches/ in vendor/ffmpeg-src make NVENC and VA-API follow it.
+ * Returns 0. */
 int yapfast_hwenc_set_bitrate(struct yapfast_hwenc *h, unsigned kbps) {
-  if (h->surface) return 1;
   set_rate(h->codec, kbps);
   return 0;
 }
