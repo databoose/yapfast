@@ -1,0 +1,17 @@
+[package]
+name = "ffmpeg-src"
+version = "9.0.2"
+edition = "2024"
+publish = false
+license = "LGPL-2.1-or-later AND MIT"
+description = "FFmpeg's hardware video encoders, built from the source in ffmpeg/"
+repository = "https://git.ffmpeg.org/ffmpeg.git"
+# Hands dependents the folders to include, and the header renaming FFmpeg's
+# symbols, as DEP_FFMPEG_*.
+links = "ffmpeg"
+
+[lib]
+path = "src/lib.rs"
+
+[build-dependencies]
+cc = "1.2"

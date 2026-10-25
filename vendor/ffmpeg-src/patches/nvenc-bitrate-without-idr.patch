@@ -1,0 +1,15 @@
+--- a/libavcodec/nvenc.c
++++ b/libavcodec/nvenc.c
+@@ -2849,10 +2849,9 @@
+             reconfig_bitrate = 1;
+         }
+ 
++        /* NVENC changes the bitrate as it runs, without starting over: a
++         * reset would cost an IDR frame for every change. */
+         if (reconfig_bitrate) {
+-            params.resetEncoder = 1;
+-            params.forceIDR = 1;
+-
+             needs_encode_config = 1;
+             needs_reconfig = 1;
+         }
