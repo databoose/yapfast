@@ -1,5 +1,7 @@
-//! Decoding a watched Go Live stream, through native/decode.c: VP8 with
-//! libvpx and H264 with FFmpeg, both inside libwebrtc.
+//! Decoding a watched Go Live stream: VP8 with libvpx and H264 with FFmpeg,
+//! both inside libwebrtc, through native/decode.c; and H265 with the HEVC
+//! decoder of vendor/ffmpeg-src's FFmpeg, through native/hevc.c, where it's
+//! built.
 
 use std::ffi::{c_int, c_uchar, c_uint};
 
@@ -35,12 +37,37 @@ unsafe extern "C" {
     fn yapfast_decoder_free(decoder: *mut Raw);
 }
 
+#[cfg(hevcdec)]
+unsafe extern "C" {
+    fn yapfast_hevc_new(threads: c_uint) -> *mut Raw;
+    fn yapfast_hevc_decode(
+        decoder: *mut Raw,
+        data: *const c_uchar,
+        size: usize,
+        picture: *mut RawPicture,
+    ) -> c_int;
+    fn yapfast_hevc_free(decoder: *mut Raw);
+}
+
+type DecodeFn = unsafe extern "C" fn(*mut Raw, *const c_uchar, usize, *mut RawPicture) -> c_int;
+type FreeFn = unsafe extern "C" fn(*mut Raw);
+
+/// The codecs a viewer tells Discord it decodes, most wanted first: H265
+/// only where FFmpeg's HEVC decoder is built in, which Windows isn't yet.
+pub const DECODES: &[Codec] = if cfg!(hevcdec) {
+    &[Codec::H265, Codec::H264, Codec::Vp8]
+} else {
+    &[Codec::H264, Codec::Vp8]
+};
+
 pub struct Decoder {
     raw: *mut Raw,
     codec: Codec,
+    decode: DecodeFn,
+    free: FreeFn,
 }
 
-// SAFETY: neither library keeps thread-local state; one thread uses the decoder at a time.
+// SAFETY: no library keeps thread-local state; one thread uses the decoder at a time.
 unsafe impl Send for Decoder {}
 
 /// A decoded picture, valid until the decoder's next frame.
@@ -63,19 +90,37 @@ impl Decoder {
     /// A decoder on `threads` threads; each keeps frames of its own.
     pub fn with_threads(codec: Codec, threads: u32) -> Result<Self> {
         let threads = threads.max(1) as c_uint;
-        let kind = match codec {
-            Codec::Vp8 => 0,
-            Codec::H264 => 1,
-            // libwebrtc's FFmpeg has no H265 decoder; Yapfast doesn't offer
-            // to decode it, so Discord sends viewers H264.
-            Codec::H265 => bail!("Yapfast can't decode H265"),
-        };
         // SAFETY: plain values; null means the codec couldn't start.
-        let raw = unsafe { yapfast_decoder_new(kind, threads) };
+        let (raw, decode, free): (_, DecodeFn, FreeFn) = match codec {
+            Codec::Vp8 => (
+                unsafe { yapfast_decoder_new(0, threads) },
+                yapfast_decoder_decode,
+                yapfast_decoder_free,
+            ),
+            Codec::H264 => (
+                unsafe { yapfast_decoder_new(1, threads) },
+                yapfast_decoder_decode,
+                yapfast_decoder_free,
+            ),
+            #[cfg(hevcdec)]
+            Codec::H265 => (
+                unsafe { yapfast_hevc_new(threads) },
+                yapfast_hevc_decode,
+                yapfast_hevc_free,
+            ),
+            // Not in DECODES, so Discord sends this viewer H264.
+            #[cfg(not(hevcdec))]
+            Codec::H265 => bail!("this build of Yapfast can't decode H265"),
+        };
         if raw.is_null() {
             bail!("could not start the {codec:?} decoder");
         }
-        Ok(Self { raw, codec })
+        Ok(Self {
+            raw,
+            codec,
+            decode,
+            free,
+        })
     }
 
     pub fn codec(&self) -> Codec {
@@ -96,8 +141,7 @@ impl Decoder {
         };
         // SAFETY: the frame outlives the call; the picture points into the
         // decoder, which `Picture` borrows.
-        let decoded =
-            unsafe { yapfast_decoder_decode(self.raw, frame.as_ptr(), frame.len(), &mut raw) };
+        let decoded = unsafe { (self.decode)(self.raw, frame.as_ptr(), frame.len(), &mut raw) };
         match decoded {
             ..0 => bail!("could not decode a {:?} frame ({decoded})", self.codec),
             0 => Ok(None),
@@ -167,8 +211,9 @@ impl Picture<'_> {
 
 impl Drop for Decoder {
     fn drop(&mut self) {
-        // SAFETY: raw came from yapfast_decoder_new and is freed once.
-        unsafe { yapfast_decoder_free(self.raw) };
+        // SAFETY: raw came from the constructor `free` belongs with, and
+        // is freed once.
+        unsafe { (self.free)(self.raw) };
     }
 }
 
@@ -201,7 +246,16 @@ mod tests {
             colours.len() > 3,
             "{codec:?} decoded to a picture, not a flat colour"
         );
-        assert!(decoder.decode(b"not video").is_err() || codec == Codec::H264);
+        assert!(decoder.decode(b"not video").is_err() || codec != Codec::Vp8);
+    }
+
+    /// The first access unit of an Annex B recording: up to its second
+    /// delimiter, whose NAL header starts with `delimiter`.
+    fn first_unit(file: &[u8], delimiter: u8) -> &[u8] {
+        let second = (1..file.len() - 4)
+            .find(|&at| file[at..at + 5] == [0, 0, 0, 1, delimiter])
+            .unwrap();
+        &file[..second]
     }
 
     #[test]
@@ -210,11 +264,13 @@ mod tests {
         let header = usize::from(u16::from_le_bytes([vp8[6], vp8[7]]));
         let size = u32::from_le_bytes(vp8[header..header + 4].try_into().unwrap()) as usize;
         check(Codec::Vp8, &vp8[header + 12..header + 12 + size]);
-        // The first access unit: up to the second delimiter.
-        let h264 = fixture("stream-h264.h264");
-        let second = (1..h264.len() - 4)
-            .find(|&at| h264[at..at + 5] == [0, 0, 0, 1, 9])
-            .unwrap();
-        check(Codec::H264, &h264[..second]);
+        check(Codec::H264, first_unit(&fixture("stream-h264.h264"), 9));
+        // H265's delimiter is NAL type 35.
+        if cfg!(hevcdec) {
+            check(
+                Codec::H265,
+                first_unit(&fixture("stream-h265.h265"), 35 << 1),
+            );
+        }
     }
 }

@@ -1,9 +1,11 @@
 # FFmpeg for Yapfast
 
 Go Live's hardware encoders: FFmpeg 9.0.2's NVENC encoders for NVIDIA, and on
-Linux its VA-API ones for AMD and Intel, for H264, HEVC and AV1. Nothing else
-of FFmpeg is built: no decoders, formats, filters or assembly.
-`crates/yapfast-core/native/hwenc.c` drives them.
+Linux its VA-API ones for AMD and Intel, for H264, HEVC and AV1; and its HEVC
+decoder, for watching H265 streams, which libwebrtc's FFmpeg can't decode.
+Nothing else of FFmpeg is built: no other decoders, formats, filters or
+assembly. `crates/yapfast-core/native/hwenc.c` drives the encoders and
+`native/hevc.c` the decoder.
 
 `update.sh` makes everything here except `src/` and `patches/`. It downloads
 FFmpeg's release and nv-codec-headers 12.0.16.1 and checks their SHA-256,

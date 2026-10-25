@@ -74,7 +74,8 @@
 // to the most wanted codec every viewer decodes, with op 14, as Discord does,
 // and back when he stops. Watching
 // Bob's stream gets testing/fixtures' recording once the viewer asks for video
-// with op 15: VP8 or, after POST /_control/stream-codec with "h264", H264.
+// with op 15: VP8 or, after POST /_control/stream-codec with "h264", H264;
+// with "h265", H265 to viewers that decode it, and H264 to the rest.
 // Alice has a DM with Bob, whose last two messages she hasn't read, and a
 // group DM, "Weekend plans", with Bob and Carol. POST /_control/dm makes Dave
 // write to her, opening a DM with her the first time, and POST
@@ -3104,8 +3105,9 @@ function ivf(file: Buffer): Recorded {
   return frames;
 }
 
-/** H264 access units from an Annex B stream with access unit delimiters, as lists of NAL units. */
-function annexB(file: Buffer): { units: Buffer[]; keyframe: boolean }[] {
+/** H264 access units from an Annex B stream with access unit delimiters,
+ *  as lists of NAL units; or H265's, with `hevc`. */
+function annexB(file: Buffer, hevc = false): { units: Buffer[]; keyframe: boolean }[] {
   const starts: number[] = [];
   for (let at = 0; at + 3 <= file.length; at++) {
     if (file[at] === 0 && file[at + 1] === 0 && file[at + 2] === 1) starts.push(at + 3);
@@ -3116,12 +3118,17 @@ function annexB(file: Buffer): { units: Buffer[]; keyframe: boolean }[] {
     return file.subarray(start, end);
   });
   const frames: { units: Buffer[]; keyframe: boolean }[] = [];
+  // H264's delimiter is type 9 and its IDR slice 5; H265's delimiter is
+  // type 35, and types 16 to 21 start a picture anew.
+  const [delimiter, isKey] = hevc
+    ? [35, (type: number) => type >= 16 && type <= 21]
+    : [9, (type: number) => type === 5];
   for (const unit of units) {
-    const type = unit[0]! & 0x1f;
-    if (type === 9 || frames.length === 0) frames.push({ units: [], keyframe: false });
-    if (type === 9) continue;
+    const type = hevc ? (unit[0]! >> 1) & 0x3f : unit[0]! & 0x1f;
+    if (type === delimiter || frames.length === 0) frames.push({ units: [], keyframe: false });
+    if (type === delimiter) continue;
     frames.at(-1)!.units.push(unit);
-    if (type === 5) frames.at(-1)!.keyframe = true;
+    if (isKey(type)) frames.at(-1)!.keyframe = true;
   }
   return frames.filter((frame) => frame.units.length > 0);
 }
@@ -3313,7 +3320,9 @@ const recordings = {
   vp8: ivf(readFileSync(new URL("stream-vp8.ivf", fixtures))),
   h264: annexB(readFileSync(new URL("stream-h264.h264", fixtures))),
 };
-let streamCodec: "vp8" | "h264" = "vp8";
+/** Bob's recording in H265, for viewers that decode it; an env's video has none. */
+const h265Recording = annexB(readFileSync(new URL("stream-h265.h265", fixtures)), true);
+let streamCodec: "vp8" | "h264" | "h265" = "vp8";
 
 /** A viewer of Bob's stream and what it was sent. */
 type Watcher = {
@@ -3390,7 +3399,8 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
     if (!sent) return;
     const original = Buffer.alloc(2);
     original.writeUInt16BE(number);
-    const rtx = sent.payloadType === 101 ? 102 : 106;
+    // Each video payload type's RTX is the one after it.
+    const rtx = sent.payloadType + 1;
     toViewer(packet(Buffer.concat([original, sent.payload]), sent.marker, sent.timestamp, rtx, ssrc + 1, rtxSequence++));
     watcher.repairs.resent++;
   };
@@ -3416,6 +3426,20 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
         send(Buffer.concat([descriptor, data.subarray(at, at + 1100)]), at + 1100 >= data.length, timestamp, 105);
       }
       picture = (picture + 1) & 0x7fff;
+    } else if (watcher.codec === "h265") {
+      // RFC 7798: whole NAL units, or fragmentation units (type 49) with
+      // the unit's type in their header.
+      const { units } = h265Recording[frame % h265Recording.length]!;
+      units.forEach((unit, index) => {
+        const last = index === units.length - 1;
+        if (unit.length <= 1100) return send(unit, last, timestamp, 103);
+        for (let at = 2; at < unit.length; at += 1100) {
+          const start = at === 2 ? 0x80 : 0;
+          const end = at + 1100 >= unit.length ? 0x40 : 0;
+          const header = Buffer.from([(unit[0]! & 0x81) | (49 << 1), unit[1]!, start | end | ((unit[0]! >> 1) & 0x3f)]);
+          send(Buffer.concat([header, unit.subarray(at, at + 1100)]), last && end !== 0, timestamp, 103);
+        }
+      });
     } else {
       const h264 = camera ?? recorded.h264;
       const { units } = h264[frame % h264.length]!;
@@ -3878,7 +3902,12 @@ function voiceMessage(ws: Socket, text: string) {
         callAudio.set(ws.data.ssrc, { token: ws.data.voiceToken ?? "", packets: 0, undecryptable: 0, silent: 0, voiced: 0, speaking: [], resumed: 0, lost: 0, rtcpCounter: 1 << 20 });
       }
       const watching = ws.data.stream && !ws.data.stream.endsWith(`:${ALICE}`);
-      const codec = watching ? streamCodec : (offered?.name ?? "VP8").toLowerCase();
+      // Discord sends a viewer H265 only when its client decodes it, and
+      // H264 instead, as it chooses for every viewer of a stream.
+      const decodesH265 = ((d.codecs ?? []) as { name: string; decode?: boolean }[])
+        .some((codec) => codec.name === "H265" && codec.decode !== false);
+      const watched = streamCodec === "h265" && !decodesH265 ? "h264" : streamCodec;
+      const codec = watching ? watched : (offered?.name ?? "VP8").toLowerCase();
       reply(4, { mode: d.data?.mode, secret_key: [...key], dave_protocol_version: 0, audio_codec: "opus", video_codec: codec.toUpperCase() });
       if (watching && ws.data.ssrc) {
         // The streamer's SSRCs, as Discord announces another client's video.
@@ -7223,7 +7252,7 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "POST" && path === "/_control/stream-codec") {
       const codec = (await req.text()).trim();
-      if (codec !== "vp8" && codec !== "h264") return new Response("vp8 or h264\n", { status: 400 });
+      if (codec !== "vp8" && codec !== "h264" && codec !== "h265") return new Response("vp8, h264 or h265\n", { status: 400 });
       streamCodec = codec;
       return new Response(`streams are ${codec}\n`);
     }

@@ -844,11 +844,13 @@ too, except those carrying keys.
 
 Watching works the same way in reverse. Clicking someone's LIVE badge, or
 their tile in the call, sends op 20 and starts a worker with a watch job. The
-worker connects as a viewer, offers H264 and VP8 for decoding only, and asks
+worker connects as a viewer, offers H265, H264 and VP8 for decoding only
+(H265 only where it's built, which Windows isn't yet), and asks
 for video with op 15. It learns the streamer's SSRCs and codec from op 12 and
 op 14, then puts RTP packets back in order (`rtp::Reorder`) and together
-into frames (`rtp::Assembler`: VP8 descriptors, and H264 single units,
-STAP-A and FU-A as Annex B). As Discord's client does, it asks for a missing
+into frames (`rtp::Assembler`: VP8 descriptors, H264 single units, STAP-A
+and FU-A, and H265 single units, aggregation and fragmentation units, as
+Annex B). As Discord's client does, it asks for a missing
 packet again at once with a generic NACK, again every 80 ms up to three
 times, and takes the resend from the streamer's RTX SSRC (RFC 4588); padding
 there, which probes the path, is dropped. Packets after a gap wait for it at
@@ -863,7 +865,12 @@ resent, recovered, given up on, and keyframes asked for. The fake server
 loses one packet of each stream it sends a viewer and delivers another late,
 and resends what's asked for. The worker decodes with
 libvpx or with the FFmpeg H264 decoder in libwebrtc's archive
-(`native/decode.c`) and writes RGBA at up to 1080p into the shared frames.
+(`native/decode.c`), or H265 with the HEVC decoder of `vendor/ffmpeg-src`'s
+FFmpeg (`native/hevc.c`), which libwebrtc's lacks, and writes RGBA at up to
+1080p into the shared frames. That FFmpeg is built without its assembly, so
+H265 costs more CPU to watch than H264: on FFmpeg's command line, one
+thread decoding the action clip's minute at 1080p30 and 4 Mbit/s took about
+0.23 of a core without assembly, 0.12 with it, and 0.07 for H264.
 Watching is possible only in the call you're in, so clicking someone sharing
 in another channel joins it first, once asked, and watches once the call is
 connected; Discord drops a watch sent before. The stream's sound, Opus on
@@ -879,8 +886,9 @@ that Yapfast sends, the sound's Opus packets and soundshare flag, reading an H26
 or H265 picture's size from its SPS, without DAVE. It chooses a streamer's
 codec as Discord does, and `POST /_control/stream-viewer?user=bob&decodes=h264,vp8`
 has a viewer watch who can't decode H265, which switches the stream with op 14. To viewers it streams the
-recordings in `testing/fixtures` (VP8, or H264 after `POST
-/_control/stream-codec`) once they ask with op 15. Checked by hand against
+recordings in `testing/fixtures` (VP8, or H264 or H265 after `POST
+/_control/stream-codec`) once they ask with op 15, H265 only to a viewer
+that decodes it, and H264 to the rest, as Discord chooses. Checked by hand against
 real Discord: Discord's client shows Yapfast's stream at 1080p with its sound,
 without the call's, and Yapfast shows streams from Discord's client.
 
@@ -956,9 +964,10 @@ picks the codec Yapfast offers first that every viewer's client decodes
 switches the stream with op 14; Yapfast then opens the other encoder and
 starts it with a keyframe, dropping frames still in the old codec. When H265
 fails mid-stream, Yapfast withdraws it with its own op 14 `codecs`, marking
-it not to encode, and goes on in H264. Yapfast doesn't decode H265 itself,
-so it offers H265 only to encode: watching another Yapfast's stream switches
-it to H264. Which of Discord's own clients decode H265 isn't checked yet. On
+it not to encode, and goes on in H264. Another Yapfast watching keeps the
+stream in H265 where it decodes H265, which Windows doesn't yet, so a
+Windows viewer switches it to H264. Which of Discord's own clients decode
+H265 isn't checked yet. On
 the same minute, through FFmpeg's command line with these settings, NVENC's
 H265 scored 92.9 at 2.5 Mbit/s against H264's 88.3, with a worst 1% of 59.2
 against 43.2, and at 1.5 Mbit/s 87.6, about H264 at 2.5.

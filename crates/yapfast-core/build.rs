@@ -13,6 +13,7 @@ fn main() {
         "picture.c",
         "camera.cc",
         "hwenc.c",
+        "hevc.c",
     ] {
         println!("cargo:rerun-if-changed=native/{file}");
     }
@@ -53,22 +54,29 @@ fn main() {
         }
     }
     println!("cargo::rustc-check-cfg=cfg(hwenc)");
+    println!("cargo::rustc-check-cfg=cfg(hevcdec)");
     if std::env::var_os("CARGO_FEATURE_DISCORD").is_none() {
         return;
     }
-    // FFmpeg's hardware encoders, where ffmpeg-src builds them: hwenc.c sees
-    // only their headers, with FFmpeg's names prefixed as in the library.
+    // FFmpeg's hardware encoders and HEVC decoder, where ffmpeg-src builds
+    // them: hwenc.c and hevc.c see only their headers, with FFmpeg's names
+    // prefixed as in the library.
     if std::env::var("DEP_FFMPEG_ENCODERS").as_deref() == Ok("1") {
-        let mut hwenc = cc::Build::new();
-        hwenc.file("native/hwenc.c").warnings(true).flag("-std=c17");
+        let mut ffmpeg = cc::Build::new();
+        ffmpeg
+            .file("native/hwenc.c")
+            .file("native/hevc.c")
+            .warnings(true)
+            .flag("-std=c17");
         let folders = std::env::var_os("DEP_FFMPEG_INCLUDE").expect("ffmpeg-src's headers");
-        hwenc.includes(std::env::split_paths(&folders));
+        ffmpeg.includes(std::env::split_paths(&folders));
         let rename = std::env::var("DEP_FFMPEG_RENAME").expect("ffmpeg-src's renames");
-        hwenc
+        ffmpeg
             .flag("-include")
             .flag(&rename)
             .compile("yapfast_hwenc");
         println!("cargo:rustc-cfg=hwenc");
+        println!("cargo:rustc-cfg=hevcdec");
     }
     let os = match target_os.as_str() {
         "windows" => "win",

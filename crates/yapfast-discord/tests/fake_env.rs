@@ -12,6 +12,7 @@ use yapfast_discord::{
     api::Span,
     client,
     member_list::Presence,
+    rtp::Codec,
     service::{Discord, Live, Snapshot, Status},
     stream,
     stream_connection::StreamReceiver,
@@ -291,7 +292,7 @@ async fn shows_the_example_environment() {
         .await
         .unwrap();
     let frames = tokio::task::spawn_blocking(move || {
-        let receiver = StreamReceiver::start(watched).unwrap();
+        let receiver = StreamReceiver::start(watched, vec![Codec::H264, Codec::Vp8]).unwrap();
         let deadline = std::time::Instant::now() + WAIT;
         let mut frames = vec![];
         while frames.len() < 12 {

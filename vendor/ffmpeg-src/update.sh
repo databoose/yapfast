@@ -15,7 +15,8 @@ FFMPEG_SHA256=8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
 # 12.0 needs NVIDIA's driver 520 or newer; newer headers raise that.
 NVH_VERSION=12.0.16.1
 NVH_SHA256=bfb3306f22c169fedcfc5489b344f414089eec796ffd528412677b0c872bc6e2
-# Only hardware encoders: the libraries hold nothing else.
+# Hardware encoders, and the HEVC decoder for watching H265 streams, which
+# libwebrtc's FFmpeg lacks: the libraries hold nothing else.
 LINUX_ENCODERS=h264_nvenc,hevc_nvenc,av1_nvenc,h264_vaapi,hevc_vaapi,av1_vaapi
 COMMON=(--disable-everything --disable-programs --disable-doc --disable-network
   --disable-autodetect --disable-avformat --disable-avdevice --disable-swscale
@@ -69,7 +70,8 @@ build() {  # target, then configure's arguments
     awk 'NF == 3 {print $3}' >> "$work/defined.txt"
   nm -u "$out/libavcodec/libavcodec.a" "$out/libavutil/libavutil.a" | awk '{print $2}' >> "$work/used.txt"
 }
-build linux-x86_64 --enable-ffnvcodec --enable-nvenc --enable-vaapi --enable-encoder="$LINUX_ENCODERS"
+build linux-x86_64 --enable-ffnvcodec --enable-nvenc --enable-vaapi --enable-encoder="$LINUX_ENCODERS" \
+  --enable-decoder=hevc
 
 if grep -En '/(tmp|nix|home)/' "$work"/gen/*/config.h; then
   echo "update.sh: config.h names a path on this machine" >&2
