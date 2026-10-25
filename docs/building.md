@@ -216,6 +216,15 @@ its configure and Makefile. Go Live and the camera encode H264 with it; NASM
 assembles its x86-64 code, so every shell, package and native build needs
 `nasm`.
 
+`vendor/ffmpeg-src` is FFmpeg's source trimmed to its hardware encoders
+(NVENC, and VA-API on Linux), with nv-codec-headers' and libva's headers and
+configure's output for each target, all made by its `update.sh`; one patch
+lets NVENC change its bitrate without a keyframe. Its build script compiles
+it with every symbol prefixed, apart from the FFmpeg in libwebrtc, and loads
+libva and NVIDIA's driver only when an encoder opens. Its
+`README.yapfast.md` explains the rest. Targets without a `gen/` folder build
+without hardware encoding.
+
 Each has a `README.yapfast.md` with its changes, except the two Slint crates, which
 this section describes. The Slint crates keep their `.rs` files at the crate
 root, with no `src/`, both in `vendor/` and in Cargo's registry.

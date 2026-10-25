@@ -952,6 +952,9 @@ struct Layout {
     each_sound: std::collections::BTreeMap<Sound, u8>,
     /// Yapfast draws with Skia GPU from its next start; see [`graphics`].
     gpu_rendering: bool,
+    /// Screen sharing encodes on the GPU where it has an encoder; on unless
+    /// turned off.
+    gpu_encoding: Option<bool>,
     /// The theme chosen, by its id; Yap unless chosen.
     theme: Option<String>,
     /// The person's own themes, in the order Appearance shows them.
@@ -1171,6 +1174,9 @@ impl Layout {
         window.set_sound_volume(self.sound_volume.unwrap_or(DEFAULT_SOUND_VOLUME).into());
         window.set_adjust_each_sound(self.adjust_each_sound);
         window.set_gpu_rendering(self.gpu_rendering);
+        window.set_gpu_encoding(self.gpu_encoding.unwrap_or(true));
+        #[cfg(feature = "discord")]
+        yapfast_core::stream_worker::set_hardware_encoding(self.gpu_encoding.unwrap_or(true));
         window.set_close_to_tray(self.close_to_tray.unwrap_or(true));
         window.set_multiple_windows(self.multiple_windows);
         title_bar::show(window, self.system_title_bar);

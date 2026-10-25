@@ -100,6 +100,7 @@ impl Filming {
                     camera::FPS,
                     BITRATE,
                     Effort::Light,
+                    false,
                 )
                 .inspect_err(|error| tracing::warn!(%error, "could not encode the camera"))
                 .ok();

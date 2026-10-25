@@ -1000,6 +1000,8 @@ export component YapfastWindow inherits Window {
     /// applies when Yapfast restarts, which restart does.
     in-out property <bool> gpu-rendering;
     in property <bool> gpu-running;
+    /// Screen sharing encodes on the GPU where it has an encoder.
+    in-out property <bool> gpu-encoding: true;
     /// Closing the window leaves Yapfast in the system tray, when there's one.
     in-out property <bool> close-to-tray: true;
     in property <bool> tray-available;
@@ -3237,6 +3239,7 @@ export component YapfastWindow inherits Window {
         }
         if root.settings-section == 6: AdvancedSettings {
             gpu-rendering <=> root.gpu-rendering; gpu-running: root.gpu-running;
+            gpu-encoding <=> root.gpu-encoding;
             close-to-tray <=> root.close-to-tray; tray-available: root.tray-available;
             multiple-windows <=> root.multiple-windows;
             start-on-sign-in <=> root.start-on-sign-in; autostart-available: root.autostart-available;

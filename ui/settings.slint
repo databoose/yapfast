@@ -1078,10 +1078,12 @@ export component SoundSettings inherits VerticalLayout {
     }
 }
 
-// Settings: how Yapfast draws its window. Slint picks a renderer once per
-// process, so a change waits for a restart, which this offers.
+// Settings: how Yapfast draws its window and encodes a shared screen. Slint
+// picks a renderer once per process, so a change to that waits for a
+// restart, which this offers; encoding changes from the next stream.
 export component AdvancedSettings inherits VerticalLayout {
     in-out property <bool> gpu-rendering;
+    in-out property <bool> gpu-encoding;
     in property <bool> gpu-running;
     in-out property <bool> close-to-tray;
     in property <bool> tray-available;
@@ -1128,6 +1130,12 @@ export component AdvancedSettings inherits VerticalLayout {
             text: "Restart Yapfast"; icon: @image-url("icons/refresh-cw.svg");
             clicked => { root.restart(); }
         }
+    }
+    SettingsSwitch {
+        text: "Encode streams with the GPU";
+        description: "Screen sharing uses the graphics card's video encoder, which takes almost no processor time and looks better at low bitrates. Off, or without one, Yapfast encodes on the processor.";
+        checked <=> root.gpu-encoding;
+        toggled => { root.preferences-changed(); }
     }
     Label {
         text: "Icons from Solar by 480 Design (CC BY 4.0), many of them adapted, and from Lucide (ISC).";

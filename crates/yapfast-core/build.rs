@@ -12,6 +12,7 @@ fn main() {
         "video.c",
         "picture.c",
         "camera.cc",
+        "hwenc.c",
     ] {
         println!("cargo:rerun-if-changed=native/{file}");
     }
@@ -51,8 +52,23 @@ fn main() {
             println!("cargo:rustc-link-lib=dylib=oleaut32");
         }
     }
+    println!("cargo::rustc-check-cfg=cfg(hwenc)");
     if std::env::var_os("CARGO_FEATURE_DISCORD").is_none() {
         return;
+    }
+    // FFmpeg's hardware encoders, where ffmpeg-src builds them: hwenc.c sees
+    // only their headers, with FFmpeg's names prefixed as in the library.
+    if std::env::var("DEP_FFMPEG_ENCODERS").as_deref() == Ok("1") {
+        let mut hwenc = cc::Build::new();
+        hwenc.file("native/hwenc.c").warnings(true).flag("-std=c17");
+        let folders = std::env::var_os("DEP_FFMPEG_INCLUDE").expect("ffmpeg-src's headers");
+        hwenc.includes(std::env::split_paths(&folders));
+        let rename = std::env::var("DEP_FFMPEG_RENAME").expect("ffmpeg-src's renames");
+        hwenc
+            .flag("-include")
+            .flag(&rename)
+            .compile("yapfast_hwenc");
+        println!("cargo:rustc-cfg=hwenc");
     }
     let os = match target_os.as_str() {
         "windows" => "win",

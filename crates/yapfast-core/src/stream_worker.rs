@@ -82,6 +82,9 @@ pub enum Job {
         /// How hard the encoder works on each frame.
         #[serde(default)]
         effort: Effort,
+        /// Encoding on the GPU's encoder, where it has one.
+        #[serde(default)]
+        hardware: bool,
     },
     /// Receives and decodes the stream at `server`, writing pictures that
     /// fit `width` by `height` to the frames file at `frames`.
@@ -348,6 +351,7 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
             height,
             fps,
             effort,
+            hardware,
         } => {
             let fps = fps.clamp(1, 60);
             let sink = Sink {
@@ -358,6 +362,7 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
                 video: None,
                 fps,
                 effort,
+                hardware,
                 started: Instant::now(),
                 streaming: false,
                 preview_due: None,
@@ -440,6 +445,7 @@ struct Sink {
     video: Option<Video>,
     fps: u32,
     effort: Effort,
+    hardware: bool,
     started: Instant,
     streaming: bool,
     /// When the stream's next preview is due: from when it starts.
@@ -509,7 +515,14 @@ impl Sink {
                 self.fps,
                 kbps(height, None),
                 self.effort,
+                self.hardware,
             )?;
+            tracing::info!(
+                engine = encoder.engine(),
+                width,
+                height,
+                "encoding the stream"
+            );
             self.video = Some(Video {
                 sender,
                 encoder,
@@ -527,6 +540,7 @@ impl Sink {
                 self.fps,
                 kbps(height, None),
                 self.effort,
+                self.hardware,
             )?;
             video.sender.resize(width, height);
         }
@@ -1133,6 +1147,15 @@ mod base64_pixels {
     }
 }
 
+/// Whether streams encode on the GPU where it has an encoder: Settings'
+/// choice, on until the UI says.
+static HARDWARE: AtomicBool = AtomicBool::new(true);
+
+/// Encodes streams started from now on with the GPU's encoder, or not.
+pub fn set_hardware_encoding(on: bool) {
+    HARDWARE.store(on, Ordering::Relaxed);
+}
+
 /// Yapfast's handle on a running worker. Dropping it stops the worker.
 pub struct Worker {
     child: Child,
@@ -1159,6 +1182,7 @@ impl Worker {
             } else {
                 Effort::Light
             },
+            hardware: HARDWARE.load(Ordering::Relaxed),
         };
         let (worker, reports) = Self::start(&job)?;
         Ok((worker, frames, reports))
@@ -1387,6 +1411,7 @@ mod tests {
             video: None,
             fps: 30,
             effort: Effort::Light,
+            hardware: false,
             started: Instant::now(),
             streaming: false,
             preview_due: None,
@@ -1423,6 +1448,7 @@ mod tests {
             video: None,
             fps: 30,
             effort: Effort::Light,
+            hardware: false,
             started: Instant::now(),
             streaming: false,
             preview_due: None,
@@ -1449,6 +1475,7 @@ mod tests {
             video: None,
             fps: 30,
             effort: Effort::Light,
+            hardware: false,
             started: Instant::now(),
             streaming: false,
             preview_due: Some(Instant::now()),
@@ -1490,6 +1517,7 @@ mod tests {
             height: PREVIEW_HEIGHT,
             fps: 60,
             effort: Effort::Light,
+            hardware: false,
         };
         let (input, mut feed) = std::io::pipe().unwrap();
         writeln!(feed, "{}", serde_json::to_string(&job).unwrap()).unwrap();
@@ -1604,6 +1632,7 @@ mod tests {
                 height: PREVIEW_HEIGHT,
                 fps: 30,
                 effort: Effort::Light,
+                hardware: false,
             };
             let (input, mut feed) = std::io::pipe().unwrap();
             writeln!(feed, "{}", serde_json::to_string(&job).unwrap()).unwrap();
@@ -1655,6 +1684,7 @@ mod tests {
             height: 16,
             fps: 1,
             effort: Effort::Light,
+            hardware: false,
         };
         let mut reports = Vec::new();
         let input = format!("{}\n", serde_json::to_string(&gone).unwrap());

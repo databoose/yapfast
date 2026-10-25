@@ -1,7 +1,8 @@
 //! Encoding for Go Live and the camera, through native/vp8.c with the libvpx
-//! inside libwebrtc, and native/h264.c with x264 (vendor/x264-src). Frames
-//! arrive as RGBA or I420 and leave as VP8 frames or H264 access units in
-//! Annex B form.
+//! inside libwebrtc, native/h264.c with x264 (vendor/x264-src), and
+//! native/hwenc.c with FFmpeg's hardware encoders (vendor/ffmpeg-src) where
+//! the GPU has one. Frames arrive as RGBA or I420 and leave as VP8 frames or
+//! H264 access units in Annex B form.
 
 use std::ffi::{c_int, c_long, c_longlong, c_uchar, c_uint, c_ulong};
 
@@ -11,7 +12,10 @@ use livekit::webrtc::{
     video_frame::{I420Buffer, VideoBuffer},
 };
 use yapfast_discord::rtp::Codec;
-// x264's library, which native/h264.c calls: linked only while named.
+// FFmpeg's and x264's libraries, which native/hwenc.c and native/h264.c
+// call: linked only while named.
+#[cfg(hwenc)]
+use ffmpeg_src as _;
 use x264_src as _;
 
 #[repr(C)]
@@ -91,6 +95,37 @@ unsafe extern "C" {
     fn yapfast_h264_free(encoder: *mut Raw);
 }
 
+#[cfg(hwenc)]
+unsafe extern "C" {
+    fn yapfast_hwenc_new(
+        codec: c_uint,
+        width: c_uint,
+        height: c_uint,
+        fps: c_uint,
+        kbps: c_uint,
+        report: *mut std::ffi::c_char,
+        report_size: usize,
+    ) -> *mut Raw;
+    #[allow(clippy::too_many_arguments)]
+    fn yapfast_hwenc_encode(
+        encoder: *mut Raw,
+        y: *const c_uchar,
+        y_stride: c_int,
+        u: *const c_uchar,
+        u_stride: c_int,
+        v: *const c_uchar,
+        v_stride: c_int,
+        pts: c_longlong,
+        duration: c_ulong,
+        keyframe: c_int,
+        out: *mut c_uchar,
+        capacity: usize,
+        is_key: *mut c_int,
+    ) -> c_long;
+    fn yapfast_hwenc_set_bitrate(encoder: *mut Raw, kbps: c_uint) -> c_int;
+    fn yapfast_hwenc_free(encoder: *mut Raw);
+}
+
 /// RTP's video clock.
 pub const CLOCK: u64 = 90_000;
 
@@ -108,6 +143,10 @@ pub enum Effort {
 pub struct Encoder {
     raw: *mut Raw,
     codec: Codec,
+    effort: Effort,
+    /// Which encoder runs: "libvpx", "x264", or FFmpeg's name for a
+    /// hardware one, such as "h264_nvenc".
+    engine: String,
     encode: Encode,
     set_bitrate: SetBitrate,
     free: Free,
@@ -123,7 +162,8 @@ pub struct Encoder {
     out: Vec<u8>,
 }
 
-// SAFETY: neither library keeps thread-local state; one thread uses the encoder at a time.
+// SAFETY: no library keeps thread-local state past a call; one thread uses
+// the encoder at a time.
 unsafe impl Send for Encoder {}
 
 /// One encoded frame.
@@ -132,8 +172,13 @@ pub struct Frame<'a> {
     pub keyframe: bool,
 }
 
+/// An opened encoder's handle and functions, and its name.
+type Opened = (*mut Raw, Encode, SetBitrate, Free, String);
+
 impl Encoder {
-    /// An encoder for `width` by `height` frames, which must be even.
+    /// An encoder for `width` by `height` frames, which must be even. With
+    /// `hardware`, H264 goes to the GPU's encoder where there is one, and to
+    /// x264 otherwise.
     pub fn new(
         codec: Codec,
         width: u32,
@@ -141,34 +186,22 @@ impl Encoder {
         fps: u32,
         kbps: u32,
         effort: Effort,
+        hardware: bool,
     ) -> Result<Self> {
         if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             bail!("{codec:?} frames need an even size, not {width}x{height}");
         }
-        let threads =
-            std::thread::available_parallelism().map_or(1, |cores| cores.get().min(4)) as u32;
-        // SAFETY: plain values; null means the library refused the configuration.
-        let (raw, encode, set_bitrate, free): (_, Encode, SetBitrate, Free) = match codec {
-            Codec::Vp8 => (
-                unsafe { yapfast_vp8_new(width, height, fps, kbps, threads) },
-                yapfast_vp8_encode,
-                yapfast_vp8_set_bitrate,
-                yapfast_vp8_free,
-            ),
-            Codec::H264 => (
-                unsafe { yapfast_h264_new(width, height, fps, kbps, threads, effort as c_uint) },
-                yapfast_h264_encode,
-                yapfast_h264_set_bitrate,
-                yapfast_h264_free,
-            ),
+        let opened = match hardware.then(|| open_hardware(codec, width, height, fps, kbps)) {
+            Some(Some(opened)) => opened,
+            _ => open_software(codec, width, height, fps, kbps, effort)?,
         };
-        if raw.is_null() {
-            bail!("could not start the {codec:?} encoder");
-        }
+        let (raw, encode, set_bitrate, free, engine) = opened;
         let pixels = (width * height) as usize;
         Ok(Self {
             raw,
             codec,
+            effort,
+            engine,
             encode,
             set_bitrate,
             free,
@@ -180,6 +213,29 @@ impl Encoder {
             // Even a keyframe of noise fits.
             out: vec![0; pixels * 2 + 4096],
         })
+    }
+
+    /// Which encoder runs: "libvpx", "x264", or FFmpeg's name for a
+    /// hardware one, such as "h264_nvenc".
+    pub fn engine(&self) -> &str {
+        &self.engine
+    }
+
+    fn hardware(&self) -> bool {
+        !matches!(self.engine.as_str(), "libvpx" | "x264")
+    }
+
+    /// Puts `opened` in place of the encoder running now.
+    fn replace(&mut self, opened: Opened) {
+        // SAFETY: raw came from its codec's constructor and is freed once.
+        unsafe { (self.free)(self.raw) };
+        (
+            self.raw,
+            self.encode,
+            self.set_bitrate,
+            self.free,
+            self.engine,
+        ) = opened;
     }
 
     pub fn codec(&self) -> Codec {
@@ -195,11 +251,23 @@ impl Encoder {
         self.kbps
     }
 
-    /// Aims for `kbps` from the next frame on.
+    /// Aims for `kbps` from the next frame on. A hardware encoder that can't
+    /// change its bitrate as it runs, such as VA-API's, opens again at the
+    /// new one, starting with a keyframe.
     pub fn set_bitrate(&mut self, kbps: u32) -> Result<()> {
         // SAFETY: raw came from this codec's constructor and is still live.
         if unsafe { (self.set_bitrate)(self.raw, kbps) } != 0 {
-            bail!("the {:?} encoder refused {kbps} kbit/s", self.codec);
+            let (codec, width, height, fps) = (self.codec, self.width, self.height, self.fps);
+            let opened = if self.hardware() {
+                open_hardware(codec, width, height, fps, kbps)
+                    .filter(|opened| opened.4 == self.engine)
+            } else {
+                None
+            };
+            let Some(opened) = opened else {
+                bail!("the {:?} encoder refused {kbps} kbit/s", self.codec);
+            };
+            self.replace(opened);
         }
         self.kbps = kbps;
         Ok(())
@@ -281,7 +349,27 @@ impl Encoder {
 
     /// Encodes three planes, each with its stride, into `out`: the encoded
     /// size and whether it's a keyframe, or None when the frame was skipped.
+    /// When a hardware encoder fails, x264 takes over from this frame, with
+    /// a keyframe.
     fn encode_planes(
+        &mut self,
+        planes: [(&[u8], u32); 3],
+        pts: u64,
+        keyframe: bool,
+    ) -> Result<Option<(usize, bool)>> {
+        match self.encode_once(planes, pts, keyframe) {
+            Err(error) if self.hardware() => {
+                tracing::warn!(engine = self.engine, %error, "the GPU's encoder failed; encoding with x264");
+                let (codec, width, height, fps) = (self.codec, self.width, self.height, self.fps);
+                let opened = open_software(codec, width, height, fps, self.kbps, self.effort)?;
+                self.replace(opened);
+                self.encode_once(planes, pts, true)
+            }
+            encoded => encoded,
+        }
+    }
+
+    fn encode_once(
         &mut self,
         [(y, y_stride), (u, u_stride), (v, v_stride)]: [(&[u8], u32); 3],
         pts: u64,
@@ -323,6 +411,83 @@ impl Encoder {
     }
 }
 
+/// libvpx for VP8, x264 for H264.
+fn open_software(
+    codec: Codec,
+    width: u32,
+    height: u32,
+    fps: u32,
+    kbps: u32,
+    effort: Effort,
+) -> Result<Opened> {
+    let threads = std::thread::available_parallelism().map_or(1, |cores| cores.get().min(4)) as u32;
+    // SAFETY: plain values; null means the library refused the configuration.
+    let opened: Opened = match codec {
+        Codec::Vp8 => (
+            unsafe { yapfast_vp8_new(width, height, fps, kbps, threads) },
+            yapfast_vp8_encode,
+            yapfast_vp8_set_bitrate,
+            yapfast_vp8_free,
+            "libvpx".into(),
+        ),
+        Codec::H264 => (
+            unsafe { yapfast_h264_new(width, height, fps, kbps, threads, effort as c_uint) },
+            yapfast_h264_encode,
+            yapfast_h264_set_bitrate,
+            yapfast_h264_free,
+            "x264".into(),
+        ),
+    };
+    if opened.0.is_null() {
+        bail!("could not start the {codec:?} encoder");
+    }
+    Ok(opened)
+}
+
+/// The GPU's encoder for `codec`, if it has one that opens.
+#[cfg(hwenc)]
+fn open_hardware(codec: Codec, width: u32, height: u32, fps: u32, kbps: u32) -> Option<Opened> {
+    let number = match codec {
+        Codec::H264 => 0,
+        Codec::Vp8 => return None,
+    };
+    let mut report = [0u8; 512];
+    // SAFETY: plain values and a buffer of the size given, which the shim
+    // ends with a zero.
+    let raw = unsafe {
+        yapfast_hwenc_new(
+            number,
+            width,
+            height,
+            fps,
+            kbps,
+            report.as_mut_ptr().cast(),
+            report.len(),
+        )
+    };
+    let report = std::ffi::CStr::from_bytes_until_nul(&report).map_or_else(
+        |_| String::new(),
+        |text| text.to_string_lossy().into_owned(),
+    );
+    if raw.is_null() {
+        tracing::info!(tried = report, "no GPU encoder opened; encoding with x264");
+        return None;
+    }
+    tracing::debug!(engine = report, "encoding on the GPU");
+    Some((
+        raw,
+        yapfast_hwenc_encode,
+        yapfast_hwenc_set_bitrate,
+        yapfast_hwenc_free,
+        report,
+    ))
+}
+
+#[cfg(not(hwenc))]
+fn open_hardware(_: Codec, _: u32, _: u32, _: u32, _: u32) -> Option<Opened> {
+    None
+}
+
 impl Drop for Encoder {
     fn drop(&mut self) {
         // SAFETY: raw came from this codec's constructor and is freed once.
@@ -335,10 +500,15 @@ mod tests {
     use super::*;
     use crate::decode::Decoder;
 
-    /// Four frames of moving colour, the third a forced keyframe.
-    fn encode_four(codec: Codec, effort: Effort) -> Vec<(bool, Vec<u8>)> {
-        let (width, height) = (64, 36);
-        let mut encoder = Encoder::new(codec, width, height, 30, 500, effort).unwrap();
+    /// Four frames of moving colour, the third a forced keyframe, and the
+    /// engine that encoded them.
+    fn encode_four(
+        codec: Codec,
+        effort: Effort,
+        (width, height): (u32, u32),
+        hardware: bool,
+    ) -> (Vec<(bool, Vec<u8>)>, String) {
+        let mut encoder = Encoder::new(codec, width, height, 30, 500, effort, hardware).unwrap();
         let mut rgba = vec![0u8; (width * height * 4) as usize];
         let mut frames = vec![];
         for frame in 0..4u64 {
@@ -355,13 +525,13 @@ mod tests {
                 .unwrap();
             frames.push((encoded.keyframe, encoded.data.to_vec()));
         }
-        assert!(Encoder::new(codec, 63, 36, 30, 500, effort).is_err());
-        frames
+        assert!(Encoder::new(codec, 63, 36, 30, 500, effort, hardware).is_err());
+        (frames, encoder.engine().to_owned())
     }
 
     #[test]
     fn encodes_vp8_keyframes_and_deltas() {
-        let frames = encode_four(Codec::Vp8, Effort::Light);
+        let (frames, _) = encode_four(Codec::Vp8, Effort::Light, (64, 36), false);
         for (keyframe, data) in &frames {
             // A keyframe's tag has bit 0 clear, and its size follows the start code.
             assert_eq!(*keyframe, data[0] & 1 == 0);
@@ -375,10 +545,11 @@ mod tests {
         assert_eq!(keys[..3], [true, false, true]);
     }
 
-    #[test]
-    fn encodes_main_profile_h264_that_decodes() {
-        for effort in [Effort::Light, Effort::High] {
-            let frames = encode_four(Codec::H264, effort);
+    /// Main profile H264 at `size` that decodes: parameter sets and an IDR
+    /// first, a forced IDR third. Returns the engine.
+    fn check_h264(effort: Effort, size: (u32, u32), hardware: bool) -> String {
+        let (frames, engine) = encode_four(Codec::H264, effort, size, hardware);
+        {
             let keys: Vec<bool> = frames.iter().map(|(key, _)| *key).collect();
             assert_eq!(keys[..3], [true, false, true]);
             let units = |data| yapfast_discord::rtp::nal_units(data);
@@ -397,11 +568,30 @@ mod tests {
             let mut shown = 0;
             for (_, data) in &frames {
                 if let Some(picture) = decoder.decode(data).unwrap() {
-                    assert_eq!((picture.width, picture.height), (64, 36));
+                    assert_eq!((picture.width, picture.height), size);
                     shown += 1;
                 }
             }
-            assert!(shown >= 3, "{shown} pictures at {effort:?} effort");
+            assert!(
+                shown >= 3,
+                "{shown} pictures from {engine} at {effort:?} effort"
+            );
         }
+        engine
+    }
+
+    #[test]
+    fn encodes_main_profile_h264_that_decodes() {
+        for effort in [Effort::Light, Effort::High] {
+            assert_eq!(check_h264(effort, (64, 36), false), "x264");
+        }
+    }
+
+    /// The GPU's encoder where this machine has one, x264 where it hasn't:
+    /// the same stream either way.
+    #[test]
+    fn encodes_h264_on_the_gpu_or_falls_back() {
+        let engine = check_h264(Effort::Light, (320, 180), true);
+        eprintln!("encoded with {engine}");
     }
 }

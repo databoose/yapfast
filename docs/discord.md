@@ -894,6 +894,42 @@ takes about 0.15–0.5 of a core at 1080p, and faster about twice that, for
 about NVENC's quality: Minecraft at 9 Mbit/s scored VMAF 66 and 72 against
 NVENC's 72, and Wikipedia at 3.5 Mbit/s 94 and 98 against its 98.
 
+#### Encoding on the GPU
+
+With "Encode streams with the GPU" in Settings, Advanced, on unless turned
+off, a stream's H264 goes to the graphics card's encoder where it has one:
+`native/hwenc.c` opens FFmpeg's NVENC encoder, then on Linux its VA-API one
+(AMD and Intel), and x264 when neither opens. The setting lives in
+`layout.json` and reaches the worker with each `Job::Share`; the camera stays
+on x264. When the GPU's encoder fails during a stream, x264 takes over from
+that frame with a keyframe. The worker logs which encoder each stream got
+("encoding the stream", `engine`), and with `YAPFAST_LOG=debug` why each
+GPU encoder that didn't open failed.
+
+FFmpeg is built from `vendor/ffmpeg-src` into the one binary, with only its
+hardware encoders and every symbol prefixed so it can't meet the FFmpeg
+inside libwebrtc. NVIDIA's driver and libva load only when an encoder opens:
+the binary starts without either, and needs NVIDIA's driver 520 or newer for
+NVENC.
+
+The settings match x264's where they can: low-latency tuning (NVENC's p4
+preset, `ll`), no B-frames, a frame out for each frame in, Main profile,
+keyframes every 3 seconds and when asked, and variable bitrate capped at the
+target over half a second, which leaves a calm screen below the cap rather
+than padding it. NVENC changes its bitrate as it runs, without the IDR
+frame FFmpeg would insert (the one patch to FFmpeg); VA-API's encoders
+can't, so theirs opens again at the new bitrate, starting with a keyframe.
+"Higher quality" changes nothing on the GPU: NVENC's slowest preset scored
+within 0.1 VMAF of p4.
+
+Measured through `Encoder` on an RTX 3090 against x264 superfast, on the
+busiest minute of an action trailer at 1080p30, NVENC's H264 matched x264 at
+9 Mbit/s (VMAF 96.5 both) and held up better below it: at 4 Mbit/s 93.4
+against 92.6, with 2 dips under VMAF 60 in the minute against 11, and at 2.5
+Mbit/s 88.3 against 86.8, with 22 dips against 47, at 0.02 of a core against
+0.26. x264's slower presets, at up to four times the CPU, reached 88.3 too,
+with more bad frames than NVENC. VA-API isn't measured yet.
+
 ## Servers, channels and messages
 
 Yapfast shows Discord live from its own Discord connection. Every server, channel
