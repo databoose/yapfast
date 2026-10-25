@@ -60,7 +60,7 @@ Sitting in a call with the window open, it's about 45 MB. There's a GPU
 renderer too, behind **Render with the GPU** in Settings, but it takes more
 memory, and drawing on the processor already keeps a 180 Hz monitor fed, so the
 processor is the default. Next to Vesktop (Discord's own app with Vencord on
-top) on the same PC, Yapfast took 86 to 96% less memory in everything I tried;
+top) on the same PC, Yapfast took 88 to 96% less memory in everything I tried;
 [the table's below](#measured-against-vesktop). Your numbers will depend on how
 many servers and DMs you have.
 
@@ -79,7 +79,7 @@ be better. Know an open source one that does a better job? PLEASE tell me.
 | Idle | 724 MB | 30 MB (−96%) | 0.11% | 0.015% (−86%) |
 | Image-heavy channel | 706 MB | 41 MB (−94%) | 0.17% | 0.008% (−95%) |
 | In a call | 888 MB | 44 MB (−95%) | 0.46% | 0.33% (−28%) |
-| Sharing your screen¹ | 1,013 MB | 145 MB (−86%) | 2.15% | 2.9% (+35%) |
+| Sharing your screen¹ | 1,013 MB | 126 MB (−88%) | 2.15% | 2.5% (+14%) |
 
 Vesktop is basically Discord's own app: the same Discord web app, in the same
 Electron, with Vencord on top. So its numbers stand in for Discord's. CPU counts

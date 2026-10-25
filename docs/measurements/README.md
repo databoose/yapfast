@@ -1,13 +1,13 @@
 # Resource measurements
 
-## Vesktop 1.6.7 and Yapfast 0.2.0
+## Vesktop 1.6.7 and Yapfast
 
 | | Vesktop memory | Yapfast memory | Vesktop CPU | Yapfast CPU |
 | --- | --- | --- | --- | --- |
 | Idle | 724 MB | 30 MB (−96%) | 0.11% | 0.015% (−86%) |
 | Image-heavy channel | 706 MB | 41 MB (−94%) | 0.17% | 0.008% (−95%) |
 | In a call | 888 MB | 44 MB (−95%) | 0.46% | 0.33% (−28%) |
-| Sharing your screen¹ | 1,013 MB | 145 MB (−86%) | 2.15% | 2.9% (+35%) |
+| Sharing your screen¹ | 1,013 MB | 126 MB (−88%) | 2.15% | 2.5% (+14%) |
 
 Vesktop is basically Discord's own app: the same Discord web app, in the same
 Electron, with Vencord on top. So its numbers stand in for Discord's.
@@ -22,7 +22,10 @@ on the processor.
 Measured on 25 October 2026 on the same PC: an AMD Ryzen 9 9900X (12 cores,
 24 threads) with 32 GB of RAM, under NixOS with Hyprland, and each app's
 default renderer (the GPU for Vesktop, the CPU for Yapfast). Yapfast is the
-0.2.0 Linux release binary.
+0.2.0 Linux release binary, except while sharing a screen: that's main after
+0.2.0, which encodes with x264 in place of OpenH264, built for Discord alone
+and optimized as the release is
+([x264 in place of OpenH264](#2026-10-25-x264-in-place-of-openh264)).
 
 Memory is what Windows' Task Manager counts: each app's own memory across all
 its processes, without the program files and fonts it maps from disk. On
@@ -42,7 +45,7 @@ test display, and 941×1020 while sharing on the desktop.
 - Sharing your screen: the call, live with one monitor, measured from the
   stream's second minute to its third. Yapfast captures and encodes in a
   second process that runs only while the stream is live; it takes about
-  105 MB of the 145 MB.
+  82 MB of the 126 MB.
 
 Vesktop ran on a real account, which has more servers than Yapfast's, once
 for each scenario; its call had one friend talking now and then. Yapfast ran
@@ -1306,8 +1309,23 @@ Mbit/s x264 uses up to 8 Mbit/s where OpenH264 stayed under 2.
 
 Memory, the harness's peak RssAnon encoding 1080p60, the same on all three
 clips tried (the screenshot, the fractal, Minecraft): OpenH264 62 MiB, x264
-41 MiB, with "Higher quality" 52 MiB. The stream worker's own figure under
-"Sharing your screen" above wasn't measured again.
+41 MiB, with "Higher quality" 52 MiB.
+
+In the app, as "Sharing your screen" above measures it: the Discord-only
+build with the measure profile, main against this change, live with a
+1920×1080 monitor at 30 fps on the Hyprland desktop against the fake Discord,
+sampled over the stream's second and third minutes, twice each, alternating.
+Main matched the 0.2.0 release's figures.
+
+| | Private memory, both processes | Stream worker | CPU, whole processor | Packets sent |
+| --- | ---: | ---: | ---: | ---: |
+| OpenH264 (main) | 134.8 MiB | 101.9 MiB | 2.81% | 28,700 |
+| x264 | 115.3 MiB | 82.3 MiB | 2.46% | 70,300 |
+| x264, "Higher quality" | 125.8 MiB | 93.6 MiB | 2.67% | 44,500 |
+
+The two runs of each stayed within 0.7 MiB and 0.06 points of CPU. x264
+sent more of the stream's 9 Mbit/s than OpenH264 did, which kept a calm
+desktop under it; packet counts depend on what the screen shows.
 
 ```sh
 cat .local/x264/README   # clips, harness and scripts
