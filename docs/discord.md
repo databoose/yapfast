@@ -844,11 +844,13 @@ too, except those carrying keys.
 
 Watching works the same way in reverse. Clicking someone's LIVE badge, or
 their tile in the call, sends op 20 and starts a worker with a watch job. The
-worker connects as a viewer, offers H264 and VP8 for decoding only, and asks
+worker connects as a viewer, offers H265, H264 and VP8 for decoding only
+(H265 only where it's built, on Linux and Windows), and asks
 for video with op 15. It learns the streamer's SSRCs and codec from op 12 and
 op 14, then puts RTP packets back in order (`rtp::Reorder`) and together
-into frames (`rtp::Assembler`: VP8 descriptors, and H264 single units,
-STAP-A and FU-A as Annex B). As Discord's client does, it asks for a missing
+into frames (`rtp::Assembler`: VP8 descriptors, H264 single units, STAP-A
+and FU-A, and H265 single units, aggregation and fragmentation units, as
+Annex B). As Discord's client does, it asks for a missing
 packet again at once with a generic NACK, again every 80 ms up to three
 times, and takes the resend from the streamer's RTX SSRC (RFC 4588); padding
 there, which probes the path, is dropped. Packets after a gap wait for it at
@@ -863,7 +865,12 @@ resent, recovered, given up on, and keyframes asked for. The fake server
 loses one packet of each stream it sends a viewer and delivers another late,
 and resends what's asked for. The worker decodes with
 libvpx or with the FFmpeg H264 decoder in libwebrtc's archive
-(`native/decode.c`) and writes RGBA at up to 1080p into the shared frames.
+(`native/decode.c`), or H265 with the HEVC decoder of `vendor/ffmpeg-src`'s
+FFmpeg (`native/hevc.c`), which libwebrtc's lacks, and writes RGBA at up to
+1080p into the shared frames. That FFmpeg is built without its assembly, so
+H265 costs more CPU to watch than H264: on FFmpeg's command line, one
+thread decoding the action clip's minute at 1080p30 and 4 Mbit/s took about
+0.23 of a core without assembly, 0.12 with it, and 0.07 for H264.
 Watching is possible only in the call you're in, so clicking someone sharing
 in another channel joins it first, once asked, and watches once the call is
 connected; Discord drops a watch sent before. The stream's sound, Opus on
@@ -879,8 +886,9 @@ that Yapfast sends, the sound's Opus packets and soundshare flag, reading an H26
 or H265 picture's size from its SPS, without DAVE. It chooses a streamer's
 codec as Discord does, and `POST /_control/stream-viewer?user=bob&decodes=h264,vp8`
 has a viewer watch who can't decode H265, which switches the stream with op 14. To viewers it streams the
-recordings in `testing/fixtures` (VP8, or H264 after `POST
-/_control/stream-codec`) once they ask with op 15. Checked by hand against
+recordings in `testing/fixtures` (VP8, or H264 or H265 after `POST
+/_control/stream-codec`) once they ask with op 15, H265 only to a viewer
+that decodes it, and H264 to the rest, as Discord chooses. Checked by hand against
 real Discord: Discord's client shows Yapfast's stream at 1080p with its sound,
 without the call's, and Yapfast shows streams from Discord's client.
 
@@ -914,8 +922,9 @@ NVENC's 72, and Wikipedia at 3.5 Mbit/s 94 and 98 against its 98.
 
 With "Encode streams with the GPU" in Settings, Advanced, on unless turned
 off, a stream's H264 goes to the graphics card's encoder where it has one:
-`native/hwenc.c` opens FFmpeg's NVENC encoder, then on Linux its VA-API one
-(AMD and Intel), and x264 when neither opens. The setting lives in
+`native/hwenc.c` opens FFmpeg's NVENC encoder, then on Windows its AMF one
+(AMD) and on Linux its VA-API one (AMD and Intel), and x264 when none opens.
+Intel graphics encode with x264 on Windows so far. The setting lives in
 `layout.json` and reaches the worker with each `Job::Share`; the camera stays
 on x264. When the GPU's encoder fails during a stream, x264 takes over from
 that frame with a keyframe. The worker logs which encoder each stream got
@@ -924,9 +933,11 @@ GPU encoder that didn't open failed.
 
 FFmpeg is built from `vendor/ffmpeg-src` into the one binary, with only its
 hardware encoders and every symbol prefixed so it can't meet the FFmpeg
-inside libwebrtc. NVIDIA's driver and libva load only when an encoder opens:
-the binary starts without either, and needs NVIDIA's driver 520 or newer for
-NVENC.
+inside libwebrtc. NVIDIA's driver, AMD's AMF runtime and libva load only
+when an encoder opens: the binary starts without any of them, and needs
+NVIDIA's driver 520 or newer for NVENC, and for AMF an AMD driver with AMF
+1.5.2 or newer, from about May 2026 on; an older one fails to open, and x264
+encodes.
 
 VA-API tries each render node (`/dev/dri/renderD128` on) with the libva
 driver its kernel driver calls for: radeonsi for amdgpu, iHD then i965 for
@@ -940,25 +951,27 @@ own VA-API encoder into libwebrtc. The AppImage takes the system's libva,
 and the Arch package lists it as optional.
 
 The settings match x264's where they can: low-latency tuning (NVENC's p4
-preset, `ll`), no B-frames, a frame out for each frame in, Main profile,
+preset, `ll`; AMF's `lowlatency` usage and balanced preset), no B-frames, a
+frame out for each frame in, Main profile,
 keyframes every 3 seconds and when asked, and variable bitrate capped at the
 target over half a second, which leaves a calm screen below the cap rather
-than padding it. NVENC and VA-API change their bitrate as they run, without
-the IDR frame FFmpeg would insert, with a patch to FFmpeg for each: on the
+than padding it. NVENC, AMF and VA-API change their bitrate as they run,
+without the IDR frame FFmpeg would insert, with a patch to FFmpeg for each
+(AMF's sets the target, peak and buffer on the running encoder): on the
 AMD chip a drop from 4 to 2 Mbit/s took hold within a second, with no
 keyframe beyond the one every 3 seconds.
 "Higher quality" changes nothing on the GPU: NVENC's slowest preset scored
 within 0.1 VMAF of p4.
 
-Where NVENC or VA-API encodes H265, the stream offers it too, first. Discord
+Where the GPU's encoder encodes H265, the stream offers it too, first. Discord
 picks the codec Yapfast offers first that every viewer's client decodes
 (op 4's `video_codec`), and when someone who can't decode it starts watching,
 switches the stream with op 14; Yapfast then opens the other encoder and
 starts it with a keyframe, dropping frames still in the old codec. When H265
 fails mid-stream, Yapfast withdraws it with its own op 14 `codecs`, marking
-it not to encode, and goes on in H264. Yapfast doesn't decode H265 itself,
-so it offers H265 only to encode: watching another Yapfast's stream switches
-it to H264. Which of Discord's own clients decode H265 isn't checked yet. On
+it not to encode, and goes on in H264. Another Yapfast watching keeps the
+stream in H265. Which of Discord's own clients decode H265 isn't checked
+yet. On
 the same minute, through FFmpeg's command line with these settings, NVENC's
 H265 scored 92.9 at 2.5 Mbit/s against H264's 88.3, with a worst 1% of 59.2
 against 43.2, and at 1.5 Mbit/s 87.6, about H264 at 2.5.
@@ -972,7 +985,8 @@ Mbit/s 88.3 against 86.8, with 22 dips against 47, at 0.02 of a core against
 with more bad frames than NVENC. On the same minute, the Radeon chip built
 into a Ryzen 9 9900X, through VA-API, came close to NVENC: H264 scored 92.8
 at 4 Mbit/s (6 dips) and 87.8 at 2.5 (40 dips), H265 94.9 and 92.4 against
-NVENC's 95.2 and 92.9, at 0.03 of a core.
+NVENC's 95.2 and 92.9, at 0.03 of a core. AMF hasn't run on AMD hardware
+yet: Wine has no AMF runtime, so there it fails to open and x264 encodes.
 
 ## Servers, channels and messages
 

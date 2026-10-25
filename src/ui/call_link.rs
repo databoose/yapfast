@@ -72,8 +72,8 @@ fn show(link: &CallLink<'_>, stats: &LinkStats, others: bool) {
 }
 
 /// Where the stream's encoder runs, by its name: "h264_nvenc" is NVENC on
-/// the GPU, "hevc_vaapi (renderD128, radeonsi)" VA-API through Mesa's
-/// radeonsi driver, "x264" on the CPU.
+/// the GPU, "h264_amf" AMD's AMF, "hevc_vaapi (renderD128, radeonsi)"
+/// VA-API through Mesa's radeonsi driver, "x264" on the CPU.
 fn encoder(engine: &str) -> String {
     let (name, place) = engine.split_once(' ').unwrap_or((engine, ""));
     let driver = place
@@ -83,6 +83,7 @@ fn encoder(engine: &str) -> String {
         .filter(|driver| !driver.is_empty());
     match name.rsplit_once('_') {
         Some((_, "nvenc")) => "NVENC on the GPU".to_owned(),
+        Some((_, "amf")) => "AMF on the GPU".to_owned(),
         Some((_, "vaapi")) => match driver {
             Some(driver) => format!("VA-API on the GPU ({driver})"),
             None => "VA-API on the GPU".to_owned(),
@@ -156,6 +157,7 @@ mod tests {
     #[test]
     fn says_where_the_stream_is_encoded() {
         assert_eq!(encoder("h264_nvenc"), "NVENC on the GPU");
+        assert_eq!(encoder("av1_amf"), "AMF on the GPU");
         assert_eq!(
             encoder("hevc_vaapi (renderD128, radeonsi)"),
             "VA-API on the GPU (radeonsi)"

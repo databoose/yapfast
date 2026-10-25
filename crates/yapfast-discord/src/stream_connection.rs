@@ -107,7 +107,7 @@ struct Shared {
     /// or 0 before it said.
     estimate: AtomicU64,
     /// Sending: the codecs offered, most wanted first, and whether that
-    /// changed since Discord was told.
+    /// changed since Discord was told. Receiving: the codecs decoded.
     offers: Mutex<Vec<Codec>>,
     offers_changed: AtomicBool,
     /// Sending: the codec Discord chose, in op 4 and then op 14, once it
@@ -300,9 +300,12 @@ pub struct StreamReceiver {
 }
 
 impl StreamReceiver {
-    pub fn start(server: StreamServer) -> Result<Self> {
+    /// Watches the stream, telling Discord the viewer decodes `decodes`,
+    /// most wanted first.
+    pub fn start(server: StreamServer, decodes: Vec<Codec>) -> Result<Self> {
         let (user, channel, streamer) = ids(&server)?;
         let shared = Shared::new((0, 0));
+        *lock(&shared.offers) = decodes;
         // Frames waiting to be decoded; more means decoding can't keep up.
         let (frames, receiver) = channel::sync_channel(4);
         // Opus frames waiting to be played: 320 ms.
@@ -386,20 +389,33 @@ enum Role {
 /// Connects to a stream's server: identifying with its RTC server and a
 /// screen, and offering the codecs `role` needs.
 /// Select protocol's codecs for a sender: Opus, then each of `offers` by
-/// priority, and `withdrawn` ones it can't encode any more.
+/// priority, and `withdrawn` ones it can't encode any more. A sender
+/// decodes nothing of its own stream.
 fn send_codecs(offers: &[Codec], withdrawn: &[Codec]) -> Value {
     let video = offers
         .iter()
         .map(|&codec| (codec, true))
         .chain(withdrawn.iter().map(|&codec| (codec, false)));
+    codecs(video.map(|(codec, encode)| (codec, encode, codec != Codec::H265)))
+}
+
+/// Select protocol's codecs for a viewer: Opus, then each of `decodes` by
+/// priority, to decode only.
+fn receive_codecs(decodes: &[Codec]) -> Value {
+    codecs(decodes.iter().map(|&codec| (codec, false, true)))
+}
+
+/// Opus, then each video codec with whether it's encoded and decoded, most
+/// wanted first.
+fn codecs(video: impl Iterator<Item = (Codec, bool, bool)>) -> Value {
     let mut codecs =
         vec![json!({"name": "opus", "type": "audio", "priority": 1000, "payload_type": rtp::OPUS})];
-    for (index, (codec, encode)) in video.enumerate() {
+    for (index, (codec, encode, decode)) in video.enumerate() {
         let (payload_type, rtx_payload_type) = codec.payload_types();
         codecs.push(json!({
             "name": codec.name(), "type": "video", "priority": 1000 * (index + 1),
             "payload_type": payload_type, "rtx_payload_type": rtx_payload_type,
-            "encode": encode, "decode": codec != Codec::H265,
+            "encode": encode, "decode": decode,
         }));
     }
     Value::Array(codecs)
@@ -429,16 +445,10 @@ async fn open(
         user,
         group,
     };
-    // Yapfast encodes in what it offers, and decodes VP8 or H264.
+    // Yapfast encodes in what it offers, and decodes what it was given.
     let codecs = match role {
         Role::Send => send_codecs(&lock(&shared.offers), &[]),
-        Role::Receive => json!([
-            {"name": "opus", "type": "audio", "priority": 1000, "payload_type": rtp::OPUS},
-            {"name": "H264", "type": "video", "priority": 1000, "payload_type": rtp::H264,
-             "rtx_payload_type": rtp::H264_RTX, "encode": false, "decode": true},
-            {"name": "VP8", "type": "video", "priority": 2000, "payload_type": rtp::VP8,
-             "rtx_payload_type": rtp::VP8_RTX, "encode": false, "decode": true},
-        ]),
+        Role::Receive => receive_codecs(&lock(&shared.offers)),
     };
     let streamer: Vec<u64> = stream::parse(&server.stream_key)
         .and_then(|(_, _, streamer)| streamer.parse().ok())

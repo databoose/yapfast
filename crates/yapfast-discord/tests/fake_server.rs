@@ -256,7 +256,7 @@ fn recording(codec: Codec) -> Vec<Vec<u8>> {
             frames
         }
         // Annex B, split at access unit delimiters, which aren't sent; each
-        // unit gets a four-byte start code. Only Yapfast streams H265.
+        // unit gets a four-byte start code.
         Codec::H264 | Codec::H265 => {
             let (name, delimiter): (_, fn(&[u8]) -> bool) = match codec {
                 Codec::H264 => ("stream-h264.h264", |unit: &[u8]| unit[0] & 0x1f == 9),
@@ -288,13 +288,14 @@ fn recording(codec: Codec) -> Vec<Vec<u8>> {
     }
 }
 
-/// Watches Bob's stream until `count` frames arrive, and checks his sound
-/// came too: the fake sends Opus silence.
+/// Watches Bob's stream, decoding `decodes`, until `count` frames arrive,
+/// and checks his sound came too: the fake sends Opus silence.
 fn watch_frames(
     watched: &yapfast_discord::stream::StreamServer,
+    decodes: Vec<Codec>,
     count: usize,
 ) -> Vec<(Codec, Vec<u8>, bool)> {
-    let mut receiver = StreamReceiver::start(watched.clone()).unwrap();
+    let mut receiver = StreamReceiver::start(watched.clone(), decodes).unwrap();
     let sounds = receiver.take_sounds().unwrap();
     assert!(receiver.take_sounds().is_none(), "one player");
     let deadline = std::time::Instant::now() + WAIT;
@@ -1964,19 +1965,27 @@ async fn talks_to_the_fake_server() {
     assert!(!watched.session_id.is_empty() && !watched.endpoint.is_empty());
 
     // Bob's video arrives whole: the recording's frames, in order, from the
-    // first keyframe, in VP8 and then in H264, though the fake loses one
-    // packet on the way and delivers another late.
-    for (codec, name) in [(Codec::Vp8, "vp8"), (Codec::H264, "h264")] {
+    // first keyframe, in VP8, in H264, and in H265 to a viewer that decodes
+    // it, while one that doesn't gets H264, though the fake loses one packet
+    // on the way and delivers another late each time.
+    let older = vec![Codec::H264, Codec::Vp8];
+    let all = vec![Codec::H265, Codec::H264, Codec::Vp8];
+    for (codec, name, decodes) in [
+        (Codec::Vp8, "vp8", older.clone()),
+        (Codec::H264, "h264", older.clone()),
+        (Codec::H265, "h265", all),
+        (Codec::H264, "h265", older),
+    ] {
         stream_codec(server, name);
         let watched = watched.clone();
-        let frames = tokio::task::spawn_blocking(move || watch_frames(&watched, 12))
+        let frames = tokio::task::spawn_blocking(move || watch_frames(&watched, decodes, 12))
             .await
             .unwrap();
         let expected = recording(codec);
-        assert!(frames[0].2, "{name} starts with a keyframe");
+        assert!(frames[0].2, "{codec:?} starts with a keyframe");
         for (index, (received, data, _)) in frames.iter().enumerate() {
             assert_eq!(*received, codec);
-            assert!(data == &expected[index], "{name} frame {index} differs");
+            assert!(data == &expected[index], "{codec:?} frame {index} differs");
         }
     }
     let body = discord
@@ -1986,7 +1995,7 @@ async fn talks_to_the_fake_server() {
     let repairs = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["repairs"].clone();
     assert_eq!(
         (repairs["dropped"].as_u64(), repairs["reordered"].as_u64()),
-        (Some(2), Some(2))
+        (Some(4), Some(4))
     );
     assert!(
         repairs["nacks"].as_u64() >= Some(2) && repairs["resent"].as_u64() >= Some(2),

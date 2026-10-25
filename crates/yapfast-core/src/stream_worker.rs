@@ -733,7 +733,7 @@ fn watch(
     stop: &AtomicBool,
     report: &mut dyn FnMut(Report),
 ) -> Result<()> {
-    let mut receiver = StreamReceiver::start(server)?;
+    let mut receiver = StreamReceiver::start(server, crate::decode::DECODES.to_vec())?;
     let _player = receiver.take_sounds().and_then(|sounds| {
         stream_audio::Player::start(
             sounds,
