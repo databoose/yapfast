@@ -1,5 +1,57 @@
 # Resource measurements
 
+## Vesktop 1.6.7 and Yapfast 0.2.0
+
+| | Vesktop memory | Yapfast memory | Vesktop CPU | Yapfast CPU |
+| --- | --- | --- | --- | --- |
+| Idle | 724 MB | 30 MB (−96%) | 0.11% | 0.015% (−86%) |
+| Image-heavy channel | 706 MB | 41 MB (−94%) | 0.17% | 0.008% (−95%) |
+| In a call | 888 MB | 44 MB (−95%) | 0.46% | 0.33% (−28%) |
+| Sharing your screen¹ | 1,013 MB | 145 MB (−86%) | 2.15% | 2.9% (+35%) |
+
+¹ Sharing a 1920×1080 monitor at 30 frames a second, while in the call.
+Yapfast uses more CPU here than Vesktop, as it converts and encodes each frame
+on the processor.
+
+<details>
+<summary>How these were measured</summary>
+
+Measured on 25 October 2026 on the same PC: an AMD Ryzen 9 9900X (12 cores,
+24 threads) with 32 GB of RAM, under NixOS with Hyprland, and each app's
+default renderer (the GPU for Vesktop, the CPU for Yapfast). Yapfast is the
+0.2.0 Linux release binary.
+
+Memory is what Windows' Task Manager counts: each app's own memory across all
+its processes, without the program files and fonts it maps from disk. On
+Linux, that's the private anonymous memory of every process in the app, plus
+Yapfast's window frames, which Yapfast draws itself. CPU counts the whole
+processor as 100%. The percentages compare Yapfast with Vesktop.
+
+Vesktop's window was maximized at 1920×1044. Yapfast's was 1920×1080 on the
+test display, and 941×1020 while sharing on the desktop.
+
+- Idle: a DM open, a minute or two after starting.
+- Image-heavy channel: scrolled up through about a hundred pictures, then back
+  down to the newest.
+- In a call: measured from the call's third minute to its fifth, with the
+  microphone on and a text channel open. Yapfast's memory held steady from
+  the second minute to the sixteenth.
+- Sharing your screen: the call, live with one monitor, measured from the
+  stream's second minute to its third. Yapfast captures and encodes in a
+  second process that runs only while the stream is live; it takes about
+  105 MB of the 145 MB.
+
+Vesktop ran on a real account, which has more servers than Yapfast's, once
+for each scenario; its call had one friend talking now and then. Yapfast ran
+against the local test server (`testing/fake_discord.ts`), five times for each
+scenario, which stayed within 1 MB of each other, and twice for screen
+sharing; its call had three people talking without pause. Yapfast shared a
+real screen on the Hyprland desktop through the screen sharing portal.
+
+</details>
+
+## Dated records
+
 This file holds dated measurement records, oldest first. A record describes
 the code on its date; a later record of the same thing replaces it. Each says
 how to repeat it; the raw samples behind them aren't published.
