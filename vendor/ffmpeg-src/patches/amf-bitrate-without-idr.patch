@@ -1,0 +1,75 @@
+--- a/libavcodec/amfenc.c
++++ b/libavcodec/amfenc.c
+@@ -335,6 +335,7 @@
+         ctx->hwsurfaces_in_queue_max = ctx->pa_lookahead_buffer_depth + 1;
+     }
+ 
++    ctx->rc_bit_rate = avctx->bit_rate;
+     if ((ret = amf_init_encoder(avctx)) == 0) {
+         return 0;
+     }
+@@ -389,6 +390,45 @@
+     return res;
+ }
+ 
++/* Follows a bitrate changed on the AVCodecContext while encoding, as
++ * nvenc.c does: AMF takes the target, the peak and the buffer as it runs,
++ * without starting over at an IDR. The peak goes first when the rate
++ * rises, so the target never passes it. */
++#define AMF_FOLLOW_BIT_RATE(prefix)                                                           \
++    do {                                                                                      \
++        if (avctx->rc_max_rate > 0 && avctx->bit_rate > ctx->rc_bit_rate)                     \
++            AMF_ASSIGN_PROPERTY_INT64(res, ctx->encoder, prefix##PEAK_BITRATE, avctx->rc_max_rate); \
++        AMF_ASSIGN_PROPERTY_INT64(res, ctx->encoder, prefix##TARGET_BITRATE, avctx->bit_rate);  \
++        if (avctx->rc_max_rate > 0 && avctx->bit_rate < ctx->rc_bit_rate)                     \
++            AMF_ASSIGN_PROPERTY_INT64(res, ctx->encoder, prefix##PEAK_BITRATE, avctx->rc_max_rate); \
++        if (avctx->rc_buffer_size > 0)                                                        \
++            AMF_ASSIGN_PROPERTY_INT64(res, ctx->encoder, prefix##VBV_BUFFER_SIZE, avctx->rc_buffer_size); \
++    } while (0)
++
++static void amf_follow_bit_rate(AVCodecContext *avctx)
++{
++    AMFEncoderContext *ctx = avctx->priv_data;
++    AMF_RESULT res;
++
++    if (avctx->bit_rate <= 0 || avctx->bit_rate == ctx->rc_bit_rate)
++        return;
++    switch (avctx->codec->id) {
++    case AV_CODEC_ID_H264:
++        AMF_FOLLOW_BIT_RATE(AMF_VIDEO_ENCODER_);
++        break;
++    case AV_CODEC_ID_HEVC:
++        AMF_FOLLOW_BIT_RATE(AMF_VIDEO_ENCODER_HEVC_);
++        break;
++    case AV_CODEC_ID_AV1:
++        AMF_FOLLOW_BIT_RATE(AMF_VIDEO_ENCODER_AV1_);
++        break;
++    default:
++        return;
++    }
++    av_log(avctx, AV_LOG_VERBOSE, "Bitrate now %"PRId64" bps.\n", avctx->bit_rate);
++    ctx->rc_bit_rate = avctx->bit_rate;
++}
++
+ static int amf_submit_frame(AVCodecContext *avctx, AVFrame    *frame, AMFSurface **surface_resubmit)
+ {
+     AMFEncoderContext      *ctx = avctx->priv_data;
+@@ -526,6 +566,7 @@
+     default:
+         break;
+     }
++    amf_follow_bit_rate(avctx);
+     // submit surface
+     res = ctx->encoder->pVtbl->SubmitInput(ctx->encoder, (AMFData*)surface);
+     if (res == AMF_INPUT_FULL) { // handle full queue
+--- a/libavcodec/amfenc.h
++++ b/libavcodec/amfenc.h
+@@ -62,6 +62,8 @@
+     int64_t             submitted_frame;
+     int64_t             encoded_frame;
+     AVFifo             *output_list;
++    // The AVCodecContext bitrate the encoder was last given.
++    int64_t             rc_bit_rate;
+ 
+     // common encoder options
+ 

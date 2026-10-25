@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenerates ffmpeg/, include/ and gen/ from pinned sources: FFmpeg's
-# release, nv-codec-headers, and libva's headers from the development
-# shell's nixpkgs. It configures and builds FFmpeg once for each target, the
+# release, nv-codec-headers, AMD's AMF headers, and libva's headers from the
+# development shell's nixpkgs. It configures and builds FFmpeg once for each target, the
 # way build.rs will, and keeps only the files that build read, the files
 # configure generated, and the list of symbols to rename; then it applies
 # patches/ to the kept files. Windows is built with clang-cl against the
@@ -17,10 +17,13 @@ FFMPEG_SHA256=8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
 # 12.0 needs NVIDIA's driver 520 or newer; newer headers raise that.
 NVH_VERSION=12.0.16.1
 NVH_SHA256=bfb3306f22c169fedcfc5489b344f414089eec796ffd528412677b0c872bc6e2
+# The oldest FFmpeg takes: the driver's AMF runtime must be as new.
+AMF_VERSION=1.5.2
+AMF_SHA256=d3c12eb324edf05e214608b6a395a51dd95770ed9d45520185d6c3a206811c99
 # Hardware encoders, and the HEVC decoder for watching H265 streams, which
 # libwebrtc's FFmpeg lacks: the libraries hold nothing else.
 LINUX_ENCODERS=h264_nvenc,hevc_nvenc,av1_nvenc,h264_vaapi,hevc_vaapi,av1_vaapi
-WINDOWS_ENCODERS=h264_nvenc,hevc_nvenc,av1_nvenc
+WINDOWS_ENCODERS=h264_nvenc,hevc_nvenc,av1_nvenc,h264_amf,hevc_amf,av1_amf
 COMMON=(--disable-everything --disable-programs --disable-doc --disable-network
   --disable-autodetect --disable-avformat --disable-avdevice --disable-swscale
   --disable-swresample --disable-avfilter --disable-iconv --disable-asm
@@ -51,8 +54,12 @@ fetch() {  # url file sha256
 fetch "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz" ffmpeg.tar.xz "$FFMPEG_SHA256"
 fetch "https://github.com/FFmpeg/nv-codec-headers/releases/download/n$NVH_VERSION/nv-codec-headers-$NVH_VERSION.tar.gz" \
   nvh.tar.gz "$NVH_SHA256"
+fetch "https://github.com/GPUOpen-LibrariesAndSDKs/AMF/releases/download/v$AMF_VERSION/AMF-headers-v$AMF_VERSION.tar.gz" \
+  amf.tar.gz "$AMF_SHA256"
 tar xf "$work/ffmpeg.tar.xz" -C "$work"
 tar xf "$work/nvh.tar.gz" -C "$work"
+mkdir "$work/amf"
+tar xf "$work/amf.tar.gz" -C "$work/amf" --strip-components=1
 src=$work/ffmpeg-$FFMPEG_VERSION
 make -s -C "$work/nv-codec-headers-$NVH_VERSION" PREFIX="$work/nvh" install
 libva=$(nix build --no-link --print-out-paths --inputs-from "path:$root/nix" nixpkgs#libva.dev)
@@ -76,9 +83,10 @@ build() {  # target, nm, then configure's arguments
   (cd "$out" && find libavcodec libavutil -name '*.o' | sed 's/\.o$/.c/' | sort) |
     grep -vx libavutil/intmath.c > "$gen/sources.txt"
   # Every file the compiler read, as the .d files name them, and the files
-  # it compiled, which clang-cl's leave out.
+  # it compiled, which clang-cl's leave out; clang-cl's give the full path
+  # of a header found beside the file including it.
   find "$out/libavcodec" "$out/libavutil" -name '*.d' -exec cat {} + | tr ' \\' '\n\n' |
-    grep -v ':$' | grep . >> "$work/read.txt"
+    grep -v ':$' | grep . | sed "s|^$src/|src/|" >> "$work/read.txt"
   sed 's|^|src/|' "$gen/sources.txt" >> "$work/read.txt"
   # What build.rs adds to compile and link as configure would: its defines,
   # its include folders inside FFmpeg, and the system libraries it links.
@@ -115,12 +123,13 @@ printf '%s\n' '#!/usr/bin/env bash' \
 chmod +x "$work/bin/lib"
 (
   export PATH=$work/bin:$PATH
-  export INCLUDE="$work/nvh/include;$xwin/crt/include;$xwin/sdk/include/ucrt;$xwin/sdk/include/um;$xwin/sdk/include/shared"
+  export INCLUDE="$work/nvh/include;$work/amf;$xwin/crt/include;$xwin/sdk/include/ucrt;$xwin/sdk/include/um;$xwin/sdk/include/shared"
   export LIB="$xwin/crt/lib/x86_64;$xwin/sdk/lib/um/x86_64;$xwin/sdk/lib/ucrt/x86_64"
   windows="clang-cl --target=x86_64-pc-windows-msvc"
   build windows-x86_64 llvm-nm --toolchain=msvc --cc="$windows" --cxx="$windows" --ld=lld-link \
     --ar=lib --nm=llvm-nm --target-os=win64 --arch=x86_64 --enable-cross-compile \
-    --enable-ffnvcodec --enable-nvenc --enable-encoder="$WINDOWS_ENCODERS" --enable-decoder=hevc
+    --enable-ffnvcodec --enable-nvenc --enable-amf --enable-encoder="$WINDOWS_ENCODERS" \
+    --enable-decoder=hevc
 )
 
 if grep -En '/(tmp|nix|home)/' "$work"/gen/*/config.h; then
@@ -138,16 +147,24 @@ cp "$src"/{COPYING.LGPLv2.1,LICENSE.md,CREDITS,VERSION} "$here/ffmpeg/"
 for change in "$here"/patches/*.patch; do
   patch -s -d "$here/ffmpeg" -p1 < "$change"
 done
-# Headers from outside FFmpeg: NVIDIA's loader and libva's API.
+# Headers from outside FFmpeg: NVIDIA's loader, the AMF headers the Windows
+# build read, and libva's API.
 mkdir -p "$here/include"
 cp -r "$work/nvh/include/ffnvcodec" "$here/include/"
+sed -n "s|^$work/amf/||p" "$work/read.txt" | sort -u | while read -r file; do
+  mkdir -p "$here/include/$(dirname "$file")"
+  cp "$work/amf/$file" "$here/include/$file"
+done
 cp -r "$libva/include/va" "$here/include/"
 chmod -R u+w "$here/include"
-# Both are MIT, with the notice at the top of each header; packaging ships
+# All are MIT, with the notice at the top of each header; packaging ships
 # files named NOTICE.
 {
   echo "include/ffnvcodec: nv-codec-headers $NVH_VERSION, https://github.com/FFmpeg/nv-codec-headers"
   sed -n '1,/\*\//p' "$here/include/ffnvcodec/nvEncodeAPI.h"
+  echo
+  echo "include/AMF: AMF $AMF_VERSION, https://github.com/GPUOpen-LibrariesAndSDKs/AMF"
+  sed -n '1,/^\/\/ THE SOFTWARE\.$/p' "$here/include/AMF/core/Version.h"
   echo
   echo "include/va: libva $(sed -n 's/^#define VA_VERSION_S *"\(.*\)"/\1/p' "$here/include/va/va_version.h"), https://github.com/intel/libva"
   sed -n '1,/\*\//p' "$here/include/va/va.h"
@@ -160,9 +177,12 @@ cp -r "$work/gen" "$here/gen"
 # and floating point constants), which the linker merges, and the UCRT's
 # stdio functions, which its headers define inline.
 sort -u "$work/defined.txt" | grep -vxE 'av_log2(_16bit)?' |
-  grep -vE '^(\?\?_C@|__(xmm|ymm|real)@|__local_stdio_)|^_?v?[sf]?n?(printf|scanf)(_s)?$' > "$work/defined.sorted"
+  grep -vE '^(\?\?_C@|__(xmm|ymm|real)@|__local_stdio_)|^_?v?[sf]?n?w?(printf|scanf)(_s)?$' > "$work/defined.sorted"
 mv "$work/defined.sorted" "$work/defined.txt"
-grep -Ev '^(av|ff|avpriv|avcodec|avutil|avsubtitle)_' "$work/defined.txt" && {
+# Renamed too, though named otherwise: the GUIDs the AMF headers define in
+# each file that includes them, and a table hwcontext_amf.c leaves global.
+grep -Ev '^(av|ff|avpriv|avcodec|avutil|avsubtitle)_|^(AMF[A-Za-z]*GUID|format_map)$' \
+  "$work/defined.txt" && {
   echo "update.sh: a symbol without FFmpeg's prefixes" >&2
   exit 1
 }

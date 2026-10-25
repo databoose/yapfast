@@ -1,6 +1,11 @@
 libavcodec/ac3_parser.c
 libavcodec/adts_parser.c
 libavcodec/allcodecs.c
+libavcodec/amfdec.c
+libavcodec/amfenc_av1.c
+libavcodec/amfenc.c
+libavcodec/amfenc_h264.c
+libavcodec/amfenc_hevc.c
 libavcodec/aom_film_grain.c
 libavcodec/atsc_a53.c
 libavcodec/avcodec.c
@@ -117,6 +122,7 @@ libavutil/hash.c
 libavutil/hdr_dynamic_metadata.c
 libavutil/hdr_dynamic_vivid_metadata.c
 libavutil/hmac.c
+libavutil/hwcontext_amf.c
 libavutil/hwcontext.c
 libavutil/hwcontext_cuda.c
 libavutil/hwcontext_stub.c

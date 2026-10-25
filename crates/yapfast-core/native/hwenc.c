@@ -1,5 +1,6 @@
 /* Hardware encoding for Go Live, through FFmpeg's encoders in
- * vendor/ffmpeg-src: NVIDIA's NVENC, then VA-API (AMD and Intel) on Linux.
+ * vendor/ffmpeg-src: NVIDIA's NVENC, then AMD's AMF on Windows and VA-API
+ * (AMD and Intel) on Linux.
  * The same interface as h264.c, so Rust drives both alike: I420 frames in,
  * Annex B access units out, each NAL unit after a start code. Opening tries
  * each encoder in turn and says which one opened, or why none did.
@@ -20,6 +21,7 @@
 #include "libavcodec/avcodec.h"
 #include "libavutil/hwcontext.h"
 #include "libavutil/opt.h"
+#include "libavutil/time.h"
 
 /* The codecs, as Rust numbers them. */
 enum { CODEC_H264, CODEC_HEVC, CODEC_AV1 };
@@ -33,17 +35,21 @@ struct yapfast_hwenc {
   AVFrame *frame;
   AVPacket *packet;
   int64_t index;
+  /* AMF hands a frame back a little after taking it, and is polled for it. */
+  int poll;
 };
 
-/* FFmpeg's last error on this thread, for saying why an encoder didn't open. */
-static _Thread_local char last_error[160];
+/* FFmpeg's first error on this thread since it was cleared, for saying why
+ * an encoder didn't open: the cause, where later ones only say what failed
+ * because of it. */
+static _Thread_local char first_error[160];
 
 static void keep_error(void *context, int level, const char *format, va_list args) {
   (void)context;
-  if (level > AV_LOG_ERROR) return;
-  vsnprintf(last_error, sizeof last_error, format, args);
-  size_t length = strlen(last_error);
-  if (length && last_error[length - 1] == '\n') last_error[length - 1] = 0;
+  if (level > AV_LOG_ERROR || first_error[0]) return;
+  vsnprintf(first_error, sizeof first_error, format, args);
+  size_t length = strlen(first_error);
+  if (length && first_error[length - 1] == '\n') first_error[length - 1] = 0;
 }
 
 static void set_rate(AVCodecContext *codec, unsigned kbps) {
@@ -88,12 +94,10 @@ static int open_vaapi(struct yapfast_hwenc *h, AVCodecContext *codec, struct va_
   return h->surface ? 0 : AVERROR(ENOMEM);
 }
 
-static int open_encoder(struct yapfast_hwenc *h, const char *name, struct va_device device,
+static int open_encoder(struct yapfast_hwenc *h, const AVCodec *found, struct va_device device,
                         unsigned codec_id, unsigned width, unsigned height, unsigned fps,
                         unsigned kbps) {
-  const AVCodec *found = avcodec_find_encoder_by_name(name);
-  if (!found) return AVERROR_ENCODER_NOT_FOUND;
-  int vaapi = device.path != NULL;
+  int vaapi = device.path != NULL, amf = strstr(found->name, "_amf") != NULL;
   AVCodecContext *codec = h->codec = avcodec_alloc_context3(found);
   if (!codec) return AVERROR(ENOMEM);
   codec->width = (int)width;
@@ -103,7 +107,7 @@ static int open_encoder(struct yapfast_hwenc *h, const char *name, struct va_dev
   /* A new viewer waits at most this long for a picture. */
   codec->gop_size = (int)fps * 3;
   codec->max_b_frames = 0;
-  codec->pix_fmt = vaapi ? AV_PIX_FMT_VAAPI : AV_PIX_FMT_YUV420P;
+  codec->pix_fmt = vaapi ? AV_PIX_FMT_VAAPI : amf ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
   /* libyuv converts captured pixels with BT.601's limited range. */
   codec->color_primaries = AVCOL_PRI_SMPTE170M;
   codec->color_trc = AVCOL_TRC_SMPTE170M;
@@ -118,6 +122,31 @@ static int open_encoder(struct yapfast_hwenc *h, const char *name, struct va_dev
     av_opt_set_int(options, "async_depth", 1, 0);
     ret = open_vaapi(h, codec, device);
     if (ret < 0) return ret;
+  } else if (amf) {
+    /* Or FFmpeg holds each frame's packet back until the next frame. */
+    codec->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    av_opt_set(options, "usage", "lowlatency", 0);
+    av_opt_set(options, "quality", "balanced", 0);
+    av_opt_set(options, "rc", "vbr_peak", 0);
+    av_opt_set_int(options, "enforce_hrd", 1, 0);
+    av_opt_set_int(options, "filler_data", 0, 0);
+    av_opt_set_int(options, "async_depth", 1, 0);
+    av_opt_set_int(options, "forced_idr", 1, 0);
+    av_opt_set_int(options, "aud", 0, 0);
+    if (codec_id == CODEC_AV1) {
+      av_opt_set(options, "latency", "real_time", 0);
+      av_opt_set(options, "header_insertion_mode", "frame", 0);
+      av_opt_set_int(options, "bf", 0, 0);
+    } else {
+      av_opt_set_int(options, "latency", 1, 0);
+    }
+    if (codec_id == CODEC_HEVC) av_opt_set(options, "header_insertion_mode", "idr", 0);
+    if (codec_id == CODEC_H264) {
+      av_opt_set(options, "profile", "main", 0);
+      av_opt_set_int(options, "bf", 0, 0);
+      av_opt_set_int(options, "header_spacing", codec->gop_size, 0);
+    }
+    h->poll = 1;
   } else {
     av_opt_set(options, "preset", "p4", 0);
     av_opt_set(options, "tune", "ll", 0);
@@ -132,17 +161,18 @@ static int open_encoder(struct yapfast_hwenc *h, const char *name, struct va_dev
   h->frame = av_frame_alloc();
   h->packet = av_packet_alloc();
   if (!h->frame || !h->packet) return AVERROR(ENOMEM);
-  h->frame->format = vaapi ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
+  h->frame->format = vaapi || amf ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
   h->frame->width = (int)width;
   h->frame->height = (int)height;
   return av_frame_get_buffer(h->frame, 0);
 }
 
-/* The encoders to try for each codec, best first. */
-static const char *const ENCODERS[][3] = {
-    [CODEC_H264] = {"h264_nvenc", "h264_vaapi", NULL},
-    [CODEC_HEVC] = {"hevc_nvenc", "hevc_vaapi", NULL},
-    [CODEC_AV1] = {"av1_nvenc", "av1_vaapi", NULL},
+/* The encoders to try for each codec, best first; each system builds in
+ * those it has. */
+static const char *const ENCODERS[][4] = {
+    [CODEC_H264] = {"h264_nvenc", "h264_amf", "h264_vaapi", NULL},
+    [CODEC_HEVC] = {"hevc_nvenc", "hevc_amf", "hevc_vaapi", NULL},
+    [CODEC_AV1] = {"av1_nvenc", "av1_amf", "av1_vaapi", NULL},
 };
 
 /* The libva drivers for each kernel driver whose GPUs encode, best first.
@@ -181,9 +211,10 @@ struct opening {
   size_t report_size, used;
 };
 
-/* Opens `name` on `device`, or adds why it didn't open to the report. */
-static struct yapfast_hwenc *try_open(struct opening *o, const char *name,
+/* Opens `found` on `device`, or adds why it didn't open to the report. */
+static struct yapfast_hwenc *try_open(struct opening *o, const AVCodec *found,
                                       struct va_device device) {
+  const char *name = found->name;
   char label[96];
   if (device.path)
     snprintf(label, sizeof label, "%s (%s, %s)", name, device.path + strlen("/dev/dri/"),
@@ -192,16 +223,16 @@ static struct yapfast_hwenc *try_open(struct opening *o, const char *name,
     snprintf(label, sizeof label, "%s", name);
   struct yapfast_hwenc *h = av_mallocz(sizeof *h);
   if (!h) return NULL;
-  last_error[0] = 0;
-  int ret = open_encoder(h, name, device, o->codec_id, o->width, o->height, o->fps, o->kbps);
+  first_error[0] = 0;
+  int ret = open_encoder(h, found, device, o->codec_id, o->width, o->height, o->fps, o->kbps);
   if (ret >= 0) {
     snprintf(o->report, o->report_size, "%s", label);
     return h;
   }
-  if (!last_error[0]) av_strerror(ret, last_error, sizeof last_error);
+  if (!first_error[0]) av_strerror(ret, first_error, sizeof first_error);
   if (o->used < o->report_size)
     o->used += (size_t)snprintf(o->report + o->used, o->report_size - o->used, "%s%s: %s",
-                                o->used ? "; " : "", label, last_error);
+                                o->used ? "; " : "", label, first_error);
   close_encoder(h);
   av_free(h);
   return NULL;
@@ -219,9 +250,11 @@ struct yapfast_hwenc *yapfast_hwenc_new(unsigned codec_id, unsigned width, unsig
   av_log_set_callback(keep_error);
   struct opening o = {codec_id, width, height, fps, kbps, report, report_size, 0};
   for (const char *const *name = ENCODERS[codec_id]; *name; name++) {
+    const AVCodec *found = avcodec_find_encoder_by_name(*name);
+    if (!found) continue;
     struct yapfast_hwenc *h = NULL;
     if (!strstr(*name, "_vaapi")) {
-      h = try_open(&o, *name, (struct va_device){NULL, NULL});
+      h = try_open(&o, found, (struct va_device){NULL, NULL});
       if (h) return h;
       continue;
     }
@@ -232,7 +265,7 @@ struct yapfast_hwenc *yapfast_hwenc_new(unsigned codec_id, unsigned width, unsig
       for (size_t i = 0; i < sizeof VA_DRIVERS / sizeof *VA_DRIVERS; i++) {
         if (strcmp(kernel, VA_DRIVERS[i][0])) continue;
         for (const char *const *driver = VA_DRIVERS[i] + 1; *driver; driver++) {
-          h = try_open(&o, *name, (struct va_device){path, *driver});
+          h = try_open(&o, found, (struct va_device){path, *driver});
           if (h) return h;
         }
       }
@@ -242,7 +275,7 @@ struct yapfast_hwenc *yapfast_hwenc_new(unsigned codec_id, unsigned width, unsig
 }
 
 /* Copies an I420 picture into the frame the encoder reads: as it is for
- * NVENC, with its chroma planes interleaved for VA-API's NV12. */
+ * NVENC, with its chroma planes interleaved for VA-API's and AMF's NV12. */
 static int fill(struct yapfast_hwenc *h, const uint8_t *y, int y_stride, const uint8_t *u,
                 int u_stride, const uint8_t *v, int v_stride) {
   AVFrame *frame = h->frame;
@@ -291,7 +324,17 @@ long yapfast_hwenc_encode(struct yapfast_hwenc *h, const unsigned char *y, int y
   if (avcodec_send_frame(h->codec, frame) < 0) return -1;
   size_t size = 0;
   *is_key = 0;
-  while ((ret = avcodec_receive_packet(h->codec, h->packet)) >= 0) {
+  /* AMF waits a millisecond at most for each receive: polled for the
+   * frame's packet for up to 100 ms, after which it comes with the next. */
+  int64_t deadline = h->poll ? av_gettime_relative() + 100000 : 0;
+  for (;;) {
+    ret = avcodec_receive_packet(h->codec, h->packet);
+    if (ret == AVERROR(EAGAIN) && !size && av_gettime_relative() < deadline) {
+      /* Older drivers don't wait in AMF's receive at all. */
+      av_usleep(250);
+      continue;
+    }
+    if (ret < 0) break;
     if (size + (size_t)h->packet->size > capacity) {
       av_packet_unref(h->packet);
       return -2;

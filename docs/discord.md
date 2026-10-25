@@ -922,9 +922,9 @@ NVENC's 72, and Wikipedia at 3.5 Mbit/s 94 and 98 against its 98.
 
 With "Encode streams with the GPU" in Settings, Advanced, on unless turned
 off, a stream's H264 goes to the graphics card's encoder where it has one:
-`native/hwenc.c` opens FFmpeg's NVENC encoder, then on Linux its VA-API one
-(AMD and Intel), and x264 when neither opens. Windows has NVENC only so far,
-so AMD and Intel graphics encode with x264 there. The setting lives in
+`native/hwenc.c` opens FFmpeg's NVENC encoder, then on Windows its AMF one
+(AMD) and on Linux its VA-API one (AMD and Intel), and x264 when none opens.
+Intel graphics encode with x264 on Windows so far. The setting lives in
 `layout.json` and reaches the worker with each `Job::Share`; the camera stays
 on x264. When the GPU's encoder fails during a stream, x264 takes over from
 that frame with a keyframe. The worker logs which encoder each stream got
@@ -933,9 +933,11 @@ GPU encoder that didn't open failed.
 
 FFmpeg is built from `vendor/ffmpeg-src` into the one binary, with only its
 hardware encoders and every symbol prefixed so it can't meet the FFmpeg
-inside libwebrtc. NVIDIA's driver and libva load only when an encoder opens:
-the binary starts without either, and needs NVIDIA's driver 520 or newer for
-NVENC.
+inside libwebrtc. NVIDIA's driver, AMD's AMF runtime and libva load only
+when an encoder opens: the binary starts without any of them, and needs
+NVIDIA's driver 520 or newer for NVENC, and for AMF an AMD driver with AMF
+1.5.2 or newer, from about May 2026 on; an older one fails to open, and x264
+encodes.
 
 VA-API tries each render node (`/dev/dri/renderD128` on) with the libva
 driver its kernel driver calls for: radeonsi for amdgpu, iHD then i965 for
@@ -949,17 +951,19 @@ own VA-API encoder into libwebrtc. The AppImage takes the system's libva,
 and the Arch package lists it as optional.
 
 The settings match x264's where they can: low-latency tuning (NVENC's p4
-preset, `ll`), no B-frames, a frame out for each frame in, Main profile,
+preset, `ll`; AMF's `lowlatency` usage and balanced preset), no B-frames, a
+frame out for each frame in, Main profile,
 keyframes every 3 seconds and when asked, and variable bitrate capped at the
 target over half a second, which leaves a calm screen below the cap rather
-than padding it. NVENC and VA-API change their bitrate as they run, without
-the IDR frame FFmpeg would insert, with a patch to FFmpeg for each: on the
+than padding it. NVENC, AMF and VA-API change their bitrate as they run,
+without the IDR frame FFmpeg would insert, with a patch to FFmpeg for each
+(AMF's sets the target, peak and buffer on the running encoder): on the
 AMD chip a drop from 4 to 2 Mbit/s took hold within a second, with no
 keyframe beyond the one every 3 seconds.
 "Higher quality" changes nothing on the GPU: NVENC's slowest preset scored
 within 0.1 VMAF of p4.
 
-Where NVENC or VA-API encodes H265, the stream offers it too, first. Discord
+Where the GPU's encoder encodes H265, the stream offers it too, first. Discord
 picks the codec Yapfast offers first that every viewer's client decodes
 (op 4's `video_codec`), and when someone who can't decode it starts watching,
 switches the stream with op 14; Yapfast then opens the other encoder and
@@ -981,7 +985,8 @@ Mbit/s 88.3 against 86.8, with 22 dips against 47, at 0.02 of a core against
 with more bad frames than NVENC. On the same minute, the Radeon chip built
 into a Ryzen 9 9900X, through VA-API, came close to NVENC: H264 scored 92.8
 at 4 Mbit/s (6 dips) and 87.8 at 2.5 (40 dips), H265 94.9 and 92.4 against
-NVENC's 95.2 and 92.9, at 0.03 of a core.
+NVENC's 95.2 and 92.9, at 0.03 of a core. AMF hasn't run on AMD hardware
+yet: Wine has no AMF runtime, so there it fails to open and x264 encodes.
 
 ## Servers, channels and messages
 

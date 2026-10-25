@@ -1,26 +1,27 @@
 # FFmpeg for Yapfast
 
 Go Live's hardware encoders: FFmpeg 9.0.2's NVENC encoders for NVIDIA, on
-Linux and Windows, and on Linux its VA-API ones for AMD and Intel, for H264,
-HEVC and AV1; and its HEVC
-decoder, for watching H265 streams, which libwebrtc's FFmpeg can't decode.
-Nothing else of FFmpeg is built: no other decoders, formats, filters or
-assembly. `crates/yapfast-core/native/hwenc.c` drives the encoders and
+Linux and Windows, on Windows its AMF ones for AMD, and on Linux its VA-API
+ones for AMD and Intel, for H264, HEVC and AV1; and its HEVC decoder, for
+watching H265 streams, which libwebrtc's FFmpeg can't decode. Nothing else
+of FFmpeg is built: no other decoders, formats, filters or assembly.
+`crates/yapfast-core/native/hwenc.c` drives the encoders and
 `native/hevc.c` the decoder.
 
 `update.sh` makes everything here except `src/` and `patches/`. It downloads
-FFmpeg's release and nv-codec-headers 12.0.16.1 and checks their SHA-256,
-takes libva's headers from the development shell's nixpkgs, configures and
-builds FFmpeg for each target, and keeps what follows. Windows is built
-with clang-cl against the MSVC runtime and Windows SDK in cargo-xwin's
-cache, which `scripts/build-windows` fills the first time; configure finds
-them through `INCLUDE` and `LIB`, so `config.h` names no folder of the
-machine that ran it.
+FFmpeg's release, nv-codec-headers 12.0.16.1 and AMD's AMF headers 1.5.2
+and checks their SHA-256, takes libva's headers from the development
+shell's nixpkgs, configures and builds FFmpeg for each target, and keeps
+what follows. Windows is built with clang-cl against the MSVC runtime and
+Windows SDK in cargo-xwin's cache, which `scripts/build-windows` fills the
+first time; configure finds them through `INCLUDE` and `LIB`, so
+`config.h` names no folder of the machine that ran it.
 
 - `ffmpeg/`: the FFmpeg files that build read, unchanged but for `patches/`,
   under FFmpeg's LGPL-2.1-or-later (`ffmpeg/COPYING.LGPLv2.1`).
 - `include/`: nv-codec-headers' `ffnvcodec/`, which loads NVIDIA's driver
-  at run time, and libva's `va/`, both MIT (`include/NOTICE`).
+  at run time, the AMF headers the Windows build read, `AMF/`, and libva's
+  `va/`, all MIT (`include/NOTICE`).
 - `gen/<os>-<arch>/`: what configure generated, the files to compile, and
   configure's defines, include folders and system libraries, which
   `build.rs` uses as configure's makefiles would.
@@ -36,7 +37,10 @@ binary needs neither libva nor NVIDIA's libraries to start, and an encoder
 that can't load them fails to open.
 
 The minimum NVIDIA driver follows the nv-codec-headers version: 12.0 needs
-520 or newer. Newer headers would raise it.
+520 or newer. Newer headers would raise it. AMF's do the same for AMD's
+driver: FFmpeg asks its AMF runtime for the headers' version, and 1.5.2 is
+the oldest FFmpeg 9 builds with. FFmpeg loads `amfrt64.dll` from the system
+folder only when an AMF encoder opens.
 
 ## Changes
 
@@ -47,6 +51,10 @@ The minimum NVIDIA driver follows the nv-codec-headers version: 12.0 needs
   rate control parameters to the driver only with IDR frames; this sends
   them again with the next picture when the bitrate changes, which VA-API
   allows with any picture.
+- `amf-bitrate-without-idr.patch`: the same for AMF, which FFmpeg gives the
+  bitrate only when it opens the encoder. AMF takes the target, peak and
+  buffer size as it runs; the patch sets them before the next frame when
+  the bitrate changes, the peak first when it rises.
 
 ## Updating
 
