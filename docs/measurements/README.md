@@ -1262,3 +1262,53 @@ app, not the allocator.
 .local/alloc2/run3.sh   # cap + threshold against the uncapped threshold
 .local/alloc2/run4.sh   # with the 512 KiB trim threshold
 ```
+
+## 2026-10-25: x264 in place of OpenH264
+
+Go Live's and the camera's H264 encoder, alone: a harness fed the first
+seconds of 1080p clips through `Encoder`, OpenH264 as it shipped (screen
+content mode, frame skipping on) against x264 in `native/h264.c` at its
+default effort (superfast) and with "Higher quality" (faster). The clips are
+Xiph's AOM test clips Wikipedia (scrolling, 30 fps), Debugging (an IDE, 30
+fps), MissionControlClip3 (a desktop, 60 fps), MINECRAFT and DOTA2 (60 fps),
+and a zooming fractal (60 fps). A frame OpenH264 skipped counts as the one
+before it shown again, as a viewer sees it. VMAF and PSNR against the clip;
+cores are CPU time over the clip's length, with four encoder threads, on a
+12-core Ryzen 9 9900X.
+
+At 9 Mbit/s, the cap above 720p:
+
+| Clip | OpenH264: fps, VMAF, cores | x264: fps, VMAF, cores | Higher quality: fps, VMAF, cores |
+| --- | ---: | ---: | ---: |
+| Minecraft | 20, 38, 0.63 | 60, 66, 0.48 | 60, 72, 1.19 |
+| Dota 2 | 54, 74, 0.63 | 60, 78, 0.40 | 60, 82, 0.95 |
+| Fractal | 34, 55, 0.40 | 60, 68, 0.38 | 60, 70, 0.87 |
+| Desktop | 57, 94, 0.59 | 60, 94, 0.31 | 60, 94, 0.71 |
+| Wikipedia | 30, 98 (42.6 dB), 0.28 | 30, 99 (47.7 dB), 0.19 | 30, 99 (50.6 dB), 0.42 |
+| IDE | 30, 93 (42.4 dB), 0.27 | 30, 97 (54.2 dB), 0.16 | 30, 97 (53.6 dB), 0.30 |
+
+At 3.5 Mbit/s, the cap at 720p and below:
+
+| Clip | OpenH264 | x264 | Higher quality |
+| --- | ---: | ---: | ---: |
+| Minecraft | 6, 19, 0.21 | 60, 43, 0.40 | 60, 45, 0.90 |
+| Dota 2 | 18, 39, 0.29 | 60, 53, 0.32 | 60, 57, 0.70 |
+| Fractal | 13, 25, 0.19 | 60, 18, 0.34 | 60, 52, 0.76 |
+| Desktop | 50, 88, 0.52 | 60, 74, 0.27 | 60, 78, 0.56 |
+| Wikipedia | 29, 98 (42.1 dB), 0.28 | 30, 94 (36.5 dB), 0.15 | 30, 98 (41.6 dB), 0.30 |
+| IDE | 29, 92 (38.5 dB), 0.26 | 30, 95 (43.9 dB), 0.15 | 30, 95 (43.9 dB), 0.31 |
+
+OpenH264 also ran over its bitrate on games, to 11 Mbit/s for Minecraft's 9;
+x264 stayed within it on every clip. On calm screens at 3.5 Mbit/s the
+default effort scores below OpenH264, which spent fewer bits there and
+dropped a few frames; "Higher quality" matches it. On calm screens at 9
+Mbit/s x264 uses up to 8 Mbit/s where OpenH264 stayed under 2.
+
+Memory, the harness's peak RssAnon encoding 1080p60, the same on all three
+clips tried (the screenshot, the fractal, Minecraft): OpenH264 62 MiB, x264
+41 MiB, with "Higher quality" 52 MiB. The stream worker's own figure under
+"Sharing your screen" above wasn't measured again.
+
+```sh
+cat .local/x264/README   # clips, harness and scripts
+```

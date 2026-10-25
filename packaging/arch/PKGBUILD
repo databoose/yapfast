@@ -38,7 +38,7 @@ optdepends=(
   'libxfixes: screen sharing on X11'
   'libxrandr: screen sharing on X11'
 )
-makedepends=(cargo clang cmake curl git llvm21 pkgconf protobuf python)
+makedepends=(cargo clang cmake curl git llvm21 nasm pkgconf protobuf python)
 # webrtc-sys compiles C++ with cc; Arch's LTO flags would leave it unlinkable.
 options=(!lto)
 source=(

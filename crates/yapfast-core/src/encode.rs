@@ -1,6 +1,7 @@
-//! Encoding for Go Live, through native/vp8.c and native/h264.c and the
-//! libvpx and OpenH264 inside libwebrtc. Frames arrive as RGBA and leave as
-//! VP8 frames or H264 access units in Annex B form.
+//! Encoding for Go Live and the camera, through native/vp8.c with the libvpx
+//! inside libwebrtc, and native/h264.c with x264 (vendor/x264-src). Frames
+//! arrive as RGBA or I420 and leave as VP8 frames or H264 access units in
+//! Annex B form.
 
 use std::ffi::{c_int, c_long, c_longlong, c_uchar, c_uint, c_ulong};
 
@@ -10,13 +11,14 @@ use livekit::webrtc::{
     video_frame::{I420Buffer, VideoBuffer},
 };
 use yapfast_discord::rtp::Codec;
+// x264's library, which native/h264.c calls: linked only while named.
+use x264_src as _;
 
 #[repr(C)]
 struct Raw {
     _private: [u8; 0],
 }
 
-type New = unsafe extern "C" fn(c_uint, c_uint, c_uint, c_uint, c_uint) -> *mut Raw;
 type Encode = unsafe extern "C" fn(
     *mut Raw,
     *const c_uchar,
@@ -67,6 +69,7 @@ unsafe extern "C" {
         fps: c_uint,
         kbps: c_uint,
         threads: c_uint,
+        effort: c_uint,
     ) -> *mut Raw;
     #[allow(clippy::too_many_arguments)]
     fn yapfast_h264_encode(
@@ -91,6 +94,17 @@ unsafe extern "C" {
 /// RTP's video clock.
 pub const CLOCK: u64 = 90_000;
 
+/// How much work the H264 encoder puts into each frame: x264's superfast
+/// preset, or its faster one, for a sharper picture at about twice the CPU.
+/// VP8 takes no effort.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Effort {
+    #[default]
+    Light,
+    High,
+}
+
 pub struct Encoder {
     raw: *mut Raw,
     codec: Codec,
@@ -102,8 +116,9 @@ pub struct Encoder {
     width: u32,
     height: u32,
     fps: u32,
-    /// The frame as I420: a full-size luma plane, then two quarter-size
-    /// chroma planes.
+    /// The frame as I420, for [`Self::encode`]: a full-size luma plane, then
+    /// two quarter-size chroma planes. Empty until it's first needed: the
+    /// screen and the camera arrive as I420.
     planes: Vec<u8>,
     out: Vec<u8>,
 }
@@ -119,28 +134,34 @@ pub struct Frame<'a> {
 
 impl Encoder {
     /// An encoder for `width` by `height` frames, which must be even.
-    pub fn new(codec: Codec, width: u32, height: u32, fps: u32, kbps: u32) -> Result<Self> {
+    pub fn new(
+        codec: Codec,
+        width: u32,
+        height: u32,
+        fps: u32,
+        kbps: u32,
+        effort: Effort,
+    ) -> Result<Self> {
         if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             bail!("{codec:?} frames need an even size, not {width}x{height}");
         }
         let threads =
             std::thread::available_parallelism().map_or(1, |cores| cores.get().min(4)) as u32;
-        let (new, encode, set_bitrate, free): (New, Encode, SetBitrate, Free) = match codec {
+        // SAFETY: plain values; null means the library refused the configuration.
+        let (raw, encode, set_bitrate, free): (_, Encode, SetBitrate, Free) = match codec {
             Codec::Vp8 => (
-                yapfast_vp8_new,
+                unsafe { yapfast_vp8_new(width, height, fps, kbps, threads) },
                 yapfast_vp8_encode,
                 yapfast_vp8_set_bitrate,
                 yapfast_vp8_free,
             ),
             Codec::H264 => (
-                yapfast_h264_new,
+                unsafe { yapfast_h264_new(width, height, fps, kbps, threads, effort as c_uint) },
                 yapfast_h264_encode,
                 yapfast_h264_set_bitrate,
                 yapfast_h264_free,
             ),
         };
-        // SAFETY: plain values; null means the library refused the configuration.
-        let raw = unsafe { new(width, height, fps, kbps, threads) };
         if raw.is_null() {
             bail!("could not start the {codec:?} encoder");
         }
@@ -155,7 +176,7 @@ impl Encoder {
             width,
             height,
             fps,
-            planes: vec![0; pixels + pixels / 2],
+            planes: Vec::new(),
             // Even a keyframe of noise fits.
             out: vec![0; pixels * 2 + 4096],
         })
@@ -193,6 +214,7 @@ impl Encoder {
             bail!("a frame smaller than the encoder's");
         }
         let mut planes = std::mem::take(&mut self.planes);
+        planes.resize(pixels + pixels / 2, 0);
         let (y, chroma) = planes.split_at_mut(pixels);
         let (u, v) = chroma.split_at_mut(pixels / 4);
         // libyuv names formats by their order in a little-endian word: its
@@ -314,9 +336,9 @@ mod tests {
     use crate::decode::Decoder;
 
     /// Four frames of moving colour, the third a forced keyframe.
-    fn encode_four(codec: Codec) -> Vec<(bool, Vec<u8>)> {
+    fn encode_four(codec: Codec, effort: Effort) -> Vec<(bool, Vec<u8>)> {
         let (width, height) = (64, 36);
-        let mut encoder = Encoder::new(codec, width, height, 30, 500).unwrap();
+        let mut encoder = Encoder::new(codec, width, height, 30, 500, effort).unwrap();
         let mut rgba = vec![0u8; (width * height * 4) as usize];
         let mut frames = vec![];
         for frame in 0..4u64 {
@@ -333,13 +355,13 @@ mod tests {
                 .unwrap();
             frames.push((encoded.keyframe, encoded.data.to_vec()));
         }
-        assert!(Encoder::new(codec, 63, 36, 30, 500).is_err());
+        assert!(Encoder::new(codec, 63, 36, 30, 500, effort).is_err());
         frames
     }
 
     #[test]
     fn encodes_vp8_keyframes_and_deltas() {
-        let frames = encode_four(Codec::Vp8);
+        let frames = encode_four(Codec::Vp8, Effort::Light);
         for (keyframe, data) in &frames {
             // A keyframe's tag has bit 0 clear, and its size follows the start code.
             assert_eq!(*keyframe, data[0] & 1 == 0);
@@ -354,31 +376,32 @@ mod tests {
     }
 
     #[test]
-    fn encodes_h264_that_decodes() {
-        let frames = encode_four(Codec::H264);
-        let keys: Vec<bool> = frames.iter().map(|(key, _)| *key).collect();
-        assert_eq!(keys[..3], [true, false, true]);
-        // NAL unit types after each 4-byte start code.
-        let types = |data: &[u8]| -> Vec<u8> {
-            (0..data.len().saturating_sub(4))
-                .filter(|&at| data[at..at + 4] == [0, 0, 0, 1])
-                .map(|at| data[at + 4] & 0x1f)
-                .collect()
-        };
-        let first = types(&frames[0].1);
-        assert!(
-            first.starts_with(&[7, 8]) && first.contains(&5),
-            "parameter sets, then an IDR slice: {first:?}"
-        );
-        assert!(!types(&frames[1].1).contains(&5), "a delta frame");
-        let mut decoder = Decoder::new(Codec::H264).unwrap();
-        let mut shown = 0;
-        for (_, data) in &frames {
-            if let Some(picture) = decoder.decode(data).unwrap() {
-                assert_eq!((picture.width, picture.height), (64, 36));
-                shown += 1;
+    fn encodes_main_profile_h264_that_decodes() {
+        for effort in [Effort::Light, Effort::High] {
+            let frames = encode_four(Codec::H264, effort);
+            let keys: Vec<bool> = frames.iter().map(|(key, _)| *key).collect();
+            assert_eq!(keys[..3], [true, false, true]);
+            let units = |data| yapfast_discord::rtp::nal_units(data);
+            let types =
+                |data| -> Vec<u8> { units(data).iter().map(|unit| unit[0] & 0x1f).collect() };
+            let first = types(&frames[0].1);
+            assert!(
+                first.starts_with(&[7, 8]) && first.contains(&5),
+                "parameter sets, then an IDR slice: {first:?}"
+            );
+            // The sequence parameter set's profile_idc: Main, as Discord's
+            // client sends.
+            assert_eq!(units(&frames[0].1)[0][1], 77);
+            assert!(!types(&frames[1].1).contains(&5), "a delta frame");
+            let mut decoder = Decoder::new(Codec::H264).unwrap();
+            let mut shown = 0;
+            for (_, data) in &frames {
+                if let Some(picture) = decoder.decode(data).unwrap() {
+                    assert_eq!((picture.width, picture.height), (64, 36));
+                    shown += 1;
+                }
             }
+            assert!(shown >= 3, "{shown} pictures at {effort:?} effort");
         }
-        assert!(shown >= 3, "{shown} pictures");
     }
 }

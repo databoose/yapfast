@@ -1158,8 +1158,8 @@ component ScreenCard inherits Rectangle {
     }
 }
 
-// Going live: what to share, where Yapfast lists it, and the resolution and frame
-// rate to share it at; or while sharing, what to share instead.
+// Going live: what to share, where Yapfast lists it, and the resolution, frame
+// rate and quality to share it at; or while sharing, what to share instead.
 export component ShareMenu inherits Rectangle {
     /// The screens, then the windows, to share; a pick counts the screens
     /// first.
@@ -1170,7 +1170,9 @@ export component ShareMenu inherits Rectangle {
     in-out property <int> pick-source;
     in-out property <int> pick-resolution;
     in-out property <int> pick-fps;
-    callback go-live(int, int, int);
+    /// The encoder's slower preset: a sharper picture for more CPU.
+    in-out property <bool> pick-high-quality;
+    callback go-live(int, int, int, bool);
     background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
     drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
     VerticalLayout {
@@ -1229,11 +1231,20 @@ export component ShareMenu inherits Rectangle {
                 clicked => { root.pick-fps = fps; }
             }
         }
+        if !root.switching: HorizontalLayout {
+            padding-left: 8px; padding-top: 8px; padding-bottom: 4px;
+            Text { text: "ENCODING"; color: Theme.muted; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; }
+        }
+        if !root.switching: MenuItem {
+            text: "Higher quality"; subtitle: "Sharper, at twice the CPU";
+            checkbox: true; checked: root.pick-high-quality;
+            clicked => { root.pick-high-quality = !root.pick-high-quality; }
+        }
         HorizontalLayout {
             padding: 4px; padding-top: 8px;
             ActionButton {
                 text: root.switching ? "Switch" : "Go Live"; icon: @image-url("icons/screen-share.svg"); primary: true; horizontal-stretch: 1;
-                clicked => { root.go-live(root.pick-source, root.pick-resolution, root.pick-fps); }
+                clicked => { root.go-live(root.pick-source, root.pick-resolution, root.pick-fps, root.pick-high-quality); }
             }
         }
     }

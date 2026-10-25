@@ -695,9 +695,11 @@ export component YapfastWindow inherits Window {
     in property <bool> sharing;
     in property <bool> share-live;
     /// The quality chosen last time: 0 for 720p, 1 for 1080p, 2 for the
-    /// screen's own size, and frames a second.
+    /// screen's own size; frames a second; and whether the encoder works
+    /// harder for a sharper picture.
     in property <int> share-resolution: 1;
     in property <int> share-fps: 30;
+    in property <bool> share-high-quality;
     in property <string> share-status;
     /// The newest preview of what's shared, refreshed by stream-tick while sharing.
     in-out property <image> share-frame;
@@ -1101,8 +1103,8 @@ export component YapfastWindow inherits Window {
     callback toggle-share;
     /// Share what share-screens, then share-windows, list at this index, or
     /// the screen when they list none, at this resolution, as in
-    /// share-resolution, and frame rate.
-    callback go-live(int, int, int);
+    /// share-resolution, frame rate, and quality, as in share-high-quality.
+    callback go-live(int, int, int, bool);
     /// While sharing, share what share-screens, then share-windows, list at
     /// this index in place of what's shared, or what the system's dialog
     /// picks when they list none.
@@ -1458,6 +1460,7 @@ export component YapfastWindow inherits Window {
     property <int> pick-source;
     property <int> pick-resolution;
     property <int> pick-fps;
+    property <bool> pick-high-quality;
     // The menu switches what's shared, as it was when it opened.
     property <bool> pick-switch;
     function open-share-menu(x: length, y: length) {
@@ -1465,6 +1468,7 @@ export component YapfastWindow inherits Window {
         root.pick-source = 0;
         root.pick-resolution = root.share-resolution;
         root.pick-fps = root.share-fps;
+        root.pick-high-quality = root.share-high-quality;
         root.pick-switch = root.sharing;
         // Shown once the list is in, so it opens at its full height. Where
         // the system's dialog picks what to share, a switch goes straight to it.
@@ -1485,11 +1489,12 @@ export component YapfastWindow inherits Window {
         ShareMenu {
             screens: root.share-screens; windows: root.share-windows; switching: root.pick-switch;
             pick-source <=> root.pick-source; pick-resolution <=> root.pick-resolution; pick-fps <=> root.pick-fps;
-            go-live(source, resolution, fps) => {
+            pick-high-quality <=> root.pick-high-quality;
+            go-live(source, resolution, fps, high-quality) => {
                 if root.pick-switch {
                     root.switch-live(source);
                 } else {
-                    root.go-live(source, resolution, fps);
+                    root.go-live(source, resolution, fps, high-quality);
                 }
                 share-menu.close();
             }

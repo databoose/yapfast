@@ -38,7 +38,7 @@ use livekit::webrtc::{
 
 use crate::{
     decode::Decoder,
-    encode::{self, Encoder},
+    encode::{self, Effort, Encoder},
     frames::{Frames, Writer},
     stream_audio,
     voice::{Resolution, StreamQuality},
@@ -79,6 +79,9 @@ pub enum Job {
         width: u32,
         height: u32,
         fps: u32,
+        /// How hard the encoder works on each frame.
+        #[serde(default)]
+        effort: Effort,
     },
     /// Receives and decodes the stream at `server`, writing pictures that
     /// fit `width` by `height` to the frames file at `frames`.
@@ -344,6 +347,7 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
             width,
             height,
             fps,
+            effort,
         } => {
             let fps = fps.clamp(1, 60);
             let sink = Sink {
@@ -353,6 +357,7 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
                 sound: source != Source::TestPattern,
                 video: None,
                 fps,
+                effort,
                 started: Instant::now(),
                 streaming: false,
                 preview_due: None,
@@ -434,6 +439,7 @@ struct Sink {
     sound: bool,
     video: Option<Video>,
     fps: u32,
+    effort: Effort,
     started: Instant,
     streaming: bool,
     /// When the stream's next preview is due: from when it starts.
@@ -502,6 +508,7 @@ impl Sink {
                 height,
                 self.fps,
                 kbps(height, None),
+                self.effort,
             )?;
             self.video = Some(Video {
                 sender,
@@ -519,6 +526,7 @@ impl Sink {
                 height,
                 self.fps,
                 kbps(height, None),
+                self.effort,
             )?;
             video.sender.resize(width, height);
         }
@@ -1146,6 +1154,11 @@ impl Worker {
             width,
             height,
             fps: quality.fps,
+            effort: if quality.high_quality {
+                Effort::High
+            } else {
+                Effort::Light
+            },
         };
         let (worker, reports) = Self::start(&job)?;
         Ok((worker, frames, reports))
@@ -1373,6 +1386,7 @@ mod tests {
             sound: false,
             video: None,
             fps: 30,
+            effort: Effort::Light,
             started: Instant::now(),
             streaming: false,
             preview_due: None,
@@ -1408,6 +1422,7 @@ mod tests {
             sound: false,
             video: None,
             fps: 30,
+            effort: Effort::Light,
             started: Instant::now(),
             streaming: false,
             preview_due: None,
@@ -1433,6 +1448,7 @@ mod tests {
             sound: false,
             video: None,
             fps: 30,
+            effort: Effort::Light,
             started: Instant::now(),
             streaming: false,
             preview_due: Some(Instant::now()),
@@ -1473,6 +1489,7 @@ mod tests {
             width: PREVIEW_WIDTH,
             height: PREVIEW_HEIGHT,
             fps: 60,
+            effort: Effort::Light,
         };
         let (input, mut feed) = std::io::pipe().unwrap();
         writeln!(feed, "{}", serde_json::to_string(&job).unwrap()).unwrap();
@@ -1586,6 +1603,7 @@ mod tests {
                 width: PREVIEW_WIDTH,
                 height: PREVIEW_HEIGHT,
                 fps: 30,
+                effort: Effort::Light,
             };
             let (input, mut feed) = std::io::pipe().unwrap();
             writeln!(feed, "{}", serde_json::to_string(&job).unwrap()).unwrap();
@@ -1636,6 +1654,7 @@ mod tests {
             width: 16,
             height: 16,
             fps: 1,
+            effort: Effort::Light,
         };
         let mut reports = Vec::new();
         let input = format!("{}\n", serde_json::to_string(&gone).unwrap());

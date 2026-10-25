@@ -16,7 +16,7 @@ default = ["matrix", "discord"]
 # Matrix: sign-in, encrypted rooms and MatrixRTC voice.
 matrix = ["dep:keyring", "dep:matrix-sdk", "dep:matrix-sdk-ui", "dep:matrix-sdk-crypto", "dep:matrix-rtc-livekit", "dep:matrix-rtc-core", "dep:matrix-rtc-media", "dep:mime", "dep:url"]
 # Discord through the account linked on this device; see docs/discord.md.
-discord = ["dep:yapfast-discord", "dep:rand", "dep:base64", "dep:nnnoiseless", "dep:deep_filter", "dep:ndarray"]
+discord = ["dep:yapfast-discord", "dep:rand", "dep:base64", "dep:nnnoiseless", "dep:deep_filter", "dep:ndarray", "dep:x264-src"]
 # Sample states other crates' tests start from, such as a Discord server
 # whose member menu they check.
 test-fixtures = []
@@ -63,6 +63,8 @@ rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 yapfast-discord = { path = "../yapfast-discord", optional = true }
+# Go Live's and the camera's H264 encoder, built from source; see native/h264.c.
+x264-src = { path = "../../vendor/x264-src", optional = true }
 tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true

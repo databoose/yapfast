@@ -45,6 +45,8 @@ rustPlatform.buildRustPackage {
   buildFeatures = [ "desktop" "discord" ];
   nativeBuildInputs = with pkgs; [
     pkg-config cmake llvmPackages_21.clang llvmPackages_21.llvm protobuf
+    # Assembles x264's x86-64 code (vendor/x264-src).
+    nasm
     # Skia's build script fetches its archive with curl, even from a file:// URL.
     curl makeWrapper rustPlatform.bindgenHook
   ];

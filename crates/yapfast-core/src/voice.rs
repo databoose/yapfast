@@ -105,6 +105,10 @@ pub struct StreamQuality {
     pub resolution: Resolution,
     /// Frames a second: 15, 30 or 60.
     pub fps: u32,
+    /// A sharper picture from more of the encoder's work, at about twice
+    /// the CPU.
+    #[serde(default)]
+    pub high_quality: bool,
 }
 
 impl Default for StreamQuality {
@@ -112,6 +116,7 @@ impl Default for StreamQuality {
         Self {
             resolution: Resolution::P1080,
             fps: 30,
+            high_quality: false,
         }
     }
 }
@@ -655,6 +660,7 @@ mod tests {
             quality: StreamQuality {
                 resolution: Resolution::Source,
                 fps: 60,
+                high_quality: true,
             },
             ..Default::default()
         };

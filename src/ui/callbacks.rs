@@ -1903,7 +1903,7 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     });
     let state = adapter.clone();
     let weak = window.as_weak();
-    window.on_go_live(move |source, resolution, fps| {
+    window.on_go_live(move |source, resolution, fps, high_quality| {
         if let Some(window) = weak.upgrade() {
             #[cfg(feature = "discord")]
             {
@@ -1923,6 +1923,7 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
             let quality = voice::StreamQuality {
                 resolution,
                 fps: fps.clamp(1, 60) as u32,
+                high_quality,
             };
             state
                 .borrow_mut()

@@ -1,7 +1,7 @@
 //! Builds the Go Live codec shims, the GIF thumbnail encoder, the video file
-//! reader and the cameras against the libvpx, OpenH264, FFmpeg, dav1d,
-//! libyuv and WebRTC headers in the same libwebrtc archive webrtc-sys links,
-//! so they match its code.
+//! reader and the cameras against the libvpx, FFmpeg, dav1d, libyuv and
+//! WebRTC headers in the same libwebrtc archive webrtc-sys links, so they
+//! match its code, and the H264 encoder against x264 (vendor/x264-src).
 
 fn main() {
     for file in [
@@ -70,7 +70,8 @@ fn main() {
         .file("native/decode.c")
         .file("native/video.c")
         .include(third_party.join("libvpx/source/libvpx"))
-        .include(third_party.join("openh264/src/codec/api"))
+        // x264-src's build script hands over its headers' folder.
+        .include(std::env::var_os("DEP_X264_INCLUDE").expect("x264-src's headers"))
         .include(third_party.join("ffmpeg"))
         .include(third_party.join("dav1d/libdav1d/include"))
         .include(third_party.join("libyuv/include"))

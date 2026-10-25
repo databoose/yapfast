@@ -351,8 +351,8 @@ stream at rid "100", at most 1280×720 and 30 frames a second. Discord's
 clients offer a second layer at quality 50; Yapfast sends one, as its Go Live
 does. Turning it off sends op 12 again with a video SSRC of 0 and no
 streams. Yapfast offers H264 to encode, as for Go Live, and both H264 and VP8 to
-decode. The camera's pictures go to OpenH264 on the camera's own thread, at
-1.5 Mbit/s, and each frame to the call's thread, which encrypts it with DAVE
+decode. The camera's pictures go to x264 on the camera's own thread, at Go
+Live's lighter effort and 1.5 Mbit/s, and each frame to the call's thread, which encrypts it with DAVE
 and sends it as Go Live's packetizer does: sender reports, a resend from RTX
 for each NACK, and a keyframe when someone asks with a PLI. A frame the
 call's thread can't take in time is dropped, and the next one is a keyframe.
@@ -738,10 +738,10 @@ use: heartbeats acknowledge the last sequence number, and binary DAVE
 messages start with one. It identifies with the stream's RTC server and `video: true`,
 discovers its address, then uses `aead_aes256_gcm_rtpsize` transport
 encryption. Yapfast offers H264 only and announces its size with op 12, again
-whenever someone connects. Frames come from OpenH264 in libwebrtc's archive
-through `native/h264.c`: constrained baseline, realtime and tuned for screen
-content, with a keyframe at least every 3 s and whenever RTCP asks for one.
-Yapfast also has VP8 (`native/vp8.c`, still built and tested); every Go Live
+whenever someone connects. Frames come from x264 (`vendor/x264-src`, built
+from source) through `native/h264.c`, with a keyframe at least every 3 s and
+whenever RTCP asks for one; [Choosing the H264 encoder](#choosing-the-h264-encoder)
+says how it's set up and why. Yapfast also has VP8 (`native/vp8.c`, still built and tested); every Go Live
 sender known to work sends H264. H264 goes as whole NAL units or FU-A
 fragments, and past a frame's first 8 packets, 4 go out each millisecond: a
 1080p keyframe of 200 sent at once can overflow buffers on the way. Yapfast keeps
@@ -754,8 +754,10 @@ checks what comes back. An RTCP sender report goes out every second.
 
 Before sharing, the share button's menu picks a resolution and a frame rate,
 as Discord's client asks for them: 720p, 1080p or the screen's own size (up to
-4K), at 15, 30 or 60 fps. Yapfast remembers the choice beside the chosen audio
-devices (`devices.json`), and starts at 1080p30. Larger screens, and those of
+4K), at 15, 30 or 60 fps. Its "Higher quality" checkbox, which Discord's
+client doesn't have, has x264 work harder on each frame. Yapfast remembers
+the choice beside the chosen audio devices (`devices.json`), and starts at
+1080p30 without it. Larger screens, and those of
 another shape, are scaled down to fit. Yapfast sends them at the bitrates
 Discord's client uses: at most 3.5 Mbit/s up to 720p and 9 Mbit/s above, the
 cap op 12 announces, with the frame rate as its `max_framerate`.
@@ -865,6 +867,32 @@ recordings in `testing/fixtures` (VP8, or H264 after `POST
 /_control/stream-codec`) once they ask with op 15. Checked by hand against
 real Discord: Discord's client shows Yapfast's stream at 1080p with its sound,
 without the call's, and Yapfast shows streams from Discord's client.
+
+#### Choosing the H264 encoder
+
+Go Live and the camera used OpenH264 from libwebrtc's archive until
+2026-10-25, in its screen content mode. Measured on screen recordings and
+games from Xiph's test sets (Wikipedia scrolling, an IDE, a desktop, Minecraft
+and Dota 2 at 1080p), it kept calm screens sharp at under 2 Mbit/s, but on
+anything that moved it dropped frames rather than lower their quality:
+Minecraft at 9 Mbit/s showed 20 of its 60 frames a second, and at 3.5 Mbit/s
+6, while running over its bitrate. Turning frame skipping off let its rate
+control run to 29 Mbit/s for a 3.5 Mbit/s target, and its camera mode lost the
+sharp screens.
+
+x264 encodes every frame within the bitrate. `native/h264.c` uses its
+superfast preset, or faster with "Higher quality", tuned for zero latency (a
+frame out for each frame in, no B-frames or lookahead, a slice for each of up
+to four threads), in Main profile, which Discord's client sends
+(profile-level-id `4d0033`). Adaptive quantization is off: it was the one
+setting that helped both screens and games, by 2.8 dB PSNR on screens and 8
+VMAF points on games, against x264's defaults. The bitrate peaks at the
+target over half a second's buffer; a second's buffer kept text sharper at
+3.5 Mbit/s but let a second reach twice the cap, and a two-frame buffer
+starved keyframes. Capped CRF ran past Discord's cap. The superfast preset
+takes about 0.15–0.5 of a core at 1080p, and faster about twice that, for
+about NVENC's quality: Minecraft at 9 Mbit/s scored VMAF 66 and 72 against
+NVENC's 72, and Wikipedia at 3.5 Mbit/s 94 and 98 against its 98.
 
 ## Servers, channels and messages
 

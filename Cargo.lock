@@ -11436,6 +11436,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "x264-src"
+version = "0.164.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "xattr"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11582,6 +11589,7 @@ dependencies = [
  "webrtc-sys-build",
  "windows",
  "windows-core",
+ "x264-src",
  "yapfast-discord",
 ]
 

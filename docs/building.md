@@ -162,7 +162,7 @@ and rebuild the native media stack. On Linux, the Nix shell supplies libwebrtc
 updating the archive URL and checksum in nix/flake.nix too.
 
 The Linux environment includes ALSA, PulseAudio, fontconfig, FreeType, GLib, Wayland, X11,
-Vulkan, OpenGL, OpenSSL, Clang 21, CMake, pkg-config and Protobuf. It uses the
+Vulkan, OpenGL, OpenSSL, Clang 21, CMake, pkg-config, Protobuf and NASM. It uses the
 host's graphics driver under `/run/opengl-driver/lib`. A real display session
 are required to open the window. Skia Software is the default; `--renderer gpu` uses Skia GPU and falls back to
 Skia Software if the GPU fails. The Nix shell provides a checksum-pinned,
@@ -209,6 +209,12 @@ dependency in Cargo.toml:
   such as Discord's READY grew.
 - `gpui-pre-windows`: a Windows build fix for the archived GPUI client. Nothing
   uses it now.
+
+`vendor/x264-src` isn't a patched crate but x264's own C source, unchanged and
+trimmed to what an 8-bit encoder library uses, with a build script in place of
+its configure and Makefile. Go Live and the camera encode H264 with it; NASM
+assembles its x86-64 code, so every shell, package and native build needs
+`nasm`.
 
 Each has a `README.yapfast.md` with its changes, except the two Slint crates, which
 this section describes. The Slint crates keep their `.rs` files at the crate
@@ -385,7 +391,7 @@ GPUI's FXC shader build is no longer used.
 
 The supported build route for this migration is the Linux MSVC cross-build.
 Native Windows development needs Rustup, Visual Studio C++ tools and SDK, CMake,
-LLVM and Protobuf, plus the same prepared Skia archive through
+LLVM, Protobuf and NASM, plus the same prepared Skia archive through
 `SKIA_BINARIES_URL`. Opus comes from the libopus in libwebrtc's archive.
 That native-host preparation/build route has not been checked.
 The downloadable package needs none of these tools to run.
