@@ -12,12 +12,15 @@ pub const H264: u8 = 101;
 pub const H264_RTX: u8 = 102;
 pub const VP8: u8 = 105;
 pub const VP8_RTX: u8 = 106;
+pub const H265: u8 = 103;
+pub const H265_RTX: u8 = 104;
 
 /// The video codecs Yapfast can receive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Codec {
     Vp8,
     H264,
+    H265,
 }
 
 impl Codec {
@@ -25,6 +28,7 @@ impl Codec {
         match payload_type {
             VP8 => Some(Self::Vp8),
             H264 => Some(Self::H264),
+            H265 => Some(Self::H265),
             _ => None,
         }
     }
@@ -34,6 +38,7 @@ impl Codec {
         match name {
             "VP8" => Some(Self::Vp8),
             "H264" => Some(Self::H264),
+            "H265" => Some(Self::H265),
             _ => None,
         }
     }
@@ -42,6 +47,7 @@ impl Codec {
         match self {
             Self::Vp8 => "VP8",
             Self::H264 => "H264",
+            Self::H265 => "H265",
         }
     }
 
@@ -50,6 +56,7 @@ impl Codec {
         match self {
             Self::Vp8 => (VP8, VP8_RTX),
             Self::H264 => (H264, H264_RTX),
+            Self::H265 => (H265, H265_RTX),
         }
     }
 }
@@ -113,12 +120,18 @@ impl Packetizer {
         }
     }
 
+    /// Packetizes frames in `codec` from the next one, keeping the numbering.
+    pub fn set_codec(&mut self, codec: Codec) {
+        self.codec = codec;
+    }
+
     /// The packets carrying `frame`, unencrypted, with `timestamp` in the
     /// 90 kHz clock. The last one has the marker bit.
     pub fn packets(&mut self, frame: &[u8], timestamp: u32) -> Vec<Vec<u8>> {
         let payloads = match self.codec {
             Codec::Vp8 => self.vp8_payloads(frame),
             Codec::H264 => h264_payloads(frame),
+            Codec::H265 => h265_payloads(frame),
         };
         let count = payloads.len();
         let payload_type = self.codec.payload_types().0;
@@ -147,8 +160,10 @@ impl Packetizer {
     /// this packetizer's video.
     pub fn retransmit(&mut self, original: &[u8], rtx_ssrc: u32) -> Option<Vec<u8>> {
         let sent = parse(original)?;
-        let (payload_type, rtx_payload_type) = self.codec.payload_types();
-        if sent.payload_type != payload_type || sent.ssrc != self.ssrc {
+        // In the codec the packet went out in, which may not be today's.
+        let codec = Codec::from_payload_type(sent.payload_type)?;
+        let rtx_payload_type = codec.payload_types().1;
+        if sent.ssrc != self.ssrc {
             return None;
         }
         let payload = [&sent.sequence.to_be_bytes()[..], sent.payload].concat();
@@ -243,6 +258,37 @@ fn h264_payloads(frame: &[u8]) -> Vec<Vec<u8>> {
                 fragment |= 0x40;
             }
             let mut payload = vec![(header & 0xe0) | 28, fragment];
+            payload.extend_from_slice(chunk);
+            payloads.push(payload);
+        }
+    }
+    payloads
+}
+
+/// RFC 7798's payloads for an H265 access unit: each NAL unit whole when it
+/// fits, and a larger one as fragmentation units (type 49), whose payload
+/// header keeps the unit's F bit, layer and temporal id, and whose FU header
+/// carries its type with start and end flags.
+fn h265_payloads(frame: &[u8]) -> Vec<Vec<u8>> {
+    let mut payloads = vec![];
+    for unit in nal_units(frame) {
+        if unit.len() <= CHUNK {
+            payloads.push(unit.to_vec());
+            continue;
+        }
+        let ([first, second], body) = (unit.first_chunk().copied().unwrap_or_default(), &unit[2..]);
+        let kind = (first >> 1) & 0x3f;
+        let chunks: Vec<&[u8]> = body.chunks(CHUNK - 3).collect();
+        let last = chunks.len() - 1;
+        for (index, chunk) in chunks.into_iter().enumerate() {
+            let mut fragment = kind;
+            if index == 0 {
+                fragment |= 0x80;
+            }
+            if index == last {
+                fragment |= 0x40;
+            }
+            let mut payload = vec![(first & 0x81) | (49 << 1), second, fragment];
             payload.extend_from_slice(chunk);
             payloads.push(payload);
         }
@@ -401,6 +447,7 @@ impl Assembler {
         match self.codec {
             Codec::Vp8 => self.vp8(packet.payload, first),
             Codec::H264 => self.h264(packet.payload),
+            Codec::H265 => self.h265(packet.payload),
         }
         // Packets that never end their frame would grow it without end.
         if self.frame.len() > MAX_FRAME {
@@ -479,6 +526,57 @@ impl Assembler {
 
     /// Writes NAL units in Annex B form with four-byte start codes, the form
     /// DAVE expects.
+    /// RFC 7798: whole units, aggregation packets (48) and fragmentation
+    /// units (49). Random access units (types 16 to 21) make a keyframe.
+    fn h265(&mut self, payload: &[u8]) {
+        let [first, second] = match payload.first_chunk() {
+            Some(header) => *header,
+            None => {
+                self.damaged = true;
+                return;
+            }
+        };
+        let random_access = |kind: u8| (16..=21).contains(&kind);
+        let unit = |frame: &mut Vec<u8>, keyframe: &mut bool, nal: &[u8]| {
+            *keyframe |= nal
+                .first()
+                .is_some_and(|header| random_access((header >> 1) & 0x3f));
+            frame.extend_from_slice(&[0, 0, 0, 1]);
+            frame.extend_from_slice(nal);
+        };
+        match (first >> 1) & 0x3f {
+            0..=47 => unit(&mut self.frame, &mut self.keyframe, payload),
+            48 => {
+                let mut rest = &payload[2..];
+                while rest.len() >= 2 {
+                    let size = usize::from(u16::from_be_bytes([rest[0], rest[1]]));
+                    let Some(nal) = rest.get(2..2 + size) else {
+                        self.damaged = true;
+                        return;
+                    };
+                    unit(&mut self.frame, &mut self.keyframe, nal);
+                    rest = &rest[2 + size..];
+                }
+            }
+            49 => {
+                let Some(&fragment) = payload.get(2) else {
+                    self.damaged = true;
+                    return;
+                };
+                if fragment & 0x80 != 0 {
+                    let kind = fragment & 0x3f;
+                    self.keyframe |= random_access(kind);
+                    let header = (first & 0x81) | (kind << 1);
+                    self.frame.extend_from_slice(&[0, 0, 0, 1, header, second]);
+                } else if self.frame.is_empty() {
+                    self.damaged = true;
+                }
+                self.frame.extend_from_slice(&payload[3..]);
+            }
+            _ => {}
+        }
+    }
+
     fn h264(&mut self, payload: &[u8]) {
         let Some(&indicator) = payload.first() else {
             self.damaged = true;
@@ -1454,6 +1552,48 @@ mod tests {
         let sent = sender_report(9, std::time::SystemTime::UNIX_EPOCH, 0, 0, 0);
         // 1970 in NTP time: 2208988800 seconds, no fraction.
         assert_eq!(sender_reports(&sent), [(9, (2_208_988_800u32 << 16))]);
+    }
+
+    #[test]
+    fn packetizes_and_reassembles_h265() {
+        let mut packetizer = Packetizer::new(5, Codec::H265);
+        let mut assembler = Assembler::new(Codec::H265);
+        // An IDR slice (type 19), its header's second byte the temporal id.
+        let idr: Vec<u8> = [19 << 1, 0x01]
+            .into_iter()
+            .chain((0..3000u32).map(|index| (index % 251) as u8 + 1))
+            .collect();
+        let keyframe = [
+            &[0, 0, 0, 1, 32 << 1, 0x01, 0x0c][..],
+            &[0, 0, 0, 1, 33 << 1, 0x01, 0x01],
+            &[0, 0, 0, 1, 34 << 1, 0x01, 0xc1],
+            &[0, 0, 0, 1],
+            &idr,
+        ]
+        .concat();
+        let delta = [&[0, 0, 0, 1, 1 << 1, 0x01][..], &[7; 200]].concat();
+        let mut frames = vec![];
+        for (index, frame) in [&keyframe, &delta].into_iter().enumerate() {
+            let sent = packetizer.packets(frame, index as u32 * 3000);
+            if index == 0 {
+                // The parameter sets alone, then the slice in three fragments.
+                assert_eq!(sent.len(), 6);
+                assert_eq!(
+                    &sent[3][28..31],
+                    &[49 << 1, 0x01, 0x80 | 19],
+                    "starting the IDR slice"
+                );
+                assert_eq!(sent[5][30], 0x40 | 19, "ending it");
+            }
+            for packet in &sent {
+                let packet = parse(packet).unwrap();
+                assert_eq!(packet.payload_type, H265);
+                frames.extend(assembler.push(&packet).frame);
+            }
+        }
+        assert_eq!(frames.len(), 2);
+        assert_eq!((frames[0].keyframe, &frames[0].data), (true, &keyframe));
+        assert_eq!((frames[1].keyframe, &frames[1].data), (false, &delta));
     }
 
     #[test]

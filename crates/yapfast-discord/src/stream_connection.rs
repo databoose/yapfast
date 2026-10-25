@@ -53,14 +53,14 @@ pub fn max_bitrate(height: u32) -> u32 {
 /// microphone, as Discord's client marks it.
 const SOUNDSHARE: u8 = 2;
 
-/// The codec Yapfast streams in, as every other Go Live sender known to work
-/// does.
+/// The codec every Yapfast sender can stream in, as every other Go Live
+/// sender known to work does. A GPU that encodes H265 offers that first.
 pub const SEND_CODEC: Codec = Codec::H264;
 
-/// One encoded frame to send in [`SEND_CODEC`], with its time in the 90 kHz
-/// clock.
+/// One encoded frame to send, in `codec`, with its time in the 90 kHz clock.
 pub struct Frame {
     pub data: Vec<u8>,
+    pub codec: Codec,
     pub timestamp: u32,
     pub keyframe: bool,
 }
@@ -106,6 +106,18 @@ struct Shared {
     /// Sending: the bit/s Discord's server last estimated the path carries,
     /// or 0 before it said.
     estimate: AtomicU64,
+    /// Sending: the codecs offered, most wanted first, and whether that
+    /// changed since Discord was told.
+    offers: Mutex<Vec<Codec>>,
+    offers_changed: AtomicBool,
+    /// Sending: the codec Discord chose, in op 4 and then op 14, once it
+    /// said.
+    chosen: Mutex<Option<Codec>>,
+    /// Sending: the video's bytes sent so far, resent ones too, as UDP
+    /// payloads; the keyframes viewers asked for; and the packets resent.
+    video_bytes: AtomicU64,
+    keyframe_requests: AtomicU64,
+    resent: AtomicU64,
 }
 
 impl Shared {
@@ -115,6 +127,12 @@ impl Shared {
             keyframe: AtomicBool::new(true),
             size: Mutex::new(size),
             estimate: AtomicU64::new(0),
+            offers: Mutex::new(vec![SEND_CODEC]),
+            offers_changed: AtomicBool::new(false),
+            chosen: Mutex::new(None),
+            video_bytes: AtomicU64::new(0),
+            keyframe_requests: AtomicU64::new(0),
+            resent: AtomicU64::new(0),
         })
     }
 }
@@ -166,10 +184,19 @@ pub struct StreamSender {
 }
 
 impl StreamSender {
-    /// Connects to `server` and announces `width` by `height` video.
-    pub fn start(server: StreamServer, width: u32, height: u32, fps: u32) -> Result<Self> {
+    /// Connects to `server` and announces `width` by `height` video,
+    /// offering to send in `offers`, most wanted first. Discord picks the
+    /// first every viewer can decode; see [`Self::codec`].
+    pub fn start(
+        server: StreamServer,
+        width: u32,
+        height: u32,
+        fps: u32,
+        offers: Vec<Codec>,
+    ) -> Result<Self> {
         let (user, channel, _) = ids(&server)?;
         let shared = Shared::new((width, height));
+        *lock(&shared.offers) = offers;
         // A few frames of slack; beyond that the network can't keep up.
         let (frames, receiver) = mpsc::channel(4);
         // 160 ms of sound.
@@ -219,6 +246,48 @@ impl StreamSender {
     pub fn link(&self) -> Link {
         lock(&self.shared.link).clone()
     }
+
+    /// The codec Discord wants the frames in, once it said. It changes when
+    /// a viewer joins who can't decode it, or leaves; frames in another
+    /// codec are dropped.
+    pub fn codec(&self) -> Option<Codec> {
+        let chosen = (*lock(&self.shared.chosen))?;
+        let offers = lock(&self.shared.offers);
+        // Withdrawn, while Discord hasn't chosen again yet.
+        Some(chosen)
+            .filter(|chosen| offers.contains(chosen))
+            .or(offers.first().copied())
+    }
+
+    /// What the stream sent so far, and what viewers asked of it.
+    pub fn sent(&self) -> SentSoFar {
+        let load = |count: &AtomicU64| count.load(Ordering::Relaxed);
+        SentSoFar {
+            video_bytes: load(&self.shared.video_bytes),
+            keyframe_requests: load(&self.shared.keyframe_requests),
+            resent: load(&self.shared.resent),
+        }
+    }
+
+    /// Stops offering `codec`, which the encoder can't produce any more:
+    /// Discord then picks another, which [`Self::codec`] gives.
+    pub fn withdraw(&self, codec: Codec) {
+        let mut offers = lock(&self.shared.offers);
+        if offers.len() > 1 && offers.contains(&codec) {
+            offers.retain(|&offered| offered != codec);
+            self.shared.offers_changed.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// A stream's video sent since it started, as [`StreamSender::sent`] says:
+/// bytes as UDP payloads, resent ones too; keyframes viewers asked for; and
+/// packets resent when a viewer reported them lost.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SentSoFar {
+    pub video_bytes: u64,
+    pub keyframe_requests: u64,
+    pub resent: u64,
 }
 
 /// Receives someone's stream on a thread of its own; dropping it ends the
@@ -316,7 +385,33 @@ enum Role {
 
 /// Connects to a stream's server: identifying with its RTC server and a
 /// screen, and offering the codecs `role` needs.
-async fn open(server: &StreamServer, user: u64, channel: u64, role: Role) -> Result<Connection> {
+/// Select protocol's codecs for a sender: Opus, then each of `offers` by
+/// priority, and `withdrawn` ones it can't encode any more.
+fn send_codecs(offers: &[Codec], withdrawn: &[Codec]) -> Value {
+    let video = offers
+        .iter()
+        .map(|&codec| (codec, true))
+        .chain(withdrawn.iter().map(|&codec| (codec, false)));
+    let mut codecs =
+        vec![json!({"name": "opus", "type": "audio", "priority": 1000, "payload_type": rtp::OPUS})];
+    for (index, (codec, encode)) in video.enumerate() {
+        let (payload_type, rtx_payload_type) = codec.payload_types();
+        codecs.push(json!({
+            "name": codec.name(), "type": "video", "priority": 1000 * (index + 1),
+            "payload_type": payload_type, "rtx_payload_type": rtx_payload_type,
+            "encode": encode, "decode": codec != Codec::H265,
+        }));
+    }
+    Value::Array(codecs)
+}
+
+async fn open(
+    server: &StreamServer,
+    user: u64,
+    channel: u64,
+    role: Role,
+    shared: &Shared,
+) -> Result<Connection> {
     // Discord made a stream's DAVE group id just before its RTC server id,
     // in the one stream seen so far; Dave moves to the id the voice server
     // uses if this guess is wrong.
@@ -334,15 +429,9 @@ async fn open(server: &StreamServer, user: u64, channel: u64, role: Role) -> Res
         user,
         group,
     };
-    // Yapfast encodes in SEND_CODEC, and decodes VP8 or H264.
-    let (payload_type, rtx_payload_type) = SEND_CODEC.payload_types();
+    // Yapfast encodes in what it offers, and decodes VP8 or H264.
     let codecs = match role {
-        Role::Send => json!([
-            {"name": "opus", "type": "audio", "priority": 1000, "payload_type": rtp::OPUS},
-            {"name": SEND_CODEC.name(), "type": "video", "priority": 1000,
-             "payload_type": payload_type, "rtx_payload_type": rtx_payload_type,
-             "encode": true, "decode": true},
-        ]),
+        Role::Send => send_codecs(&lock(&shared.offers), &[]),
         Role::Receive => json!([
             {"name": "opus", "type": "audio", "priority": 1000, "payload_type": rtp::OPUS},
             {"name": "H264", "type": "video", "priority": 1000, "payload_type": rtp::H264,
@@ -369,7 +458,7 @@ async fn send(
     mut frames: mpsc::Receiver<Frame>,
     mut sounds: mpsc::Receiver<Sound>,
 ) -> Result<()> {
-    let mut connection = open(server, user, channel, Role::Send).await?;
+    let mut connection = open(server, user, channel, Role::Send, shared).await?;
     let (ssrc, video, rtx) = (connection.ssrc, connection.video, connection.rtx);
     let mut size = *lock(&shared.size);
     send_json(
@@ -386,12 +475,16 @@ async fn send(
     .await?;
     *lock(&shared.link) = Link::Connected;
 
-    if let Some(codec) = connection.codec
-        && codec != SEND_CODEC
-    {
-        bail!("Discord asked for {codec:?} video, and Yapfast only sends {SEND_CODEC:?}");
+    // Discord's choice, or the first offered while it hasn't said.
+    let offered = lock(&shared.offers).clone();
+    let chosen = connection.codec.unwrap_or(offered[0]);
+    if !offered.contains(&chosen) {
+        bail!("Discord asked for {chosen:?} video, and Yapfast offered {offered:?}");
     }
-    let mut packetizer = Packetizer::new(video, SEND_CODEC);
+    *lock(&shared.chosen) = Some(chosen);
+    tracing::info!(codec = ?chosen, ?offered, "Discord chose the stream's codec");
+    let mut withdrawn: Vec<Codec> = vec![];
+    let mut packetizer = Packetizer::new(video, chosen);
     let mut history = rtp::History::default();
     let interval = connection.interval;
     let mut heartbeat = tokio::time::interval_at(Instant::now() + interval, interval);
@@ -428,7 +521,18 @@ async fn send(
                         "sending stream frames"
                     );
                 }
-                let Some(payload) = connection.dave.encrypt(SEND_CODEC, &frame.data) else {
+                if shared.offers_changed.swap(false, Ordering::Relaxed) {
+                    let offers = lock(&shared.offers).clone();
+                    withdrawn = offered.iter().copied().filter(|codec| !offers.contains(codec)).collect();
+                    tracing::info!(?offers, ?withdrawn, "offering fewer codecs");
+                    send_json(&mut connection.ws, 14, json!({"codecs": send_codecs(&offers, &withdrawn)})).await?;
+                }
+                // Frames encoded before the encoder followed Discord's choice.
+                if Some(frame.codec) != *lock(&shared.chosen) {
+                    continue;
+                }
+                packetizer.set_codec(frame.codec);
+                let Some(payload) = connection.dave.encrypt(frame.codec, &frame.data) else {
                     continue;
                 };
                 sent.frames += 1;
@@ -443,6 +547,7 @@ async fn send(
                     octets = octets.wrapping_add((packet.len() - clear) as u32);
                     connection.transport.seal(&mut packet, clear)?;
                     connection.udp.send(&packet).await?;
+                    shared.video_bytes.fetch_add(packet.len() as u64, Ordering::Relaxed);
                 }
                 if reported.elapsed() >= SENDER_REPORTS {
                     reported = Instant::now();
@@ -467,6 +572,19 @@ async fn send(
                     let mut text = data.to_string();
                     text.truncate(400);
                     tracing::debug!(op, data = %text, "the stream server said");
+                    // Session update: a viewer can't decode the codec, or the
+                    // one who couldn't left.
+                    if op == 14
+                        && let Some(codec) = data["video_codec"].as_str().and_then(Codec::from_name)
+                    {
+                        if offered.contains(&codec) && !withdrawn.contains(&codec) {
+                            tracing::info!(?codec, "Discord switched the stream's codec");
+                            *lock(&shared.chosen) = Some(codec);
+                            shared.keyframe.store(true, Ordering::Relaxed);
+                        } else {
+                            tracing::warn!(?codec, "Discord asked for a codec Yapfast didn't offer");
+                        }
+                    }
                     // Tell whoever connected about the video again, in case
                     // the server doesn't pass it on to late viewers.
                     if op == 11 {
@@ -519,6 +637,7 @@ async fn send(
                 }
                 if rtp::wants_keyframe(&rtcp) {
                     sent.requests += 1;
+                    shared.keyframe_requests.fetch_add(1, Ordering::Relaxed);
                     shared.keyframe.store(true, Ordering::Relaxed);
                 }
                 if let Some(estimate) = rtp::bandwidth_estimate(&rtcp, video) {
@@ -532,6 +651,8 @@ async fn send(
                     let clear = rtp::rtp_clear_len(&again).unwrap_or(again.len());
                     connection.transport.seal(&mut again, clear)?;
                     connection.udp.send(&again).await?;
+                    shared.video_bytes.fetch_add(again.len() as u64, Ordering::Relaxed);
+                    shared.resent.fetch_add(1, Ordering::Relaxed);
                     sent.resent += 1;
                 }
             }
@@ -669,7 +790,7 @@ async fn receive_stream(
     ),
     mut stopped: oneshot::Receiver<()>,
 ) -> Result<()> {
-    let mut connection = open(server, user, channel, Role::Receive).await?;
+    let mut connection = open(server, user, channel, Role::Receive, shared).await?;
     let mut streamer = Streamer {
         codec: connection.codec,
         ..Streamer::default()

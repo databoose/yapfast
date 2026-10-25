@@ -77,7 +77,7 @@ rustPlatform.buildRustPackage {
     # The GPU, audio and screen capture libraries are loaded at runtime, and
     # NixOS keeps the GPU driver's in /run/opengl-driver.
     wrapProgram "$out/bin/yapfast" \
-      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath native.libraries} \
+      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath native.runtimeLibraries} \
       --suffix LD_LIBRARY_PATH : /run/opengl-driver/lib
   '';
   meta = {

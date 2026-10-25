@@ -110,6 +110,7 @@ async fn cameras_in_call(
     for (index, data) in recorded.iter().take(10).enumerate() {
         camera.send(Frame {
             data: data.clone(),
+            codec: Codec::H264,
             timestamp: index as u32 * 9000,
             keyframe: index == 0,
         });
@@ -255,9 +256,13 @@ fn recording(codec: Codec) -> Vec<Vec<u8>> {
             frames
         }
         // Annex B, split at access unit delimiters, which aren't sent; each
-        // unit gets a four-byte start code.
-        Codec::H264 => {
-            let file = std::fs::read(fixtures.join("stream-h264.h264")).unwrap();
+        // unit gets a four-byte start code. Only Yapfast streams H265.
+        Codec::H264 | Codec::H265 => {
+            let (name, delimiter): (_, fn(&[u8]) -> bool) = match codec {
+                Codec::H264 => ("stream-h264.h264", |unit: &[u8]| unit[0] & 0x1f == 9),
+                _ => ("stream-h265.h265", |unit: &[u8]| unit[0] >> 1 & 0x3f == 35),
+            };
+            let file = std::fs::read(fixtures.join(name)).unwrap();
             let starts: Vec<usize> = (0..file.len() - 2)
                 .filter(|&at| file[at..at + 3] == [0, 0, 1])
                 .map(|at| at + 3)
@@ -269,10 +274,10 @@ fn recording(codec: Codec) -> Vec<Vec<u8>> {
                     end -= 1;
                 }
                 let unit = &file[start..end];
-                if unit[0] & 0x1f == 9 || frames.is_empty() {
+                if delimiter(unit) || frames.is_empty() {
                     frames.push(vec![]);
                 }
-                if unit[0] & 0x1f != 9 {
+                if !delimiter(unit) {
                     frames.last_mut().unwrap().extend_from_slice(&[0, 0, 0, 1]);
                     frames.last_mut().unwrap().extend_from_slice(unit);
                 }
@@ -310,6 +315,105 @@ fn watch_frames(
     assert!(heard.len() >= 5, "only {} sounds arrived", heard.len());
     assert!(heard.iter().all(|sound| sound == &[0xf8, 0xff, 0xfe]));
     frames
+}
+
+/// Offers H265 first, as a GPU encoder lets Yapfast: Discord chooses it,
+/// and when a viewer whose client decodes only H264 and VP8 starts
+/// watching, it switches the stream to H264 with op 14, and Yapfast asks
+/// for a keyframe to send in it.
+async fn streams_h265_until_a_viewer_cant_decode_it(
+    discord: &Discord,
+    server: &str,
+    mine: &yapfast_discord::stream::StreamServer,
+) {
+    let sender =
+        StreamSender::start(mine.clone(), 320, 180, 30, vec![Codec::H265, SEND_CODEC]).unwrap();
+    let chosen = |codec| {
+        let sender = &sender;
+        timeout(WAIT, async move {
+            while sender.codec() != Some(codec) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+    };
+    chosen(Codec::H265).await.expect("Discord chose H265");
+    assert!(sender.take_keyframe_request());
+    let send = |codec, from: usize| {
+        for (index, data) in recording(codec).into_iter().take(3).enumerate() {
+            sender.send(Frame {
+                data,
+                codec,
+                timestamp: (from + index) as u32 * 3000,
+                keyframe: index == 0,
+            });
+        }
+    };
+    let received = |frames| async move {
+        timeout(WAIT, async {
+            loop {
+                let body = discord
+                    .download(&format!("{server}/_control/video"), 1 << 16)
+                    .await
+                    .unwrap();
+                let streams: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                let last = streams["received"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .rfind(|found| found["stream"] == mine.stream_key.as_str())
+                    .cloned();
+                if let Some(found) = last.filter(|found| found["frames"] == frames) {
+                    return found;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the fake didn't get {frames} frames"))
+    };
+    send(Codec::H265, 0);
+    let video = received(3).await;
+    assert_eq!(
+        (
+            &video["codec"],
+            &video["keyframes"],
+            &video["width"],
+            &video["height"]
+        ),
+        (
+            &serde_json::json!("H265"),
+            &serde_json::json!(1),
+            &serde_json::json!(320),
+            &serde_json::json!(180)
+        ),
+        "the conformance window crops the coded 184 lines"
+    );
+
+    post_control(
+        server,
+        "/_control/stream-viewer?user=bob&decodes=h264,vp8",
+        "",
+    );
+    chosen(Codec::H264).await.expect("Discord switched to H264");
+    assert!(sender.take_keyframe_request(), "the new codec starts whole");
+    // Frames still in H265 are dropped rather than sent as H264.
+    send(Codec::H265, 3);
+    send(Codec::H264, 6);
+    let video = received(6).await;
+    assert_eq!(
+        (
+            &video["codec"],
+            &video["keyframes"],
+            &video["undecryptable"]
+        ),
+        (
+            &serde_json::json!("H264"),
+            &serde_json::json!(2),
+            &serde_json::json!(0)
+        )
+    );
+    post_control(server, "/_control/stream-viewer?user=bob&stop", "");
+    chosen(Codec::H265).await.expect("back to H265 without him");
 }
 
 /// Tells the fake which codec Bob streams in.
@@ -1955,7 +2059,7 @@ async fn talks_to_the_fake_server() {
     // The stream's video: the recording's first frames in the codec Yapfast
     // sends, a 320x180 keyframe and then deltas, arrive decrypted and whole
     // at the fake.
-    let sender = StreamSender::start(mine.clone(), 320, 180, 30).unwrap();
+    let sender = StreamSender::start(mine.clone(), 320, 180, 30, vec![SEND_CODEC]).unwrap();
     timeout(WAIT, async {
         while sender.link() == Link::Connecting {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1972,6 +2076,7 @@ async fn talks_to_the_fake_server() {
     for (index, data) in recording(SEND_CODEC).into_iter().take(5).enumerate() {
         sender.send(Frame {
             data,
+            codec: SEND_CODEC,
             timestamp: index as u32 * 3000,
             keyframe: index == 0,
         });
@@ -2054,7 +2159,13 @@ async fn talks_to_the_fake_server() {
         video["announced"],
         serde_json::json!({"type": "fixed", "width": 320, "height": 180})
     );
+    // What the call's details show: the video's bytes, and the one packet
+    // the fake reported lost, resent.
+    let sent = sender.sent();
+    assert!(sent.video_bytes > 1000, "{sent:?}");
+    assert_eq!(sent.resent, 1);
     drop(sender);
+    streams_h265_until_a_viewer_cant_decode_it(&discord, server, &mine).await;
 
     discord.pause_stream(&mine.stream_key, true);
     live_where(&mut live, |event| match event {

@@ -8,7 +8,7 @@
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
       native = import ./native.nix { inherit pkgs; };
-      inherit (native) webrtc skia skiaPackage libraries;
+      inherit (native) webrtc skia skiaPackage libraries runtimeLibraries;
       windowsWebrtcArchive = pkgs.fetchurl {
         url = "https://github.com/livekit/rust-sdks/releases/download/webrtc-51ef663/webrtc-win-x64-release.zip";
         hash = "sha256-ClalyRs7e0IiCCuKCTiNFqgCzeItZylb6yTFVwB1WzA=";
@@ -77,7 +77,7 @@
             nasm
           ];
           buildInputs = libraries;
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath libraries;
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibraries;
           CC = "clang";
           CXX = "clang++";
           PROTOC = "${pkgs.protobuf}/bin/protoc";

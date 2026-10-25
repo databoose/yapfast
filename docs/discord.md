@@ -287,6 +287,19 @@ receiver report about a call's audio every 50 packets;
 `POST /_control/voice-link?ping=300&loss=7` slows its ACKs and reports
 loss, and `talks_to_the_fake_server` checks both are measured.
 
+While this account's screen is live, a Stream tab says how it goes out:
+the encoder and where it runs ("NVENC on the GPU", "x264 on the CPU"), the
+codec Discord chose, the size and frame rate sent, the bitrate sent over
+the last second beside the one aimed for, which follows Discord's bandwidth
+estimate, and the keyframes viewers asked for and the packets resent to
+them. Discord's client shows its stream's numbers only in developer mode.
+The stream worker reports them once a second while live
+(`Report::Sending`), counting what `StreamSender` sends; the call keeps
+the last report beside its own numbers, without refreshing the UI's state,
+and the popout reads it as it reads the pings. A report more than 3 s old
+means the stream stopped, and the tab goes. `talks_to_the_fake_server`
+checks the bytes counted and the one resend the fake asks for.
+
 Matrix calls don't have these yet. LiveKit's SDK measures its signal
 connection's round trip but doesn't expose it, and `Room::get_stats`
 serialises all of WebRTC's statistics to JSON and parses them back, too much
@@ -737,13 +750,14 @@ there (`yapfast_discord::stream_connection`). The connection is a call's
 use: heartbeats acknowledge the last sequence number, and binary DAVE
 messages start with one. It identifies with the stream's RTC server and `video: true`,
 discovers its address, then uses `aead_aes256_gcm_rtpsize` transport
-encryption. Yapfast offers H264 only and announces its size with op 12, again
-whenever someone connects. Frames come from x264 (`vendor/x264-src`, built
+encryption. Yapfast offers H264, and H265 before it when the GPU encodes H265
+([Encoding on the GPU](#encoding-on-the-gpu)), and announces its size with
+op 12, again whenever someone connects. Frames come from x264 (`vendor/x264-src`, built
 from source) through `native/h264.c`, with a keyframe at least every 3 s and
 whenever RTCP asks for one; [Choosing the H264 encoder](#choosing-the-h264-encoder)
 says how it's set up and why. Yapfast also has VP8 (`native/vp8.c`, still built and tested); every Go Live
 sender known to work sends H264. H264 goes as whole NAL units or FU-A
-fragments, and past a frame's first 8 packets, 4 go out each millisecond: a
+fragments, H265 as whole units or FU fragments (RFC 7798), and past a frame's first 8 packets, 4 go out each millisecond: a
 1080p keyframe of 200 sent at once can overflow buffers on the way. Yapfast keeps
 the last 2048 video packets, and when a viewer reports some lost with a
 generic NACK (RTCP 205), resends up to 128 of them as Discord's client does:
@@ -862,7 +876,9 @@ own client works: H264 with DAVE, confirmed by hand.
 
 The fake server checks the transport, packetization, sender reports and frames
 that Yapfast sends, the sound's Opus packets and soundshare flag, reading an H264
-picture's size from its SPS, without DAVE. To viewers it streams the
+or H265 picture's size from its SPS, without DAVE. It chooses a streamer's
+codec as Discord does, and `POST /_control/stream-viewer?user=bob&decodes=h264,vp8`
+has a viewer watch who can't decode H265, which switches the stream with op 14. To viewers it streams the
 recordings in `testing/fixtures` (VP8, or H264 after `POST
 /_control/stream-codec`) once they ask with op 15. Checked by hand against
 real Discord: Discord's client shows Yapfast's stream at 1080p with its sound,
@@ -893,6 +909,70 @@ starved keyframes. Capped CRF ran past Discord's cap. The superfast preset
 takes about 0.15–0.5 of a core at 1080p, and faster about twice that, for
 about NVENC's quality: Minecraft at 9 Mbit/s scored VMAF 66 and 72 against
 NVENC's 72, and Wikipedia at 3.5 Mbit/s 94 and 98 against its 98.
+
+#### Encoding on the GPU
+
+With "Encode streams with the GPU" in Settings, Advanced, on unless turned
+off, a stream's H264 goes to the graphics card's encoder where it has one:
+`native/hwenc.c` opens FFmpeg's NVENC encoder, then on Linux its VA-API one
+(AMD and Intel), and x264 when neither opens. The setting lives in
+`layout.json` and reaches the worker with each `Job::Share`; the camera stays
+on x264. When the GPU's encoder fails during a stream, x264 takes over from
+that frame with a keyframe. The worker logs which encoder each stream got
+("encoding the stream", `engine`), and with `YAPFAST_LOG=debug` why each
+GPU encoder that didn't open failed.
+
+FFmpeg is built from `vendor/ffmpeg-src` into the one binary, with only its
+hardware encoders and every symbol prefixed so it can't meet the FFmpeg
+inside libwebrtc. NVIDIA's driver and libva load only when an encoder opens:
+the binary starts without either, and needs NVIDIA's driver 520 or newer for
+NVENC.
+
+VA-API tries each render node (`/dev/dri/renderD128` on) with the libva
+driver its kernel driver calls for: radeonsi for amdgpu, iHD then i965 for
+Intel's. Naming it overrides `LIBVA_DRIVER_NAME`, which NixOS and others set
+to `nvidia` for browsers, and which would otherwise load NVIDIA's decoding-only
+driver for every GPU, AMD's and Intel's too. NVIDIA's nodes are skipped:
+NVENC encodes there. NixOS keeps libva itself off the library path, so the
+Nix package's wrapper and the dev shell put it there (`runtimeLibraries` in
+`nix/native.nix`); it's no build input, or webrtc-sys would build LiveKit's
+own VA-API encoder into libwebrtc. The AppImage takes the system's libva,
+and the Arch package lists it as optional.
+
+The settings match x264's where they can: low-latency tuning (NVENC's p4
+preset, `ll`), no B-frames, a frame out for each frame in, Main profile,
+keyframes every 3 seconds and when asked, and variable bitrate capped at the
+target over half a second, which leaves a calm screen below the cap rather
+than padding it. NVENC and VA-API change their bitrate as they run, without
+the IDR frame FFmpeg would insert, with a patch to FFmpeg for each: on the
+AMD chip a drop from 4 to 2 Mbit/s took hold within a second, with no
+keyframe beyond the one every 3 seconds.
+"Higher quality" changes nothing on the GPU: NVENC's slowest preset scored
+within 0.1 VMAF of p4.
+
+Where NVENC or VA-API encodes H265, the stream offers it too, first. Discord
+picks the codec Yapfast offers first that every viewer's client decodes
+(op 4's `video_codec`), and when someone who can't decode it starts watching,
+switches the stream with op 14; Yapfast then opens the other encoder and
+starts it with a keyframe, dropping frames still in the old codec. When H265
+fails mid-stream, Yapfast withdraws it with its own op 14 `codecs`, marking
+it not to encode, and goes on in H264. Yapfast doesn't decode H265 itself,
+so it offers H265 only to encode: watching another Yapfast's stream switches
+it to H264. Which of Discord's own clients decode H265 isn't checked yet. On
+the same minute, through FFmpeg's command line with these settings, NVENC's
+H265 scored 92.9 at 2.5 Mbit/s against H264's 88.3, with a worst 1% of 59.2
+against 43.2, and at 1.5 Mbit/s 87.6, about H264 at 2.5.
+
+Measured through `Encoder` on an RTX 3090 against x264 superfast, on the
+busiest minute of an action trailer at 1080p30, NVENC's H264 matched x264 at
+9 Mbit/s (VMAF 96.5 both) and held up better below it: at 4 Mbit/s 93.4
+against 92.6, with 2 dips under VMAF 60 in the minute against 11, and at 2.5
+Mbit/s 88.3 against 86.8, with 22 dips against 47, at 0.02 of a core against
+0.26. x264's slower presets, at up to four times the CPU, reached 88.3 too,
+with more bad frames than NVENC. On the same minute, the Radeon chip built
+into a Ryzen 9 9900X, through VA-API, came close to NVENC: H264 scored 92.8
+at 4 Mbit/s (6 dips) and 87.8 at 2.5 (40 dips), H265 94.9 and 92.4 against
+NVENC's 95.2 and 92.9, at 0.03 of a core.
 
 ## Servers, channels and messages
 

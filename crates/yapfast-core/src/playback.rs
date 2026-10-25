@@ -128,6 +128,7 @@ impl Playback {
             }
             Wake::Report(Some(
                 Report::Sharing { .. }
+                | Report::Sending(_)
                 | Report::Streaming
                 | Report::Preview { .. }
                 | Report::Screen { .. },

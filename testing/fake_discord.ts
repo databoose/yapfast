@@ -69,7 +69,10 @@
 // "Alice's room", made the first time, on another voice server; POST /_control/stream-move with a stream key
 // moves that stream to another server, and POST
 // /_control/stream-viewer?user=bob has Bob watch Alice's stream (&of=carol
-// Carol's instead; &stop stops him), as STREAM_UPDATE's viewer_ids tell. Watching
+// Carol's instead; &stop stops him), as STREAM_UPDATE's viewer_ids tell; with
+// &decodes=h264,vp8 his client decodes only those, and Alice's stream switches
+// to the most wanted codec every viewer decodes, with op 14, as Discord does,
+// and back when he stops. Watching
 // Bob's stream gets testing/fixtures' recording once the viewer asks for video
 // with op 15: VP8 or, after POST /_control/stream-codec with "h264", H264.
 // Alice has a DM with Bob, whose last two messages she hasn't read, and a
@@ -1617,7 +1620,9 @@ const voice = new Map<string, VoiceState>(startingVoice());
 
 // Go Live streams by stream key; Bob's is running from the start. A DM
 // call's streams are keyed `call:{channel}:{user}`.
-type Stream = { viewers: Set<string>; paused: boolean };
+/** `decodes`: the video codecs each viewer's client decodes, for those that
+ * don't decode them all. */
+type Stream = { viewers: Set<string>; paused: boolean; decodes?: Map<string, string[]> };
 const streamKey = (guild: string | null, channel: string, user: string) =>
   guild ? `guild:${guild}:${channel}:${user}` : `call:${channel}:${user}`;
 /** The channel and streamer a stream key names. */
@@ -3003,9 +3008,13 @@ type Received = {
   stream: string;
   key: Buffer;
   mode: string;
-  /** The video codec the streamer offered to encode, and its payload type. */
+  /** The video codec Discord chose for the streamer, and its payload type. */
   codec: string;
   payloadType: number;
+  /** The video codecs the streamer offered, most wanted first, and whether
+   * it can encode each; and its stream socket, for op 14. */
+  offers: { name: string; payloadType: number; encode: boolean }[];
+  socket?: { send(text: string): unknown };
   announced: unknown;
   packets: number;
   undecryptable: number;
@@ -3560,6 +3569,28 @@ function reportCallAudio(call: CallAudio, ssrc: number, key: Buffer, sequence: n
   udp.send(sealRtp(packet, key, call.rtcpCounter++, 8), peer.port, peer.address);
 }
 
+/** A streamer's video codecs from select protocol or session update, most wanted first. */
+function videoOffers(codecs: unknown): Received["offers"] {
+  return ((codecs ?? []) as { name: string; type: string; priority: number; payload_type: number; encode?: boolean }[])
+    .filter((codec) => codec.type === "video")
+    .sort((a, b) => a.priority - b.priority)
+    .map((codec) => ({ name: codec.name, payloadType: codec.payload_type, encode: codec.encode !== false }));
+}
+
+/** Discord's choice of a streamer's codec: the most wanted it can encode
+ * that every viewer decodes, or else its most wanted. A change goes to the
+ * streamer as op 14. */
+function chooseStreamCodec(record: Received) {
+  const stream = streams.get(record.stream);
+  const encodable = record.offers.filter((offer) => offer.encode);
+  const pick = encodable.find((offer) => [...(stream?.viewers ?? [])]
+    .every((id) => stream?.decodes?.get(id)?.includes(offer.name) ?? true)) ?? encodable[0];
+  if (!pick || pick.name === record.codec) return;
+  record.codec = pick.name;
+  record.payloadType = pick.payloadType;
+  record.socket?.send(JSON.stringify({ op: 14, d: { video_codec: pick.name } }));
+}
+
 /** Counts a video packet: frames end with the marker bit; keyframes carry their size. */
 function receiveVideo(packet: Buffer) {
   const ssrc = packet.readUInt32BE(8);
@@ -3580,7 +3611,9 @@ function receiveVideo(packet: Buffer) {
   // Report the first packet lost, as a viewer would, to see it resent.
   if (stream.nacked === null) nack(stream, plain.readUInt16BE(2));
   const payload = plain.subarray(at);
-  const size = stream.codec === "H264" ? h264Keyframe(payload) : vp8Keyframe(payload);
+  const size = stream.codec === "H264" ? h264Keyframe(payload)
+    : stream.codec === "H265" ? h265Keyframe(payload)
+    : vp8Keyframe(payload);
   if (size) {
     stream.keyframes++;
     [stream.width, stream.height] = size;
@@ -3602,6 +3635,62 @@ function vp8Keyframe(payload: Buffer): [number, number] | undefined {
   const start = descriptor & 0x10 && (descriptor & 0x07) === 0;
   if (start && (frame[0]! & 1) === 0 && frame[3] === 0x9d && frame[4] === 0x01 && frame[5] === 0x2a)
     return [frame.readUInt16LE(6) & 0x3fff, frame.readUInt16LE(8) & 0x3fff];
+}
+
+/** The size an H265 packet's sequence parameter set (type 33) gives: whole,
+ * or in an aggregation packet (type 48). */
+function h265Keyframe(payload: Buffer): [number, number] | undefined {
+  const type = (payload[0]! >> 1) & 0x3f;
+  if (type === 33) return h265SpsSize(payload);
+  if (type !== 48) return undefined;
+  for (let at = 2; at + 2 <= payload.length; at += 2 + payload.readUInt16BE(at)) {
+    const unit = payload.subarray(at + 2, at + 2 + payload.readUInt16BE(at));
+    if (((unit[0]! >> 1) & 0x3f) === 33) return h265SpsSize(unit);
+  }
+}
+
+/** Reads the picture size from an H265 SPS (H.265 7.3.2.2.1), less its
+ * conformance window: 4:2:0 encoders code 1080 lines as 1088 and crop 8. */
+function h265SpsSize(nal: Buffer): [number, number] | undefined {
+  const bytes: number[] = [];
+  for (let i = 2; i < nal.length; i++) {
+    if (bytes.length >= 2 && nal[i] === 3 && bytes.at(-1) === 0 && bytes.at(-2) === 0) continue;
+    bytes.push(nal[i]!);
+  }
+  let bit = 0;
+  const read = (count: number) => {
+    let value = 0;
+    for (let i = 0; i < count; i++, bit++) value = value * 2 + ((bytes[bit >> 3]! >> (7 - (bit & 7))) & 1);
+    return value;
+  };
+  const golomb = () => {
+    let zeros = 0;
+    while (read(1) === 0 && zeros < 32) zeros++;
+    return 2 ** zeros - 1 + read(zeros);
+  };
+  read(4); // sps_video_parameter_set_id
+  const subLayers = read(3); // sps_max_sub_layers_minus1
+  read(1);
+  // profile_tier_level: profile, compatibility flags, constraints, level.
+  read(8); read(32); read(48); read(8);
+  const present: [boolean, boolean][] = [];
+  for (let i = 0; i < subLayers; i++) present.push([read(1) === 1, read(1) === 1]);
+  if (subLayers > 0) for (let i = subLayers; i < 8; i++) read(2);
+  for (const [profile, level] of present) {
+    if (profile) { read(8); read(32); read(48); }
+    if (level) read(8);
+  }
+  golomb(); // sps_seq_parameter_set_id
+  const chroma = golomb();
+  if (chroma === 3) read(1);
+  let width = golomb();
+  let height = golomb();
+  if (read(1)) {
+    const [x, y] = chroma === 1 ? [2, 2] : chroma === 2 ? [2, 1] : [1, 1];
+    width -= x * (golomb() + golomb());
+    height -= y * (golomb() + golomb());
+  }
+  return [width, height];
 }
 
 /** The size an H264 packet's sequence parameter set gives: whole, or first in a STAP-A. */
@@ -3773,6 +3862,7 @@ function voiceMessage(ws: Socket, text: string) {
         const record: Received = {
           stream: ws.data.stream, key, mode: d.data?.mode, announced: null,
           codec: offered?.name ?? "VP8", payloadType: offered?.payload_type ?? 105,
+          offers: videoOffers(d.codecs), socket: ws,
           packets: 0, undecryptable: 0, unattached: 0, frames: 0, keyframes: 0, width: 0, height: 0,
           senderReports: 0, reportedPackets: 0,
           audioPackets: 0, audioUndecryptable: 0, audioSenderReports: 0, speaking: null,
@@ -3841,6 +3931,14 @@ function voiceMessage(ws: Socket, text: string) {
       reply(9, null);
       // The session still has the cameras on, sent again once asked for.
       for (const name of filmingFor(ws)) offerCamera(ws, name, false);
+      break;
+    }
+    case 14: { // Session update: the codecs a streamer offers now
+      const record = ws.data.stream && ws.data.ssrc ? received.get(ws.data.ssrc + 1) : undefined;
+      if (record) {
+        record.offers = videoOffers(d.codecs);
+        chooseStreamCodec(record);
+      }
       break;
     }
     case 12: { // Video attributes
@@ -6986,8 +7084,16 @@ const server = Bun.serve<SocketData>({
       const found = [...streams.entries()].find(([key]) => key.endsWith(`:${streamer.id}`));
       if (!found) return new Response("no such stream\n", { status: 409 });
       const [key, stream] = found;
-      if (url.searchParams.has("stop")) stream.viewers.delete(viewer.id);
-      else stream.viewers.add(viewer.id);
+      const decodes = url.searchParams.get("decodes")?.toUpperCase().split(",");
+      stream.decodes ??= new Map();
+      if (url.searchParams.has("stop")) {
+        stream.viewers.delete(viewer.id);
+        stream.decodes.delete(viewer.id);
+      } else {
+        stream.viewers.add(viewer.id);
+        if (decodes) stream.decodes.set(viewer.id, decodes);
+      }
+      for (const record of received.values()) if (record.stream === key) chooseStreamCodec(record);
       dispatch("STREAM_UPDATE", wireStream(key, stream));
       return new Response(`${[...stream.viewers].length} watching ${key}\n`);
     }
@@ -7109,7 +7215,7 @@ const server = Bun.serve<SocketData>({
     }
     if (path === "/_control/video") {
       return json({
-        received: [...received.values()].map(({ key: _, ...stream }) => stream),
+        received: [...received.values()].map(({ key: _, socket: _socket, ...stream }) => stream),
         watchers: [...watchers.values()].map(({ timer: _, resend: _resend, repairs: _repairs, ...watcher }) => watcher),
         repairs,
         previews,

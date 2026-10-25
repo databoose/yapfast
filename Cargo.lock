@@ -2387,6 +2387,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ffmpeg-src"
+version = "9.0.2"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "fiat-crypto"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11555,6 +11562,7 @@ dependencies = [
  "cxx",
  "deep_filter",
  "directories",
+ "ffmpeg-src",
  "futures-util",
  "gif",
  "image",

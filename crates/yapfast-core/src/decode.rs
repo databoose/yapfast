@@ -66,6 +66,9 @@ impl Decoder {
         let kind = match codec {
             Codec::Vp8 => 0,
             Codec::H264 => 1,
+            // libwebrtc's FFmpeg has no H265 decoder; Yapfast doesn't offer
+            // to decode it, so Discord sends viewers H264.
+            Codec::H265 => bail!("Yapfast can't decode H265"),
         };
         // SAFETY: plain values; null means the codec couldn't start.
         let raw = unsafe { yapfast_decoder_new(kind, threads) };

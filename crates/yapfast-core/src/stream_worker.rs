@@ -27,6 +27,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use yapfast_discord::{
+    rtp::Codec,
     stream::StreamServer,
     stream_connection::{self, Link, StreamReceiver, StreamSender},
 };
@@ -41,7 +42,7 @@ use crate::{
     encode::{self, Effort, Encoder},
     frames::{Frames, Writer},
     stream_audio,
-    voice::{Resolution, StreamQuality},
+    voice::{Resolution, StreamQuality, StreamStats},
 };
 
 /// The argument that starts Yapfast as a stream worker.
@@ -67,6 +68,8 @@ const THUMBNAIL_EVERY: Duration = Duration::from_secs(5 * 60);
 /// How long a shared stream whose connection ended waits for a server
 /// Discord moved it to.
 const MOVE_GRACE: Duration = Duration::from_secs(5);
+/// How often a shared screen reports how it goes out, for the call's details.
+const SENDING_EVERY: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -82,6 +85,9 @@ pub enum Job {
         /// How hard the encoder works on each frame.
         #[serde(default)]
         effort: Effort,
+        /// Encoding on the GPU's encoder, where it has one.
+        #[serde(default)]
+        hardware: bool,
     },
     /// Receives and decodes the stream at `server`, writing pictures that
     /// fit `width` by `height` to the frames file at `frames`.
@@ -269,6 +275,8 @@ pub enum Report {
     /// Sharing: the video reaches the stream server. Watching: the first
     /// picture is on screen.
     Streaming,
+    /// Sharing: how the stream goes out, once a second while it's live.
+    Sending(StreamStats),
     /// Sharing: a preview of the stream for Discord to show, a JPEG as a
     /// data URI. The first comes once a picture isn't black, then one every
     /// 5 minutes, as Discord's client sends them.
@@ -348,6 +356,7 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
             height,
             fps,
             effort,
+            hardware,
         } => {
             let fps = fps.clamp(1, 60);
             let sink = Sink {
@@ -358,6 +367,7 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
                 video: None,
                 fps,
                 effort,
+                hardware,
                 started: Instant::now(),
                 streaming: false,
                 preview_due: None,
@@ -440,6 +450,7 @@ struct Sink {
     video: Option<Video>,
     fps: u32,
     effort: Effort,
+    hardware: bool,
     started: Instant,
     streaming: bool,
     /// When the stream's next preview is due: from when it starts.
@@ -456,6 +467,32 @@ struct Video {
     encoder: Encoder,
     /// Other applications' sound, while sharing a screen.
     _sound: Option<stream_audio::Capture>,
+    /// When the stream last reported how it goes out, and the bytes it had
+    /// sent then.
+    measured: (Instant, u64),
+}
+
+impl Video {
+    /// How the stream goes out, with the kbit/s sent since it last said.
+    fn sending(&mut self, fps: u32) -> StreamStats {
+        let sent = self.sender.sent();
+        let (since, before) = self.measured;
+        let bits = sent.video_bytes.saturating_sub(before) * 8;
+        let milliseconds = since.elapsed().as_millis().max(1) as u64;
+        self.measured = (Instant::now(), sent.video_bytes);
+        let (width, height) = self.encoder.size();
+        StreamStats {
+            engine: self.encoder.engine().to_owned(),
+            codec: self.encoder.codec().name().to_owned(),
+            width,
+            height,
+            fps,
+            target_kbps: self.encoder.bitrate(),
+            sent_kbps: (bits / milliseconds) as u32,
+            keyframe_requests: sent.keyframe_requests,
+            resent: sent.resent,
+        }
+    }
 }
 
 /// The kbit/s to aim for, as Discord's client does: its cap for frames of
@@ -492,7 +529,17 @@ impl Sink {
             self.preview_due = Some(Instant::now() + THUMBNAIL_EVERY);
         }
         if let Some(server) = self.server.take() {
-            let sender = StreamSender::start(server, width, height, self.fps)?;
+            // The GPU's H265 encoder, when it has one: Discord then chooses
+            // H265 while every viewer decodes it, and H264 otherwise.
+            let hevc = self
+                .hardware
+                .then(|| self.encoder(Codec::H265, width, height).ok())
+                .flatten();
+            let offers = match hevc {
+                Some(_) => vec![Codec::H265, stream_connection::SEND_CODEC],
+                None => vec![stream_connection::SEND_CODEC],
+            };
+            let sender = StreamSender::start(server, width, height, self.fps, offers)?;
             let sound = if self.sound {
                 stream_audio::Capture::start(sender.sound())
                     .inspect_err(|error| {
@@ -502,34 +549,34 @@ impl Sink {
             } else {
                 None
             };
-            let encoder = Encoder::new(
-                stream_connection::SEND_CODEC,
-                width,
-                height,
-                self.fps,
-                kbps(height, None),
-                self.effort,
-            )?;
+            let encoder = match hevc {
+                Some(encoder) => encoder,
+                None => self.encoder(stream_connection::SEND_CODEC, width, height)?,
+            };
             self.video = Some(Video {
                 sender,
                 encoder,
                 _sound: sound,
+                measured: (Instant::now(), 0),
             });
+        }
+        let Some(video) = self.video.as_ref() else {
+            return Ok(());
+        };
+        // Discord's choice of codec changes as viewers come and go.
+        let codec = video.sender.codec().unwrap_or(video.encoder.codec());
+        let resized = video.encoder.size() != (width, height);
+        if resized || codec != video.encoder.codec() {
+            let encoder = self.encoder(codec, width, height)?;
+            let video = self.video.as_mut().expect("checked above");
+            video.encoder = encoder;
+            if resized {
+                video.sender.resize(width, height);
+            }
         }
         let Some(video) = self.video.as_mut() else {
             return Ok(());
         };
-        if video.encoder.size() != (width, height) {
-            video.encoder = Encoder::new(
-                stream_connection::SEND_CODEC,
-                width,
-                height,
-                self.fps,
-                kbps(height, None),
-                self.effort,
-            )?;
-            video.sender.resize(width, height);
-        }
         let wanted = kbps(height, video.sender.bandwidth_estimate());
         let aimed = video.encoder.bitrate();
         // Not on every wobble, which would churn the rate control.
@@ -543,14 +590,50 @@ impl Sink {
         }
         let pts = self.started.elapsed().as_micros() as u64 * encode::CLOCK / 1_000_000;
         let keyframe = video.sender.take_keyframe_request();
-        if let Some(frame) = video.encoder.encode_i420(picture, pts, keyframe)? {
-            video.sender.send(stream_connection::Frame {
+        let codec = video.encoder.codec();
+        match video.encoder.encode_i420(picture, pts, keyframe) {
+            Ok(Some(frame)) => video.sender.send(stream_connection::Frame {
                 data: frame.data.to_vec(),
+                codec,
                 timestamp: pts as u32,
                 keyframe: frame.keyframe,
-            });
+            }),
+            Ok(None) => {}
+            // Only the GPU encodes H265: Discord chooses H264 instead, which
+            // the next frame encodes.
+            Err(error) if codec == Codec::H265 => {
+                tracing::warn!(
+                    error = format!("{error:#}"),
+                    "the GPU's H265 encoder failed"
+                );
+                video.sender.withdraw(Codec::H265);
+            }
+            Err(error) => return Err(error),
         }
         Ok(())
+    }
+
+    /// An encoder for the stream in `codec`, at the bitrate Discord's cap
+    /// for its height allows.
+    fn encoder(&self, codec: Codec, width: u32, height: u32) -> Result<Encoder> {
+        let kbps = kbps(height, None);
+        let encoder = Encoder::new(
+            codec,
+            width,
+            height,
+            self.fps,
+            kbps,
+            self.effort,
+            self.hardware,
+        )?;
+        tracing::info!(
+            engine = encoder.engine(),
+            ?codec,
+            width,
+            height,
+            "encoding the stream"
+        );
+        Ok(encoder)
     }
 
     /// Takes Yapfast's controls, reports the stream starting, and fails once
@@ -582,6 +665,12 @@ impl Sink {
         }
         if let Some(thumbnail) = self.thumbnail.take() {
             report(Report::Preview { thumbnail });
+        }
+        if let Some(video) = self.video.as_mut()
+            && self.streaming
+            && video.measured.0.elapsed() >= SENDING_EVERY
+        {
+            report(Report::Sending(video.sending(self.fps)));
         }
         Ok(switch)
     }
@@ -1133,6 +1222,15 @@ mod base64_pixels {
     }
 }
 
+/// Whether streams encode on the GPU where it has an encoder: Settings'
+/// choice, on until the UI says.
+static HARDWARE: AtomicBool = AtomicBool::new(true);
+
+/// Encodes streams started from now on with the GPU's encoder, or not.
+pub fn set_hardware_encoding(on: bool) {
+    HARDWARE.store(on, Ordering::Relaxed);
+}
+
 /// Yapfast's handle on a running worker. Dropping it stops the worker.
 pub struct Worker {
     child: Child,
@@ -1159,6 +1257,7 @@ impl Worker {
             } else {
                 Effort::Light
             },
+            hardware: HARDWARE.load(Ordering::Relaxed),
         };
         let (worker, reports) = Self::start(&job)?;
         Ok((worker, frames, reports))
@@ -1387,6 +1486,7 @@ mod tests {
             video: None,
             fps: 30,
             effort: Effort::Light,
+            hardware: false,
             started: Instant::now(),
             streaming: false,
             preview_due: None,
@@ -1423,6 +1523,7 @@ mod tests {
             video: None,
             fps: 30,
             effort: Effort::Light,
+            hardware: false,
             started: Instant::now(),
             streaming: false,
             preview_due: None,
@@ -1449,6 +1550,7 @@ mod tests {
             video: None,
             fps: 30,
             effort: Effort::Light,
+            hardware: false,
             started: Instant::now(),
             streaming: false,
             preview_due: Some(Instant::now()),
@@ -1490,6 +1592,7 @@ mod tests {
             height: PREVIEW_HEIGHT,
             fps: 60,
             effort: Effort::Light,
+            hardware: false,
         };
         let (input, mut feed) = std::io::pipe().unwrap();
         writeln!(feed, "{}", serde_json::to_string(&job).unwrap()).unwrap();
@@ -1604,6 +1707,7 @@ mod tests {
                 height: PREVIEW_HEIGHT,
                 fps: 30,
                 effort: Effort::Light,
+                hardware: false,
             };
             let (input, mut feed) = std::io::pipe().unwrap();
             writeln!(feed, "{}", serde_json::to_string(&job).unwrap()).unwrap();
@@ -1655,6 +1759,7 @@ mod tests {
             height: 16,
             fps: 1,
             effort: Effort::Light,
+            hardware: false,
         };
         let mut reports = Vec::new();
         let input = format!("{}\n", serde_json::to_string(&gone).unwrap());

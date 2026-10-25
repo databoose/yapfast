@@ -37,6 +37,8 @@ optdepends=(
   'libxext: screen sharing on X11'
   'libxfixes: screen sharing on X11'
   'libxrandr: screen sharing on X11'
+  'libva: encoding streams on AMD and Intel GPUs (VA-API; mesa has the AMD driver)'
+  'intel-media-driver: encoding streams on Intel GPUs'
 )
 makedepends=(cargo clang cmake curl git llvm21 nasm pkgconf protobuf python)
 # webrtc-sys compiles C++ with cc; Arch's LTO flags would leave it unlinkable.

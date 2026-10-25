@@ -100,6 +100,7 @@ impl Filming {
                     camera::FPS,
                     BITRATE,
                     Effort::Light,
+                    false,
                 )
                 .inspect_err(|error| tracing::warn!(%error, "could not encode the camera"))
                 .ok();
@@ -112,6 +113,7 @@ impl Filming {
             match encoder.encode_picture(picture, pts, keyframe) {
                 Ok(Some(frame)) => sender.send(Frame {
                     data: frame.data.to_vec(),
+                    codec: SEND_CODEC,
                     timestamp: pts as u32,
                     keyframe: frame.keyframe,
                 }),
