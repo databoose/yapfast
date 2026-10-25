@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>A Discord client without the web browser.</b><br>
-  About 40 MB of RAM, where Discord's own app takes 800.
+  About 30 MB of RAM, where Discord's own app takes 800.
 </p>
 
 <p align="center">
@@ -38,7 +38,7 @@ Discord's desktop app is a whole ass Chromium running Discord's website, and it
 sits at about 800 MB of RAM doing nothing (insane, I know right?!?). That
 annoyed me enough to write my own in Rust.
 
-Yapfast does the same job (doing nothing) in about 40 MB. There's no browser
+Yapfast does the same job (doing nothing) in about 30 MB. There's no browser
 engine anywhere in it or near it: it talks to Discord's API itself and draws its
 own window with [Slint](https://slint.dev) and Skia, like a game would. Your
 servers, DMs, friends, voice and GIFs are all there, and if you know Discord,
@@ -48,12 +48,13 @@ It opens fast af, too. I timed both, from clicking the icon to reading my
 messages: Discord took 8 seconds on my PC, Yapfast took 0.22, because it shows
 the messages it saved last time and catches up while you read.
 
-Sitting in a call with the window open, it's about 60 MB, and noise suppression
-alone eats 20 of those; that's as small as I could get it :( There's a GPU
-renderer too, behind **Render with the GPU** in Settings, but it takes about
-120 MB, and drawing on the processor already keeps a 180 Hz monitor fed, so the
-processor is the default. Your numbers will depend on how many servers and DMs
-you have. [How I measure](docs/measurements/README.md).
+Sitting in a call with the window open, it's about 45 MB. There's a GPU
+renderer too, behind **Render with the GPU** in Settings, but it takes more
+memory, and drawing on the processor already keeps a 180 Hz monitor fed, so the
+processor is the default. Next to Vesktop on the same PC, Yapfast took 86 to
+96% less memory in everything I tried;
+[here's the table](docs/measurements/README.md). Your numbers will depend on
+how many servers and DMs you have.
 
 It's a beta, and it's what I use for Discord every day, so it had better
 be usable. Still, there are rough edges; when you hit one,
@@ -62,6 +63,109 @@ come hang out on the [Yapfast Discord server](https://yapfast.com/discord-invite
 and tell me there. The connection drops every now and then (no more often than
 Vesktop's or the official app's does for me), and the noise suppression could
 be better. Know an open source one that does a better job? PLEASE tell me.
+
+## Features
+
+### The GIF picker
+
+My favorite part :p Your favorites live on disk as 40 KB clips, so they're
+there the moment it opens, and you're done sitting there cringing while the
+GOATed GIF loads.
+
+<img src="docs/images/features/gif-picker.webp" alt="The GIF picker opening on its favorites over #general, and one of them sent to the channel.">
+
+### Voice, cameras and Go Live
+
+Voice channels and DM calls, with mute, deafen, a volume for each person,
+noise suppression, echo removal, and a voice gate you can tune, or
+push-to-talk on any key you like, held in any app. Go Live, watch other
+people's streams and turn on your camera. The call stays up while you read
+other channels.
+
+<img src="docs/images/features/voice.webp" alt="A voice channel of seven people, two with their cameras on. One person's stream opens large, then the grid comes back.">
+
+### Forums and polls
+
+Browse a forum's posts as cards, with their tags, first message, top reaction
+and thumbnail, search them, post in them, and read one beside the forum. Vote
+in polls, watch the votes come in, make your own and end them early.
+
+<img src="docs/images/features/forum.webp" alt="A help forum's posts as cards; one opens beside the list with its replies, then closes.">
+
+<img src="docs/images/features/poll.webp" width="640" alt="A movie night poll: an answer is picked and voted for, and the results fill in.">
+
+### Themes
+
+Ten of them, Catppuccin and Tokyo Night among them, and Bonfire, which is
+Discord's own colors. Or make your own in the editor, and watch the window
+change as you type each color.
+
+<img src="docs/images/features/themes.webp" alt="The same channel in each of the ten built-in themes, one after another.">
+
+### Games on your profile
+
+The game you play, found among your running programs on Linux, Windows and
+macOS, Steam's and Wine's included, and on Linux the Rich Presence games send,
+with details, elapsed time, images and buttons. Settings → Game activity turns
+sharing on and off as Discord's own setting does, and names games Yapfast
+doesn't know. See [game detection](docs/discord.md#game-detection) and
+[Rich Presence](docs/discord.md#linux-rich-presence).
+
+<img src="docs/images/features/playing.webp" width="260" alt="A profile card saying Playing Deadlock, with the game's icon.">
+
+### Running a server
+
+Server Settings with roles, emoji, stickers, bans, the audit log and the rest of
+the pages your roles let you use, and channel settings with their permissions.
+Make and edit channels and categories, invite people, hand out roles, change
+nicknames, time out, kick and ban. In voice, server mute, deafen and move
+people to another channel. Edit your server profile, and leave. Join a server
+by invite, from the + under your servers or a link in chat. Folders show up as
+they do in Discord.
+
+<img src="docs/images/features/server-settings.webp" width="640" alt="Server Settings on a role's Display page: its name, a gold color picked, and its icon.">
+
+### Everything else
+
+- Servers, channels, DMs and group DMs, all live. Pin, mute or close a DM from
+  its menu, and accept or ignore message requests.
+- Messages you can send, reply to, edit, react to, pin, forward and attach
+  files to, with Markdown, embeds, custom emoji, stickers and spoilers.
+- Threads: start one from a message, browse a channel's threads, join or leave
+  one, and read it beside its channel.
+- Search a whole server with Discord's filters, and browse a channel's pins.
+- Friends: requests, adding by username, nicknames, notes, profile cards, your
+  status and custom status (custom emoji included). Block and ignore people
+  from their menu, and hide what blocked people write.
+- Notifications that follow your Discord settings, muting for channels,
+  categories and servers, unread markers and member lists.
+- Soft sounds for joining, leaving, muting and messages, in six sets.
+
+### Not there yet
+
+- Media channels.
+- The soundboard.
+- Activities.
+- Making and changing server folders.
+- A server's form for new members, such as its rules, when you join. Yapfast
+  sends you to Discord in your browser to fill it in.
+- A list of the people you blocked.
+- Leaving a group DM.
+- Animated custom emoji in messages, which show their first frame.
+- Captchas, sort of. If Discord asks for one while you link or join a server,
+  Yapfast opens it in your browser, but I haven't hit one against real
+  Discord yet, so who knows..
+
+Use Discord in a browser for these until then; it has all of it, and you have a
+browser open anyway. [The Discord plan](docs/discord.md) has the rest, in the
+order I'm working on it.
+
+### Not for you?
+
+- [Vesktop](https://vesktop.dev) if you want plugins. Yapfast has none yet
+  (they're coming, dw), and Vesktop ships with Vencord's.
+- [Ripcord](https://cancel.fm/ripcord/) if you want something even plainer.
+  It's native too, but closed source, and it does Slack on the side.
 
 ## Will Discord ban me?
 
@@ -156,77 +260,6 @@ marked **Pre-release**, newest first, each with a list of what changed:
   file or its link.
 
 They're untested between releases, so expect the odd rough edge.
-
-## Features
-
-- Servers, channels, DMs and group DMs, all live. Pin, mute or close a DM from
-  its menu, and accept or ignore message requests.
-- Messages you can send, reply to, edit, react to, pin, forward and attach
-  files to, with Markdown, embeds, custom emoji, stickers and spoilers. Polls
-  too: vote in them and make your own.
-- Threads: start one from a message, browse a channel's threads, join or leave
-  one, and read it beside its channel.
-- Forums: browse the posts as cards, with their tags, first message, top
-  reaction and thumbnail, search them, post in them, and read one beside the
-  forum.
-- Search a whole server with Discord's filters, and browse a channel's pins.
-- The GIF picker, my favorite part :p Your favorites live on disk as 40 KB
-  clips, so they're there the moment it opens, and you're done sitting there
-  cringing while the GOATed GIF loads.
-- Voice channels and DM calls, with mute, deafen, a volume for each person,
-  noise suppression, echo removal, and a voice gate you can tune, or
-  push-to-talk on any key you like, held in any app. Go Live, watch
-  other people's streams and turn on your camera. The call stays up while you
-  read other channels.
-- Friends: requests, adding by username, nicknames, notes, profile cards, your
-  status and custom status (custom emoji included). Block and ignore people
-  from their menu, and hide what blocked people write.
-- Games: the game you play, found among your running programs on Linux,
-  Windows and macOS, Steam's and Wine's included, and on Linux the Rich
-  Presence games send, with details, elapsed time, images and buttons.
-  Settings → Game activity turns sharing on and off as Discord's own setting
-  does, and names games Yapfast doesn't know. See
-  [game detection](docs/discord.md#game-detection) and
-  [Rich Presence](docs/discord.md#linux-rich-presence).
-- Running a server: Server Settings with roles, emoji, stickers, bans, the
-  audit log and the rest of the pages your roles let you use, and channel
-  settings with their permissions. Make and edit channels and categories,
-  invite people, hand out roles, change nicknames, time out, kick and ban. In
-  voice, server mute, deafen and move people to another channel. Edit your
-  server profile, and leave. Join a server by invite, from the + under your servers or a link in
-  chat. Folders show up as they do in Discord.
-- Notifications that follow your Discord settings, muting for channels,
-  categories and servers, unread markers and member lists.
-- Ten themes, Catppuccin and Tokyo Night among them, and Bonfire, which is
-  Discord's own colors. Or make your own in the editor, and watch the window
-  change as you type each color.
-- Soft sounds for joining, leaving, muting and messages, in six sets.
-
-### Not there yet
-
-- Media channels.
-- The soundboard.
-- Activities.
-- Making and changing server folders.
-- A server's form for new members, such as its rules, when you join. Yapfast
-  sends you to Discord in your browser to fill it in.
-- A list of the people you blocked.
-- Leaving a group DM.
-- Animated custom emoji in messages, which show their first frame.
-- Captchas, sort of. If Discord asks for one while you link or join a server,
-  Yapfast opens it in your browser, but I haven't hit one against real
-  Discord yet, so who knows..
-
-Use Discord in a browser for these until then; it has all of it, and you have a
-browser open anyway. [The Discord plan](docs/discord.md) has the rest, in the
-order I'm working on it.
-
-### Not for you?
-
-- [Vesktop](https://vesktop.dev) if you want plugins. Yapfast has none yet
-  (they're coming, dw), and Vesktop ships with Vencord's.
-- [Ripcord](https://cancel.fm/ripcord/) if you want something even plainer.
-  It's native too, but closed source, and it does Slack on the side.
 
 ## What about Matrix?
 
