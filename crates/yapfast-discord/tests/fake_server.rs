@@ -2159,6 +2159,11 @@ async fn talks_to_the_fake_server() {
         video["announced"],
         serde_json::json!({"type": "fixed", "width": 320, "height": 180})
     );
+    // What the call's details show: the video's bytes, and the one packet
+    // the fake reported lost, resent.
+    let sent = sender.sent();
+    assert!(sent.video_bytes > 1000, "{sent:?}");
+    assert_eq!(sent.resent, 1);
     drop(sender);
     streams_h265_until_a_viewer_cant_decode_it(&discord, server, &mine).await;
 

@@ -99,6 +99,18 @@ export global CallLink {
     /// The voice privacy code in groups of five digits, while the call is
     /// end-to-end encrypted with someone else in it.
     in property <[string]> code;
+    /// While this account's screen is live, how it goes out: the encoder
+    /// ("NVENC on the GPU"), the codec, the size and frame rate, the
+    /// bitrate sent and aimed for ("3.8 Mbit/s"), and what viewers asked
+    /// of it.
+    in property <bool> streaming;
+    in property <string> encoder;
+    in property <string> codec;
+    in property <string> picture;
+    in property <string> sent;
+    in property <string> target;
+    in property <string> keyframes;
+    in property <string> resent;
     callback read();
 }
 
@@ -165,11 +177,16 @@ component LinkRow inherits HorizontalLayout {
 // The call's connection in detail, as Discord's popout from its voice panel:
 // a graph of the ping over the last five minutes, the average and last ping,
 // the packets lost, and while end-to-end encrypted, the voice privacy code to
-// compare with the others in the call.
+// compare with the others in the call. While this account's screen is live,
+// a Stream tab says how it goes out.
 export component CallLinkCard inherits Rectangle {
     out property <length> content-height: link-content.preferred-height;
     callback copy(string);
-    property <bool> privacy;
+    // The tab picked: 0 Connection, 1 Privacy, 2 Stream; Connection shows
+    // while the one picked isn't there.
+    property <int> tab;
+    property <int> shown: root.tab == 1 && CallLink.code.length > 0 ? 1
+        : root.tab == 2 && CallLink.streaming ? 2 : 0;
     property <bool> copied;
     background: Theme.raised; border-color: Theme.edge; border-width: 1px; border-radius: 8px;
     drop-shadow-blur: 24px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
@@ -179,12 +196,13 @@ export component CallLinkCard inherits Rectangle {
     Timer { interval: 2s; running: root.copied; triggered => { root.copied = false; } }
     link-content := VerticalLayout {
         padding: 16px; spacing: 10px;
-        if CallLink.code.length > 0: HorizontalLayout {
+        if CallLink.code.length > 0 || CallLink.streaming: HorizontalLayout {
             spacing: 16px; alignment: start;
-            LinkTab { text: "Connection"; on: !root.privacy; clicked => { root.privacy = false; } }
-            LinkTab { text: "Privacy"; on: root.privacy; clicked => { root.privacy = true; } }
+            LinkTab { text: "Connection"; on: root.shown == 0; clicked => { root.tab = 0; } }
+            if CallLink.code.length > 0: LinkTab { text: "Privacy"; on: root.shown == 1; clicked => { root.tab = 1; } }
+            if CallLink.streaming: LinkTab { text: "Stream"; on: root.shown == 2; clicked => { root.tab = 2; } }
         }
-        if !root.privacy || CallLink.code.length == 0: VerticalLayout {
+        if root.shown == 0: VerticalLayout {
             spacing: 8px;
             Rectangle {
                 height: 80px; border-radius: 6px; background: Theme.sunken; clip: true;
@@ -210,7 +228,21 @@ export component CallLinkCard inherits Rectangle {
                 color: Theme.muted; font-size: 13px; wrap: word-wrap;
             }
         }
-        if root.privacy && CallLink.code.length > 0: VerticalLayout {
+        if root.shown == 2: VerticalLayout {
+            spacing: 8px;
+            LinkRow { label: "Encoder:"; value: CallLink.encoder; }
+            LinkRow { label: "Codec:"; value: CallLink.codec; }
+            LinkRow { label: "Resolution:"; value: CallLink.picture; }
+            LinkRow { label: "Sending:"; value: CallLink.sent; }
+            LinkRow { label: "Aiming for:"; value: CallLink.target; }
+            LinkRow { label: "Keyframes viewers asked for:"; value: CallLink.keyframes; }
+            LinkRow { label: "Packets resent:"; value: CallLink.resent; }
+            Text {
+                text: "The bitrate follows what Discord estimates your connection carries. Fast motion at a low bitrate looks blocky to viewers.";
+                color: Theme.muted; font-size: 13px; wrap: word-wrap;
+            }
+        }
+        if root.shown == 1: VerticalLayout {
             spacing: 10px;
             Text { text: "Voice Privacy Code"; color: Theme.text; font-size: 15px; font-weight: 700; }
             Text {

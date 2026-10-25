@@ -42,7 +42,7 @@ use crate::{
     encode::{self, Effort, Encoder},
     frames::{Frames, Writer},
     stream_audio,
-    voice::{Resolution, StreamQuality},
+    voice::{Resolution, StreamQuality, StreamStats},
 };
 
 /// The argument that starts Yapfast as a stream worker.
@@ -68,6 +68,8 @@ const THUMBNAIL_EVERY: Duration = Duration::from_secs(5 * 60);
 /// How long a shared stream whose connection ended waits for a server
 /// Discord moved it to.
 const MOVE_GRACE: Duration = Duration::from_secs(5);
+/// How often a shared screen reports how it goes out, for the call's details.
+const SENDING_EVERY: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -273,6 +275,8 @@ pub enum Report {
     /// Sharing: the video reaches the stream server. Watching: the first
     /// picture is on screen.
     Streaming,
+    /// Sharing: how the stream goes out, once a second while it's live.
+    Sending(StreamStats),
     /// Sharing: a preview of the stream for Discord to show, a JPEG as a
     /// data URI. The first comes once a picture isn't black, then one every
     /// 5 minutes, as Discord's client sends them.
@@ -463,6 +467,32 @@ struct Video {
     encoder: Encoder,
     /// Other applications' sound, while sharing a screen.
     _sound: Option<stream_audio::Capture>,
+    /// When the stream last reported how it goes out, and the bytes it had
+    /// sent then.
+    measured: (Instant, u64),
+}
+
+impl Video {
+    /// How the stream goes out, with the kbit/s sent since it last said.
+    fn sending(&mut self, fps: u32) -> StreamStats {
+        let sent = self.sender.sent();
+        let (since, before) = self.measured;
+        let bits = sent.video_bytes.saturating_sub(before) * 8;
+        let milliseconds = since.elapsed().as_millis().max(1) as u64;
+        self.measured = (Instant::now(), sent.video_bytes);
+        let (width, height) = self.encoder.size();
+        StreamStats {
+            engine: self.encoder.engine().to_owned(),
+            codec: self.encoder.codec().name().to_owned(),
+            width,
+            height,
+            fps,
+            target_kbps: self.encoder.bitrate(),
+            sent_kbps: (bits / milliseconds) as u32,
+            keyframe_requests: sent.keyframe_requests,
+            resent: sent.resent,
+        }
+    }
 }
 
 /// The kbit/s to aim for, as Discord's client does: its cap for frames of
@@ -527,6 +557,7 @@ impl Sink {
                 sender,
                 encoder,
                 _sound: sound,
+                measured: (Instant::now(), 0),
             });
         }
         let Some(video) = self.video.as_ref() else {
@@ -634,6 +665,12 @@ impl Sink {
         }
         if let Some(thumbnail) = self.thumbnail.take() {
             report(Report::Preview { thumbnail });
+        }
+        if let Some(video) = self.video.as_mut()
+            && self.streaming
+            && video.measured.0.elapsed() >= SENDING_EVERY
+        {
+            report(Report::Sending(video.sending(self.fps)));
         }
         Ok(switch)
     }

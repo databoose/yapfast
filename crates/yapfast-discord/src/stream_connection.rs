@@ -113,6 +113,11 @@ struct Shared {
     /// Sending: the codec Discord chose, in op 4 and then op 14, once it
     /// said.
     chosen: Mutex<Option<Codec>>,
+    /// Sending: the video's bytes sent so far, resent ones too, as UDP
+    /// payloads; the keyframes viewers asked for; and the packets resent.
+    video_bytes: AtomicU64,
+    keyframe_requests: AtomicU64,
+    resent: AtomicU64,
 }
 
 impl Shared {
@@ -125,6 +130,9 @@ impl Shared {
             offers: Mutex::new(vec![SEND_CODEC]),
             offers_changed: AtomicBool::new(false),
             chosen: Mutex::new(None),
+            video_bytes: AtomicU64::new(0),
+            keyframe_requests: AtomicU64::new(0),
+            resent: AtomicU64::new(0),
         })
     }
 }
@@ -251,6 +259,16 @@ impl StreamSender {
             .or(offers.first().copied())
     }
 
+    /// What the stream sent so far, and what viewers asked of it.
+    pub fn sent(&self) -> SentSoFar {
+        let load = |count: &AtomicU64| count.load(Ordering::Relaxed);
+        SentSoFar {
+            video_bytes: load(&self.shared.video_bytes),
+            keyframe_requests: load(&self.shared.keyframe_requests),
+            resent: load(&self.shared.resent),
+        }
+    }
+
     /// Stops offering `codec`, which the encoder can't produce any more:
     /// Discord then picks another, which [`Self::codec`] gives.
     pub fn withdraw(&self, codec: Codec) {
@@ -260,6 +278,16 @@ impl StreamSender {
             self.shared.offers_changed.store(true, Ordering::Relaxed);
         }
     }
+}
+
+/// A stream's video sent since it started, as [`StreamSender::sent`] says:
+/// bytes as UDP payloads, resent ones too; keyframes viewers asked for; and
+/// packets resent when a viewer reported them lost.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SentSoFar {
+    pub video_bytes: u64,
+    pub keyframe_requests: u64,
+    pub resent: u64,
 }
 
 /// Receives someone's stream on a thread of its own; dropping it ends the
@@ -519,6 +547,7 @@ async fn send(
                     octets = octets.wrapping_add((packet.len() - clear) as u32);
                     connection.transport.seal(&mut packet, clear)?;
                     connection.udp.send(&packet).await?;
+                    shared.video_bytes.fetch_add(packet.len() as u64, Ordering::Relaxed);
                 }
                 if reported.elapsed() >= SENDER_REPORTS {
                     reported = Instant::now();
@@ -608,6 +637,7 @@ async fn send(
                 }
                 if rtp::wants_keyframe(&rtcp) {
                     sent.requests += 1;
+                    shared.keyframe_requests.fetch_add(1, Ordering::Relaxed);
                     shared.keyframe.store(true, Ordering::Relaxed);
                 }
                 if let Some(estimate) = rtp::bandwidth_estimate(&rtcp, video) {
@@ -621,6 +651,8 @@ async fn send(
                     let clear = rtp::rtp_clear_len(&again).unwrap_or(again.len());
                     connection.transport.seal(&mut again, clear)?;
                     connection.udp.send(&again).await?;
+                    shared.video_bytes.fetch_add(again.len() as u64, Ordering::Relaxed);
+                    shared.resent.fetch_add(1, Ordering::Relaxed);
                     sent.resent += 1;
                 }
             }

@@ -287,6 +287,19 @@ receiver report about a call's audio every 50 packets;
 `POST /_control/voice-link?ping=300&loss=7` slows its ACKs and reports
 loss, and `talks_to_the_fake_server` checks both are measured.
 
+While this account's screen is live, a Stream tab says how it goes out:
+the encoder and where it runs ("NVENC on the GPU", "x264 on the CPU"), the
+codec Discord chose, the size and frame rate sent, the bitrate sent over
+the last second beside the one aimed for, which follows Discord's bandwidth
+estimate, and the keyframes viewers asked for and the packets resent to
+them. Discord's client shows its stream's numbers only in developer mode.
+The stream worker reports them once a second while live
+(`Report::Sending`), counting what `StreamSender` sends; the call keeps
+the last report beside its own numbers, without refreshing the UI's state,
+and the popout reads it as it reads the pings. A report more than 3 s old
+means the stream stopped, and the tab goes. `talks_to_the_fake_server`
+checks the bytes counted and the one resend the fake asks for.
+
 Matrix calls don't have these yet. LiveKit's SDK measures its signal
 connection's round trip but doesn't expose it, and `Room::get_stats`
 serialises all of WebRTC's statistics to JSON and parses them back, too much

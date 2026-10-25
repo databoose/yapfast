@@ -1,6 +1,7 @@
 //! The call's connection in detail: the ping as the signal icon's tooltip,
-//! and the popout's graph, numbers and voice privacy code. The call measures
-//! them all along; they're copied out of it only while one of them shows.
+//! and the popout's graph, numbers and voice privacy code, and how a shared
+//! screen goes out. The call measures them all along; they're copied out of
+//! it only while one of them shows.
 
 use std::fmt::Write;
 
@@ -56,6 +57,47 @@ fn show(link: &CallLink<'_>, stats: &LinkStats, others: bool) {
     if !shown.iter().eq(groups.iter().cloned()) {
         link.set_code(slint::ModelRc::new(slint::VecModel::from(groups)));
     }
+    link.set_streaming(stats.stream.is_some());
+    if let Some(stream) = &stats.stream {
+        link.set_encoder(encoder(&stream.engine).into());
+        link.set_codec(stream.codec.as_str().into());
+        link.set_picture(
+            format!("{}×{} at {} fps", stream.width, stream.height, stream.fps).into(),
+        );
+        link.set_sent(rate(stream.sent_kbps).into());
+        link.set_target(rate(stream.target_kbps).into());
+        link.set_keyframes(stream.keyframe_requests.to_string().into());
+        link.set_resent(stream.resent.to_string().into());
+    }
+}
+
+/// Where the stream's encoder runs, by its name: "h264_nvenc" is NVENC on
+/// the GPU, "hevc_vaapi (renderD128, radeonsi)" VA-API through Mesa's
+/// radeonsi driver, "x264" on the CPU.
+fn encoder(engine: &str) -> String {
+    let (name, place) = engine.split_once(' ').unwrap_or((engine, ""));
+    let driver = place
+        .trim_matches(['(', ')'])
+        .rsplit(", ")
+        .next()
+        .filter(|driver| !driver.is_empty());
+    match name.rsplit_once('_') {
+        Some((_, "nvenc")) => "NVENC on the GPU".to_owned(),
+        Some((_, "vaapi")) => match driver {
+            Some(driver) => format!("VA-API on the GPU ({driver})"),
+            None => "VA-API on the GPU".to_owned(),
+        },
+        _ => format!("{name} on the CPU"),
+    }
+}
+
+/// A bitrate as people read it: "3.8 Mbit/s", or "800 kbit/s" below one.
+fn rate(kbps: u32) -> String {
+    if kbps >= 1000 {
+        format!("{:.1} Mbit/s", f64::from(kbps) / 1000.0)
+    } else {
+        format!("{kbps} kbit/s")
+    }
 }
 
 fn average(pings: &[u16]) -> Option<u32> {
@@ -109,6 +151,18 @@ mod tests {
         assert_eq!(path, "M 290.0 60.0 H 295.0 V 20.0 H 300.0");
         assert_eq!(graph(&[260]).1, 500);
         assert_eq!(graph(&[1500]).1, 2000);
+    }
+
+    #[test]
+    fn says_where_the_stream_is_encoded() {
+        assert_eq!(encoder("h264_nvenc"), "NVENC on the GPU");
+        assert_eq!(
+            encoder("hevc_vaapi (renderD128, radeonsi)"),
+            "VA-API on the GPU (radeonsi)"
+        );
+        assert_eq!(encoder("x264"), "x264 on the CPU");
+        assert_eq!(rate(3812), "3.8 Mbit/s");
+        assert_eq!(rate(800), "800 kbit/s");
     }
 
     #[test]

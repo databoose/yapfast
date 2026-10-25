@@ -140,6 +140,26 @@ pub struct LinkStats {
     pub pings: Vec<u16>,
     pub loss: Option<f32>,
     pub privacy_code: Option<String>,
+    /// The screen this account shares, while it's live.
+    pub stream: Option<StreamStats>,
+}
+
+/// How this account's shared screen goes out, as its stream worker reports
+/// it each second: the encoder ("h264_nvenc", "x264"), the codec Discord
+/// chose ("H264"), the size and frame rate sent, the kbit/s aimed for and
+/// sent in the last second, and the keyframes viewers asked for and the
+/// packets resent to them since the stream started.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct StreamStats {
+    pub engine: String,
+    pub codec: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub target_kbps: u32,
+    pub sent_kbps: u32,
+    pub keyframe_requests: u64,
+    pub resent: u64,
 }
 
 /// Reads the call's [`LinkStats`], which the call measures all along and

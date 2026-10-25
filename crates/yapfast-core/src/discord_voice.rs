@@ -19,9 +19,13 @@ use crate::{
     stream_worker::{self, Report, Worker},
     voice::{
         CameraPhase, Chosen, Command, Link, LinkStats, Participant, Phase, Quality, SharePhase,
-        Sharing, State, StreamQuality, Watching, devices,
+        Sharing, State, StreamQuality, StreamStats, Watching, devices,
     },
 };
+
+/// How long the call's details show a shared screen's last report: the
+/// worker sends one each second while the stream is live.
+const SENDING_STALE: Duration = Duration::from_secs(3);
 
 /// Going live: the worker capturing the screen, then the stream Discord
 /// started for it.
@@ -356,6 +360,8 @@ pub(crate) async fn call(
     let mut ringback: Option<Ringer> = None;
     // Discord wouldn't ring them, which the call says until someone comes.
     let mut unrung = false;
+    // How the shared screen last said it goes out, and when.
+    let sending: Arc<std::sync::Mutex<Option<(std::time::Instant, StreamStats)>>> = Arc::default();
 
     let result = async {
         let mut speakers = Some(open_discord_speakers(state, &played, &hearing)?);
@@ -364,13 +370,19 @@ pub(crate) async fn call(
         state.phase = Phase::Connected;
         let link = call.stats();
         state.link = Some(Link::new({
-            let link = link.clone();
+            let (link, sending) = (link.clone(), sending.clone());
             move || {
                 let read = link.read();
+                let sending = sending.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 LinkStats {
                     pings: read.pings.into(),
                     loss: read.loss,
                     privacy_code: read.privacy_code,
+                    // The worker says each second while the stream is live.
+                    stream: sending
+                        .as_ref()
+                        .filter(|(said, _)| said.elapsed() < SENDING_STALE)
+                        .map(|(_, stats)| stats.clone()),
                 }
             }
         }));
@@ -617,6 +629,13 @@ pub(crate) async fn call(
                                 going.show_preview(discord, thumbnail);
                             }
                         }
+                        // For the call's details, which read it when they
+                        // show; nothing else changed.
+                        Some(Report::Sending(stats)) => {
+                            *sending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                                Some((std::time::Instant::now(), stats));
+                            continue;
+                        }
                         // Only a video's worker reports these.
                         Some(Report::Opened { .. } | Report::Finished | Report::Screen { .. }) => {}
                         Some(Report::Ended { error }) => {
@@ -702,6 +721,7 @@ pub(crate) async fn call(
                         WatchEvent::Report(Some(Report::Ended { error })) => stop = Some(error),
                         WatchEvent::Report(Some(
                             Report::Sharing { .. }
+                            | Report::Sending(_)
                             | Report::Preview { .. }
                             | Report::Opened { .. }
                             | Report::Finished
