@@ -133,6 +133,10 @@ fn build(root: &Path, include: &Path, target: &Target, per_depth: bool) -> cc::B
         build
             .flag("-std=gnu99")
             .flag("-ffast-math")
+            // With __FAST_MATH__ glibc declares vector math, and GCC links
+            // libmvec, which not every distribution has, for log2 loops that
+            // run once per encoder.
+            .flag("-U__FAST_MATH__")
             .flag("-fomit-frame-pointer")
             .flag("-fvisibility=hidden");
         if target.os == "linux" {
