@@ -920,8 +920,11 @@ driver its kernel driver calls for: radeonsi for amdgpu, iHD then i965 for
 Intel's. Naming it overrides `LIBVA_DRIVER_NAME`, which NixOS and others set
 to `nvidia` for browsers, and which would otherwise load NVIDIA's decoding-only
 driver for every GPU, AMD's and Intel's too. NVIDIA's nodes are skipped:
-NVENC encodes there. NixOS keeps libva itself out of the library path, so a
-bare binary there finds no VA-API until a package puts libva on it.
+NVENC encodes there. NixOS keeps libva itself off the library path, so the
+Nix package's wrapper and the dev shell put it there (`runtimeLibraries` in
+`nix/native.nix`); it's no build input, or webrtc-sys would build LiveKit's
+own VA-API encoder into libwebrtc. The AppImage takes the system's libva,
+and the Arch package lists it as optional.
 
 The settings match x264's where they can: low-latency tuning (NVENC's p4
 preset, `ll`), no B-frames, a frame out for each frame in, Main profile,

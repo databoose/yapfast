@@ -36,4 +36,10 @@ rec {
     pipewire libdrm libgbm
     xorg.libXfixes xorg.libXdamage xorg.libXcomposite xorg.libXext
   ];
+  # What the binary loads at runtime, on the wrapper's library path: the
+  # libraries, and libva, which FFmpeg's VA-API encoders load when a stream
+  # starts on an AMD or Intel GPU, and which finds the drivers in
+  # /run/opengl-driver/lib/dri. Not a build input: webrtc-sys would build
+  # LiveKit's own VA-API encoder where pkg-config finds libva.
+  runtimeLibraries = libraries ++ [ pkgs.libva ];
 }
