@@ -1239,6 +1239,18 @@ an error.
   wheel; its travel is squared, so its middle sounds about half as loud.
   Turning it to nothing mutes, and unmuting brings back the level it had.
   The next video plays as loud, until Yapfast closes.
+- Markdown shows as Discord's client shows it. Bold, italics, strikethrough,
+  inline code, lists and links are Slint's Markdown. Headings (`#` to `###`),
+  subtext (`-# `), quotes (`> ` lines, or `>>> ` and the rest) and code fenced
+  by three backticks are blocks that `blocks.rs` in `yapfast-core` splits out
+  by Discord's rules, read from its web client, before anything else changes
+  the text. Each is then drawn apart, spaced as Discord's client spaces them,
+  with its mentions, emoji and spoilers. Code shows as typed, in the system's
+  monospace font, without highlighting. Discord shows headings and lists only
+  in messages from 22 March 2023; Yapfast shows them in older ones too. Rules
+  (`---`) and lines under a line (`===`), which Discord doesn't have, show as
+  typed. Pinned messages, search results and replies show headings and quotes
+  as typed.
 - Spoilers, `||like this||`, show under an opaque cover that a click lifts.
   The cover is drawn by Yapfast's patched Slint text renderer over a link to
   `yapfast:spoiler/{item}/{n}`; see [building](building.md). A spoiler in a reply

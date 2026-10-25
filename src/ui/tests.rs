@@ -5984,5 +5984,132 @@ fn a_card_of_components_shows_headings_files_and_only_link_buttons_working() {
 fn headings_in_fenced_code_stay_as_typed() {
     let blocks = text_blocks("```\n# not a heading\n```\n## Two");
     let levels: Vec<_> = blocks.iter().map(|block| block.level).collect();
-    assert_eq!(levels, [0, 2]);
+    assert_eq!(levels, [5, 2]);
+    assert_eq!(
+        i_slint_core::yapfast_selection::plain(&blocks[0].text),
+        "# not a heading"
+    );
+}
+
+fn formatted(body: &str) -> ChatMessage {
+    ChatMessage {
+        item: "d:1".into(),
+        body: body.into(),
+        formatted: true,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_message_shows_its_headings_quotes_and_code_apart() {
+    i_slint_backend_testing::init_no_event_loop();
+    let row = message_row_plain(&formatted(
+        "# Title\n> quoted **bold**\n> -# small\n```\n<b>code</b>\n```\n-# end",
+    ));
+    let blocks: Vec<_> = row.blocks.iter().collect();
+    let shown: Vec<_> = blocks
+        .iter()
+        .map(|block| {
+            (
+                block.level,
+                block.quoted,
+                i_slint_core::yapfast_selection::plain(&block.text),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            (1, false, "Title".into()),
+            (0, true, "quoted bold".into()),
+            (4, true, "small".into()),
+            (5, false, "<b>code</b>".into()),
+            (4, false, "end".into()),
+        ]
+    );
+    // The quote's bar runs from its first block to its last.
+    assert!(blocks[1].quote_start && !blocks[1].quote_end);
+    assert!(!blocks[2].quote_start && blocks[2].quote_end);
+    // A first heading sits closer to the top than a later one would.
+    assert_eq!((blocks[0].margin, blocks[0].padding), (8.0, 0.0));
+    assert_eq!((blocks[1].margin, blocks[1].padding), (8.0, 0.0));
+    assert_eq!(blocks[3].margin, 6.0);
+    let text = message_text(&MessageRow {
+        first: false,
+        ..row
+    });
+    assert_eq!(text, "Title\nquoted bold\nsmall\n<b>code</b>\nend");
+}
+
+#[test]
+fn text_alone_shows_as_one() {
+    i_slint_backend_testing::init_no_event_loop();
+    let row = message_row_plain(&formatted("plain **text**\n- and a list"));
+    assert_eq!(row.blocks.row_count(), 0);
+    assert!(i_slint_core::yapfast_selection::plain(&row.styled).starts_with("plain text\n"));
+}
+
+#[test]
+fn text_beside_a_heading_keeps_its_formatting_and_blank_lines() {
+    i_slint_backend_testing::init_no_event_loop();
+    let row = message_row_plain(&formatted("# Title\n\n**bold**\n---"));
+    let plain: Vec<_> = row
+        .blocks
+        .iter()
+        .map(|block| i_slint_core::yapfast_selection::plain(&block.text))
+        .collect();
+    assert_eq!(plain, ["Title", "\u{a0}\nbold\n---"]);
+}
+
+#[test]
+fn html_in_a_block_shows_as_typed() {
+    i_slint_backend_testing::init_no_event_loop();
+    // Markdown would make the text after the open fence code, which the
+    // HTML's escaping skips, but Discord's client shows it as text.
+    let body = "```\n# Title\n<font color=\"#ff0000\">red</font>";
+    let row = message_row_plain(&formatted(body));
+    let last = row.blocks.iter().last().unwrap();
+    assert_eq!(
+        i_slint_core::yapfast_selection::plain(&last.text),
+        "<font color=\"#ff0000\">red</font>"
+    );
+}
+
+#[test]
+fn a_mention_in_a_quote_still_links() {
+    i_slint_backend_testing::init_no_event_loop();
+    let mut message = formatted("# Hi\n> and @Bob");
+    let plain = message_row_plain(&message);
+    message.mentions = vec![yapfast_core::mention::Mentioned {
+        text: "@Bob".into(),
+        target: yapfast_core::mention::Target::User("2".into()),
+        color: None,
+        at: vec![message.body.find('@').unwrap()],
+    }];
+    let mentioned = message_row_plain(&message);
+    let quote = |row: &MessageRow| row.blocks.row_data(1).unwrap().text;
+    assert!(quote(&plain) != quote(&mentioned));
+    assert_eq!(
+        i_slint_core::yapfast_selection::plain(&quote(&mentioned)),
+        "and @Bob"
+    );
+}
+
+#[test]
+fn spoilers_count_on_across_blocks() {
+    i_slint_backend_testing::init_no_event_loop();
+    let message = ChatMessage {
+        spoilers: true,
+        ..formatted("||a||\n# T ||b||")
+    };
+    let row = |revealed: &[&str]| {
+        let revealed = revealed.iter().map(|item| item.to_string()).collect();
+        let row = message_row(&message, &revealed);
+        let blocks: Vec<_> = row.blocks.iter().map(|block| block.text).collect();
+        blocks
+    };
+    let hidden = row(&[]);
+    let second = row(&["d:1/1"]);
+    assert!(hidden[0] == second[0], "the first is still hidden");
+    assert!(hidden[1] != second[1], "the heading's is the second");
 }

@@ -56,7 +56,11 @@ CHARACTERS.update({character.upper(): (code, True) for character, code in KEYS.i
 CHARACTERS.update({' ': (57, False), '-': (12, False), '=': (13, False), ';': (39, False),
                    "'": (40, False), ',': (51, False), '.': (52, False), '/': (53, False),
                    '!': (2, True), '@': (3, True), '#': (4, True), '_': (12, True),
-                   ':': (39, True), '?': (53, True), '(': (10, True), ')': (11, True)})
+                   ':': (39, True), '?': (53, True), '(': (10, True), ')': (11, True),
+                   '`': (41, False), '~': (41, True), '[': (26, False), ']': (27, False),
+                   '{': (26, True), '}': (27, True), '\\': (43, False), '|': (43, True),
+                   '"': (40, True), '<': (51, True), '>': (52, True), '$': (5, True),
+                   '%': (6, True), '^': (7, True), '&': (8, True), '*': (9, True), '+': (13, True)})
 
 fake = None
 # Yapfast reads commands for its window from this file; see `test_control` in src/ui.rs.

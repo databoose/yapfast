@@ -2,6 +2,7 @@
 //! how they group by day and author.
 
 use super::*;
+use yapfast_core::blocks::{Block, Kind};
 
 /// Links in a notice: to its author, by sender, to the message it tells of,
 /// by item, and to the open channel's pinned messages. Unlike a mention's,
@@ -213,11 +214,41 @@ fn styled(body: &str) -> slint::StyledText {
 /// [`styled`], or `typed` as plain text when Slint rejects the Markdown. A
 /// link showing other text than where it goes asks before it opens.
 fn styled_or(body: &str, typed: &str) -> slint::StyledText {
-    let body = keep_blank_lines(body);
+    let body = no_rules(body);
+    let body = keep_blank_lines(&body);
     slint::StyledText::from_markdown(&links::linkify(&links::mark_masked(&body)))
         .ok()
         .or_else(|| plain_with_links(typed))
         .unwrap_or_else(|| slint::StyledText::from_plain_text(typed))
+}
+
+/// `text` with its lines of nothing but `-`, `=`, `*` or `_` escaped, so they
+/// show as typed, as in Discord's client: Markdown would make them rules,
+/// or headings of the line above, which Slint rejects.
+fn no_rules(text: &str) -> std::borrow::Cow<'_, str> {
+    let rule = |line: &str| {
+        let marks = line.trim();
+        let indent = line.len() - line.trim_start().len();
+        indent < 4
+            && marks.chars().next().is_some_and(|first| {
+                "-=*_".contains(first) && marks.chars().all(|c| c == first || c == ' ')
+            })
+    };
+    if !text.split('\n').any(rule) {
+        return text.into();
+    }
+    text.split('\n')
+        .map(|line| {
+            if rule(line) {
+                let indent = line.len() - line.trim_start().len();
+                format!("{}\\{}", &line[..indent], &line[indent..])
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .into()
 }
 
 /// `text` with each blank line between its lines holding a no-break space.
@@ -425,11 +456,19 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         String::new()
     };
     let jumbo = message.formatted && custom_emoji::only_emoji(&linked);
-    let styled = if let Some(notice) = &message.notice {
+    // Headings, quotes and code each show apart; text alone shows as one.
+    let blocks = if message.formatted && message.notice.is_none() {
+        body_blocks(message, revealed)
+    } else {
+        None
+    };
+    let styled = if blocks.is_some() {
+        slint::StyledText::default()
+    } else if let Some(notice) = &message.notice {
         notice_text(message, notice, &message.time)
     } else if message.formatted {
         if message.spoilers {
-            styled(&spoiler::mark(&linked, &message.item, |index| {
+            styled(&spoiler::mark(&linked, &message.item, 0, |index| {
                 revealed.contains(&format!("{}/{index}", message.item))
             }))
         } else {
@@ -658,6 +697,9 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
         files: ModelRc::new(VecModel::from(files(Placement::Message))),
         embeds: ModelRc::new(VecModel::from(embeds)),
         cards: ModelRc::new(VecModel::from(cards)),
+        blocks: blocks.map_or_else(ModelRc::default, |blocks| {
+            ModelRc::new(VecModel::from(blocks))
+        }),
         hidden_card: SharedString::default(),
         delivery: delivery.into(),
         delivery_failed: message.delivery == Delivery::Failed,
@@ -838,50 +880,129 @@ fn card_button(
     }
 }
 
-/// Discord Markdown as runs of lines at one size: headings (`#` to `###`)
-/// and subtext (`-#`) apart from the rest, each without its marker, a
-/// heading in bold. Lines in fenced code stay as they are.
+/// Discord Markdown in the blocks Discord's client lays out, as a card
+/// shows them; text alone is one block.
 pub(super) fn text_blocks(text: &str) -> Vec<TextBlock> {
-    let mut blocks: Vec<(i32, String)> = Vec::new();
-    let mut fenced = false;
-    for line in text.split('\n') {
-        let (level, rest) = if fenced {
-            (0, line)
-        } else if let Some(rest) = line.strip_prefix("### ") {
-            (3, rest)
-        } else if let Some(rest) = line.strip_prefix("## ") {
-            (2, rest)
-        } else if let Some(rest) = line.strip_prefix("# ") {
-            (1, rest)
-        } else if let Some(rest) = line.strip_prefix("-# ") {
-            (4, rest)
-        } else {
-            (0, line)
-        };
-        if line.trim_start().starts_with("```") {
-            fenced = !fenced;
-        }
-        // Each heading is a block of its own; other lines run together.
-        match blocks.last_mut() {
-            Some((last, lines)) if *last == level && matches!(level, 0 | 4) => {
-                lines.push('\n');
-                lines.push_str(rest);
-            }
-            _ => blocks.push((level, rest.to_owned())),
-        }
+    if text.trim().is_empty() {
+        return Vec::new();
     }
-    blocks
-        .into_iter()
-        .filter(|(_, text)| !text.trim().is_empty())
-        .map(|(level, text)| TextBlock {
-            text: if (1..=3).contains(&level) {
-                markdown(&format!("**{}**", text.trim()))
-            } else {
-                markdown(text.trim_matches('\n'))
+    blocks_of(text, |_, text| links::escape_html(text).into_owned()).unwrap_or_else(|| {
+        vec![TextBlock {
+            text: markdown(text.trim_matches('\n')),
+            ..Default::default()
+        }]
+    })
+}
+
+/// A message's body in the blocks Discord's client lays out, with its
+/// mentions, custom emoji and spoilers; `None` when it's text alone.
+fn body_blocks(message: &ChatMessage, revealed: &HashSet<String>) -> Option<Vec<TextBlock>> {
+    let mut spoilers = 0;
+    blocks_of(&message.body, |block, text| {
+        let mentions: Vec<_> = message
+            .mentions
+            .iter()
+            .filter_map(|mention| {
+                let at: Vec<usize> = mention
+                    .at
+                    .iter()
+                    .filter_map(|&at| block.offset(at, mention.text.len()))
+                    .collect();
+                (!at.is_empty()).then(|| yapfast_core::mention::Mentioned {
+                    at,
+                    ..mention.clone()
+                })
+            })
+            .collect();
+        let linked = custom_emoji::text(&with_mentions(text, &mentions), &message.emoji);
+        if !message.spoilers {
+            return linked;
+        }
+        // Spoilers count on through the message, as clicking one reveals it.
+        let marked = spoiler::mark(&linked, &message.item, spoilers, |index| {
+            revealed.contains(&format!("{}/{index}", message.item))
+        });
+        spoilers += spoiler::count(&linked);
+        marked
+    })
+}
+
+/// `markdown`'s blocks, each but code made Markdown with its HTML escaped
+/// by `prepare`, and spaced as Discord's client spaces them; `None` when
+/// it's text alone.
+fn blocks_of(
+    markdown: &str,
+    mut prepare: impl FnMut(&Block, &str) -> String,
+) -> Option<Vec<TextBlock>> {
+    let blocks = yapfast_core::blocks::split(markdown)?;
+    // The space above a block and below it, which the next block's takes
+    // in, as margins between them do; a first heading's is less.
+    let above = |kind: Kind, first: bool| match kind {
+        Kind::Heading(3) if first => 4.0,
+        Kind::Heading(_) if first => 8.0,
+        Kind::Heading(_) => 16.0,
+        Kind::Code => 6.0,
+        Kind::Text | Kind::Subtext => 0.0,
+    };
+    let below = |kind: Kind| {
+        if matches!(kind, Kind::Heading(_)) {
+            8.0
+        } else {
+            0.0
+        }
+    };
+    // A quote has 4px above and below its bar.
+    const QUOTE: f32 = 4.0;
+    let mut shown = Vec::with_capacity(blocks.len());
+    for (index, block) in blocks.iter().enumerate() {
+        let before = index.checked_sub(1).map(|index| &blocks[index]);
+        let typed = block.text(markdown);
+        let text = match block.kind {
+            Kind::Code => slint::StyledText::from_plain_text(&typed),
+            Kind::Heading(_) => styled_or(&format!("**{}**", prepare(block, &typed)), &typed),
+            Kind::Subtext => styled_or(&prepare(block, &typed), &typed),
+            // Discord's client shows every line, blank or not.
+            Kind::Text => {
+                let prepared = prepare(block, &typed);
+                let lines: Vec<&str> = prepared
+                    .split('\n')
+                    .map(|line| {
+                        if line.trim().is_empty() {
+                            "\u{a0}"
+                        } else {
+                            line
+                        }
+                    })
+                    .collect();
+                styled_or(&lines.join("\n"), &typed)
+            }
+        };
+        let starts_quote = block.quoted && !before.is_some_and(|before| before.quoted);
+        let top = above(block.kind, before.is_none() || starts_quote);
+        let (margin, padding) = match before {
+            None if block.quoted => (QUOTE, top),
+            None => (top, 0.0),
+            Some(_) if starts_quote => (QUOTE.max(below(blocks[index - 1].kind)), top),
+            Some(before) if block.quoted => (0.0, top.max(below(before.kind))),
+            Some(before) if before.quoted => (QUOTE.max(top), 0.0),
+            Some(before) => (top.max(below(before.kind)), 0.0),
+        };
+        shown.push(TextBlock {
+            text,
+            level: match block.kind {
+                Kind::Text => 0,
+                Kind::Heading(level) => level.into(),
+                Kind::Subtext => 4,
+                Kind::Code => 5,
             },
-            level,
-        })
-        .collect()
+            quoted: block.quoted,
+            quote_start: starts_quote,
+            quote_end: block.quoted && !blocks.get(index + 1).is_some_and(|next| next.quoted),
+            margin,
+            padding,
+        });
+    }
+    Some(shown)
 }
 
 /// What a thread's link says after its name: how many messages it has,

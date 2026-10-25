@@ -83,7 +83,8 @@ The core of it is `yapfast_selection.rs`. The other changes are marked `Yapfast:
 - `textlayout/sharedparley.rs`
 - `textlayout/sharedparley/shaping.rs`, where a link in a colour shows in it,
   without an underline, on a pill only when it's a mention, to `yapfast:user/`,
-  `yapfast:role/` or `yapfast:everyone`
+  `yapfast:role/` or `yapfast:everyone`, and where the font family `monospace`
+  is the system's monospace font, as inline code's, for fenced code
 - `textlayout/sharedparley/draw.rs`, which draws mention pills under their
   text and opaque covers over hidden Discord spoilers, links to `yapfast:spoiler/`
 - `graphics/image.rs`, where no image equals no image; upstream they differ,

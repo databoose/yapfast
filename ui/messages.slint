@@ -373,9 +373,17 @@ export struct EmbedCard {
 /// the app, which Yapfast can't yet.
 export enum CardButtonStyle { primary, secondary, success, danger, link }
 export struct CardButton { label: string, style: CardButtonStyle, url: string, enabled: bool }
-/// A run of a card's text at one size: Markdown (0), a heading (1 to 3),
-/// or subtext (4). Slint's Markdown draws neither headings nor subtext.
-export struct TextBlock { text: styled-text, level: int }
+/// A block of a message's or card's text, as Discord's client lays them
+/// out: Markdown (0), a heading (1 to 3), subtext (4) or fenced code (5).
+/// Slint's Markdown draws none but the first. A `quoted` block is behind a
+/// quote's bar, whose ends are rounded at the blocks that start and end it.
+/// `margin` is the space above it, outside any bar, and `padding` the space
+/// above it inside one.
+export struct TextBlock {
+    text: styled-text, level: int,
+    quoted: bool, quote-start: bool, quote-end: bool,
+    margin: length, padding: length,
+}
 export enum CardRowKind { text, media, separator, buttons, select, unknown }
 /// A row of a Discord app's card, of one `kind`, with the fields it uses:
 /// text and what a section shows beside it; pictures in a gallery and file
@@ -598,6 +606,9 @@ export struct MessageRow {
     embeds: [EmbedCard],
     /// A Discord app's buttons and menus, or a message made of components.
     cards: [ComponentCard],
+    /// The body in blocks, when it has headings, subtext, quotes or code;
+    /// otherwise empty, and the body is `styled`.
+    blocks: [TextBlock],
     /// Says a card is hidden, for a message that is only one, with link previews off.
     hidden-card: string,
     delivery: string, delivery-failed: bool, can-retry: bool, can-cancel: bool,
@@ -1122,23 +1133,63 @@ export component EmbedView inherits HorizontalLayout {
     Rectangle { horizontal-stretch: 1; }
 }
 
-// Text of a Discord app's card, its headings and subtext at their sizes.
-// Inside a container, its text and subtext are smaller, as in Discord's
-// client; headings are not.
-component CardText inherits VerticalLayout {
+// A block of text: a heading or subtext at its size, or fenced code in its
+// box, behind a quote's bar when quoted. Inside a card's container, text and
+// subtext are smaller, as in Discord's client; headings are not.
+component TextBlockView inherits VerticalLayout {
+    in property <TextBlock> block;
+    in property <length> font-size;
+    in property <bool> framed;
+    in property <color> color: Theme.text;
+    callback open-link(string);
+    property <length> code-size: root.font-size * 0.875;
+    padding-top: root.block.margin;
+    HorizontalLayout {
+        if root.block.quoted: Rectangle {
+            width: 4px; background: Theme.reply-spine;
+            border-top-left-radius: root.block.quote-start ? 2px : 0px;
+            border-top-right-radius: self.border-top-left-radius;
+            border-bottom-left-radius: root.block.quote-end ? 2px : 0px;
+            border-bottom-right-radius: self.border-bottom-left-radius;
+        }
+        VerticalLayout {
+            padding-top: root.block.padding;
+            padding-left: root.block.quoted ? 12px : 0px;
+            if root.block.level == 5: Rectangle {
+                background: Theme.panel; border-radius: 4px; border-width: 1px; border-color: Theme.line;
+                VerticalLayout {
+                    padding: root.code-size / 2;
+                    StyledText {
+                        min-width: 0px;
+                        text: root.block.text; link-color: Theme.link; default-color: Theme.text;
+                        default-font-family: "monospace"; default-font-size: root.code-size;
+                    }
+                }
+            }
+            if root.block.level != 5: StyledText {
+                min-width: 0px;
+                text: root.block.text; link-color: Theme.link;
+                // A quote's text is dimmer, but not its headings.
+                default-color: root.block.level == 4 || (root.block.quoted && root.block.level == 0) ? Theme.secondary : root.color;
+                default-font-size: root.block.level == 1 ? root.font-size * 1.5 : root.block.level == 2 ? root.font-size * 1.25
+                    : root.block.level == 3 ? root.font-size
+                    : root.font-size * (root.block.level == 4 ? (root.framed ? 0.75 : 0.875) : (root.framed ? 0.875 : 1));
+                link-clicked(link) => { root.open-link(link); }
+            }
+        }
+    }
+}
+
+// Text in blocks, as a card's or a message's body.
+component TextBlocks inherits VerticalLayout {
     in property <[TextBlock]> blocks;
     in property <length> font-size;
     in property <bool> framed;
+    in property <color> color: Theme.text;
     callback open-link(string);
-    spacing: 4px;
-    for block in root.blocks: StyledText {
-        min-width: 0px;
-        text: block.text; link-color: Theme.link;
-        default-color: block.level == 4 ? Theme.secondary : Theme.text;
-        default-font-size: block.level == 1 ? root.font-size * 1.5 : block.level == 2 ? root.font-size * 1.25
-            : block.level == 3 ? root.font-size
-            : root.font-size * (block.level == 4 ? (root.framed ? 0.75 : 0.875) : (root.framed ? 0.875 : 1));
-        link-clicked(link) => { root.open-link(link); }
+    for block in root.blocks: TextBlockView {
+        block: block; font-size: root.font-size; framed: root.framed; color: root.color;
+        open-link(link) => { root.open-link(link); }
     }
 }
 
@@ -1188,7 +1239,7 @@ export component CardView inherits HorizontalLayout {
             for row in root.card.rows: VerticalLayout {
                 if row.kind == CardRowKind.text: HorizontalLayout {
                     spacing: 12px;
-                    CardText {
+                    TextBlocks {
                         horizontal-stretch: 1; blocks: row.blocks; font-size: root.message-font-size; framed: root.card.framed;
                         alignment: row.has-button ? LayoutAlignment.center : LayoutAlignment.start;
                         open-link(link) => { root.open-link(link); }
@@ -1710,7 +1761,7 @@ export component MessageContent inherits VerticalLayout {
                 Image { source: @image-url("icons/forward.svg"); width: 16px; image-fit: contain; colorize: Theme.muted; }
                 Text { text: "Forwarded"; color: Theme.muted; font-size: 14px; font-italic: true; vertical-alignment: center; }
             }
-            if message.body != "": StyledText {
+            if message.body != "" && message.blocks.length == 0: StyledText {
                 // An overlong word breaks, as in Discord's client, rather than widening the row.
                 min-width: 0px;
                 text: message.styled; link-color: Theme.link;
@@ -1720,6 +1771,14 @@ export component MessageContent inherits VerticalLayout {
                 // A mention's card opens beside the pointer.
                 link-clicked(link) => { root.link-clicked(link); }
                 accessible-role: text; accessible-label: "Message from " + message.author + ": " + message.body;
+            }
+            if message.blocks.length > 0: Rectangle {
+                accessible-role: text; accessible-label: "Message from " + message.author + ": " + message.body;
+                TextBlocks {
+                    blocks: message.blocks; font-size: root.message-font-size;
+                    color: message.deleted || message.delivery != "" ? Theme.muted : Theme.text;
+                    open-link(link) => { root.link-clicked(link); }
+                }
             }
             if message.edited && !message.deleted: Text { text: "(edited)"; color: Theme.muted; font-size: 12px; }
             // Fixed-size children sit beside a spacer, so they do not cap the column's width.

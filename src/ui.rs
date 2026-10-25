@@ -614,7 +614,9 @@ fn message_text(row: &MessageRow) -> String {
             plain(&row.time_styled)
         ));
     }
-    if !row.body.is_empty() {
+    if row.blocks.row_count() > 0 {
+        lines.extend(row.blocks.iter().map(|block| plain(&block.text)));
+    } else if !row.body.is_empty() {
         lines.push(plain(&row.styled));
     }
     let pictures = |count: usize| std::iter::repeat_n("[Picture]".to_string(), count);

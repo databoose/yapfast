@@ -90,9 +90,15 @@ impl LayoutWithoutLineBreaksBuilder {
             let font_families: &[parley::style::FontFamilyName] = if let Some(family) =
                 &font_request.family
             {
-                let mut iter =
-                    core::iter::once(parley::style::FontFamilyName::named(family.as_str()))
-                        .chain(fallback_family_iter);
+                // Yapfast: `monospace` is the system's monospace font, as inline code's, for
+                // fenced code.
+                let named = match family.as_str() {
+                    "monospace" => parley::style::FontFamilyName::Generic(
+                        parley::style::GenericFamily::Monospace,
+                    ),
+                    family => parley::style::FontFamilyName::named(family),
+                };
+                let mut iter = core::iter::once(named).chain(fallback_family_iter);
                 &core::array::from_fn::<
                     _,
                     { sharedfontique::FALLBACK_FAMILIES.as_slice().len() + 1 },

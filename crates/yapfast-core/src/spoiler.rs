@@ -21,11 +21,12 @@ pub fn target(link: &str) -> Option<(&str, usize)> {
 }
 
 /// Discord Markdown with its spoilers hidden as links, but those `revealed` says
-/// were clicked, which show as written.
-pub fn mark(markdown: &str, item: &str, revealed: impl Fn(usize) -> bool) -> String {
+/// were clicked, which show as written. They count from `first`, for a part of
+/// a message after others with spoilers of their own.
+pub fn mark(markdown: &str, item: &str, first: usize, revealed: impl Fn(usize) -> bool) -> String {
     let mut out = String::with_capacity(markdown.len());
     let mut last = 0;
-    for (index, span) in spans(markdown).into_iter().enumerate() {
+    for (index, span) in (first..).zip(spans(markdown)) {
         out.push_str(&markdown[last..span.start]);
         let inner = &markdown[span.start + 2..span.end - 2];
         if revealed(index) {
@@ -62,9 +63,14 @@ pub fn any(markdown: &str) -> bool {
     !spans(markdown).is_empty()
 }
 
+/// How many spoilers `markdown` has.
+pub fn count(markdown: &str) -> usize {
+    spans(markdown).len()
+}
+
 /// The byte ranges of the spoilers, each with its `||` pair. Pairs inside code
 /// don't count, and neither does an empty pair or one across a paragraph break.
-fn spans(markdown: &str) -> Vec<Range<usize>> {
+pub(crate) fn spans(markdown: &str) -> Vec<Range<usize>> {
     let bytes = markdown.as_bytes();
     let mut bars = Vec::new();
     let mut index = 0;
@@ -108,7 +114,7 @@ fn spans(markdown: &str) -> Vec<Range<usize>> {
 }
 
 /// Where a run of exactly `fence` backticks starts in `text`.
-fn find_run(text: &str, fence: &str) -> Option<usize> {
+pub(crate) fn find_run(text: &str, fence: &str) -> Option<usize> {
     let bytes = text.as_bytes();
     let mut index = 0;
     while let Some(found) = text[index..].find(fence) {
@@ -162,11 +168,11 @@ mod tests {
     fn hides_spoilers_as_links_until_revealed() {
         let body = "The end: ||Bruce **dies**|| and ||<font color=\"#7cc4ff\">[@Ann](<yapfast:user/2>)</font> lives||.";
         assert_eq!(
-            mark(body, "d:5", |_| false),
+            mark(body, "d:5", 0, |_| false),
             "The end: [Bruce dies](<yapfast:spoiler/d:5/0>) and [\\@Ann lives](<yapfast:spoiler/d:5/1>)."
         );
         assert_eq!(
-            mark(body, "d:5", |index| index == 0),
+            mark(body, "d:5", 0, |index| index == 0),
             "The end: Bruce **dies** and [\\@Ann lives](<yapfast:spoiler/d:5/1>)."
         );
         assert_eq!(target("yapfast:spoiler/d:5/1"), Some(("d:5", 1)));
@@ -185,10 +191,10 @@ mod tests {
             r"\||not\||",
         ] {
             assert!(!any(text), "{text}");
-            assert_eq!(mark(text, "d:1", |_| false), text);
+            assert_eq!(mark(text, "d:1", 0, |_| false), text);
         }
         assert_eq!(
-            mark("`||` ||x|| ``a`b``", "d:1", |_| false),
+            mark("`||` ||x|| ``a`b``", "d:1", 0, |_| false),
             "`||` [x](<yapfast:spoiler/d:1/0>) ``a`b``"
         );
     }
