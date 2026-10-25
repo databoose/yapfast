@@ -53,7 +53,7 @@ type DecodeFn = unsafe extern "C" fn(*mut Raw, *const c_uchar, usize, *mut RawPi
 type FreeFn = unsafe extern "C" fn(*mut Raw);
 
 /// The codecs a viewer tells Discord it decodes, most wanted first: H265
-/// only where FFmpeg's HEVC decoder is built in, which Windows isn't yet.
+/// only where FFmpeg's HEVC decoder is built in, on Linux and Windows.
 pub const DECODES: &[Codec] = if cfg!(hevcdec) {
     &[Codec::H265, Codec::H264, Codec::Vp8]
 } else {

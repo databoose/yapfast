@@ -66,15 +66,17 @@ fn main() {
         ffmpeg
             .file("native/hwenc.c")
             .file("native/hevc.c")
-            .warnings(true)
-            .flag("-std=c17");
+            .warnings(true);
         let folders = std::env::var_os("DEP_FFMPEG_INCLUDE").expect("ffmpeg-src's headers");
         ffmpeg.includes(std::env::split_paths(&folders));
         let rename = std::env::var("DEP_FFMPEG_RENAME").expect("ffmpeg-src's renames");
-        ffmpeg
-            .flag("-include")
-            .flag(&rename)
-            .compile("yapfast_hwenc");
+        // clang-cl, for Windows, spells the flags as MSVC does.
+        if ffmpeg.get_compiler().is_like_msvc() {
+            ffmpeg.flag("/std:c17").flag(format!("/FI{rename}"));
+        } else {
+            ffmpeg.flag("-std=c17").flag("-include").flag(&rename);
+        }
+        ffmpeg.compile("yapfast_hwenc");
         println!("cargo:rustc-cfg=hwenc");
         println!("cargo:rustc-cfg=hevcdec");
     }

@@ -845,7 +845,7 @@ too, except those carrying keys.
 Watching works the same way in reverse. Clicking someone's LIVE badge, or
 their tile in the call, sends op 20 and starts a worker with a watch job. The
 worker connects as a viewer, offers H265, H264 and VP8 for decoding only
-(H265 only where it's built, which Windows isn't yet), and asks
+(H265 only where it's built, on Linux and Windows), and asks
 for video with op 15. It learns the streamer's SSRCs and codec from op 12 and
 op 14, then puts RTP packets back in order (`rtp::Reorder`) and together
 into frames (`rtp::Assembler`: VP8 descriptors, H264 single units, STAP-A
@@ -923,7 +923,8 @@ NVENC's 72, and Wikipedia at 3.5 Mbit/s 94 and 98 against its 98.
 With "Encode streams with the GPU" in Settings, Advanced, on unless turned
 off, a stream's H264 goes to the graphics card's encoder where it has one:
 `native/hwenc.c` opens FFmpeg's NVENC encoder, then on Linux its VA-API one
-(AMD and Intel), and x264 when neither opens. The setting lives in
+(AMD and Intel), and x264 when neither opens. Windows has NVENC only so far,
+so AMD and Intel graphics encode with x264 there. The setting lives in
 `layout.json` and reaches the worker with each `Job::Share`; the camera stays
 on x264. When the GPU's encoder fails during a stream, x264 takes over from
 that frame with a keyframe. The worker logs which encoder each stream got
@@ -965,9 +966,8 @@ switches the stream with op 14; Yapfast then opens the other encoder and
 starts it with a keyframe, dropping frames still in the old codec. When H265
 fails mid-stream, Yapfast withdraws it with its own op 14 `codecs`, marking
 it not to encode, and goes on in H264. Another Yapfast watching keeps the
-stream in H265 where it decodes H265, which Windows doesn't yet, so a
-Windows viewer switches it to H264. Which of Discord's own clients decode
-H265 isn't checked yet. On
+stream in H265. Which of Discord's own clients decode H265 isn't checked
+yet. On
 the same minute, through FFmpeg's command line with these settings, NVENC's
 H265 scored 92.9 at 2.5 Mbit/s against H264's 88.3, with a worst 1% of 59.2
 against 43.2, and at 1.5 Mbit/s 87.6, about H264 at 2.5.

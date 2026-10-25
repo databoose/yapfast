@@ -916,6 +916,7 @@
 #define ff_fdct_ifast yf_ff_fdct_ifast
 #define ff_fdct_ifast248 yf_ff_fdct_ifast248
 #define ff_fetch_timestamp yf_ff_fetch_timestamp
+#define ff_fopen_utf8 yf_ff_fopen_utf8
 #define ff_frame_new_side_data yf_ff_frame_new_side_data
 #define ff_frame_new_side_data_from_buf yf_ff_frame_new_side_data_from_buf
 #define ff_frame_new_side_data_from_buf_ext yf_ff_frame_new_side_data_from_buf_ext
@@ -1092,6 +1093,7 @@
 #define ff_nvenc_hw_configs yf_ff_nvenc_hw_configs
 #define ff_nvenc_pix_fmts yf_ff_nvenc_pix_fmts
 #define ff_nvenc_receive_packet yf_ff_nvenc_receive_packet
+#define ff_open yf_ff_open
 #define ff_parse_a53_cc yf_ff_parse_a53_cc
 #define ff_parse_close yf_ff_parse_close
 #define ff_parse_itu_t_t35_to_dynamic_hdr_vivid yf_ff_parse_itu_t_t35_to_dynamic_hdr_vivid
@@ -1142,6 +1144,7 @@
 #define ff_tadd_shorts_metadata yf_ff_tadd_shorts_metadata
 #define ff_tadd_string_metadata yf_ff_tadd_string_metadata
 #define ff_tdecode_header yf_ff_tdecode_header
+#define ff_tempfile yf_ff_tempfile
 #define ff_tget yf_ff_tget
 #define ff_tget_double yf_ff_tget_double
 #define ff_tget_long yf_ff_tget_long

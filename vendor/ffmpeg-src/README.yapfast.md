@@ -1,7 +1,8 @@
 # FFmpeg for Yapfast
 
-Go Live's hardware encoders: FFmpeg 9.0.2's NVENC encoders for NVIDIA, and on
-Linux its VA-API ones for AMD and Intel, for H264, HEVC and AV1; and its HEVC
+Go Live's hardware encoders: FFmpeg 9.0.2's NVENC encoders for NVIDIA, on
+Linux and Windows, and on Linux its VA-API ones for AMD and Intel, for H264,
+HEVC and AV1; and its HEVC
 decoder, for watching H265 streams, which libwebrtc's FFmpeg can't decode.
 Nothing else of FFmpeg is built: no other decoders, formats, filters or
 assembly. `crates/yapfast-core/native/hwenc.c` drives the encoders and
@@ -10,15 +11,22 @@ assembly. `crates/yapfast-core/native/hwenc.c` drives the encoders and
 `update.sh` makes everything here except `src/` and `patches/`. It downloads
 FFmpeg's release and nv-codec-headers 12.0.16.1 and checks their SHA-256,
 takes libva's headers from the development shell's nixpkgs, configures and
-builds FFmpeg for each target, and keeps:
+builds FFmpeg for each target, and keeps what follows. Windows is built
+with clang-cl against the MSVC runtime and Windows SDK in cargo-xwin's
+cache, which `scripts/build-windows` fills the first time; configure finds
+them through `INCLUDE` and `LIB`, so `config.h` names no folder of the
+machine that ran it.
 
 - `ffmpeg/`: the FFmpeg files that build read, unchanged but for `patches/`,
   under FFmpeg's LGPL-2.1-or-later (`ffmpeg/COPYING.LGPLv2.1`).
 - `include/`: nv-codec-headers' `ffnvcodec/`, which loads NVIDIA's driver
   at run time, and libva's `va/`, both MIT (`include/NOTICE`).
-- `gen/<os>-<arch>/`: what configure generated, and the files to compile.
+- `gen/<os>-<arch>/`: what configure generated, the files to compile, and
+  configure's defines, include folders and system libraries, which
+  `build.rs` uses as configure's makefiles would.
 - `gen/rename.h`: a `#define` giving each of FFmpeg's symbols, and the libva
-  functions it calls, a `yf_` prefix.
+  functions it calls, a `yf_` prefix. Not clang-cl's constants or the UCRT's
+  inline stdio functions, which every Windows library defines alike.
 
 `build.rs` compiles those files with `gen/rename.h` included first. The
 prefix matters: libwebrtc's archive holds Chromium's own FFmpeg, built to
