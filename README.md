@@ -53,8 +53,8 @@ renderer too, behind **Render with the GPU** in Settings, but it takes more
 memory, and drawing on the processor already keeps a 180 Hz monitor fed, so the
 processor is the default. Next to Vesktop (Discord's own app with Vencord on
 top) on the same PC, Yapfast took 86 to 96% less memory in everything I tried;
-[here's the table](docs/measurements/README.md). Your numbers will depend on
-how many servers and DMs you have.
+[the table's below](#measured-against-vesktop). Your numbers will depend on how
+many servers and DMs you have.
 
 It's a beta, and it's what I use for Discord every day, so it had better
 be usable. Still, there are rough edges; when you hit one,
@@ -63,6 +63,27 @@ come hang out on the [Yapfast Discord server](https://yapfast.com/discord-invite
 and tell me there. The connection drops every now and then (no more often than
 Vesktop's or the official app's does for me), and the noise suppression could
 be better. Know an open source one that does a better job? PLEASE tell me.
+
+## Measured against Vesktop
+
+| | Vesktop memory | Yapfast memory | Vesktop CPU | Yapfast CPU |
+| --- | --- | --- | --- | --- |
+| Idle | 724 MB | 30 MB (−96%) | 0.11% | 0.015% (−86%) |
+| Image-heavy channel | 706 MB | 41 MB (−94%) | 0.17% | 0.008% (−95%) |
+| In a call | 888 MB | 44 MB (−95%) | 0.46% | 0.33% (−28%) |
+| Sharing your screen¹ | 1,013 MB | 145 MB (−86%) | 2.15% | 2.9% (+35%) |
+
+Vesktop is basically Discord's own app: the same Discord web app, in the same
+Electron, with Vencord on top. So its numbers stand in for Discord's. CPU counts
+the whole processor as 100%.
+
+¹ Sharing a 1920×1080 monitor at 30 frames a second, while in the call.
+Yapfast uses more CPU here than Vesktop, as it converts and encodes each frame
+on the processor.
+
+Measured on 25 October 2026, both on the same PC. The machine, what "memory"
+counts and how each scenario ran are in
+[the measurements](docs/measurements/README.md).
 
 ## Features
 
