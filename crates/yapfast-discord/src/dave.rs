@@ -72,6 +72,7 @@ impl Dave {
         let codec = match codec {
             rtp::Codec::Vp8 => Codec::VP8,
             rtp::Codec::H264 => Codec::H264,
+            rtp::Codec::H265 => Codec::H265,
         };
         if self.version != 0
             && let Some(session) = self.session.as_mut()

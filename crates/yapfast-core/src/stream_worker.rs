@@ -27,6 +27,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use yapfast_discord::{
+    rtp::Codec,
     stream::StreamServer,
     stream_connection::{self, Link, StreamReceiver, StreamSender},
 };
@@ -498,7 +499,17 @@ impl Sink {
             self.preview_due = Some(Instant::now() + THUMBNAIL_EVERY);
         }
         if let Some(server) = self.server.take() {
-            let sender = StreamSender::start(server, width, height, self.fps)?;
+            // The GPU's H265 encoder, when it has one: Discord then chooses
+            // H265 while every viewer decodes it, and H264 otherwise.
+            let hevc = self
+                .hardware
+                .then(|| self.encoder(Codec::H265, width, height).ok())
+                .flatten();
+            let offers = match hevc {
+                Some(_) => vec![Codec::H265, stream_connection::SEND_CODEC],
+                None => vec![stream_connection::SEND_CODEC],
+            };
+            let sender = StreamSender::start(server, width, height, self.fps, offers)?;
             let sound = if self.sound {
                 stream_audio::Capture::start(sender.sound())
                     .inspect_err(|error| {
@@ -508,42 +519,33 @@ impl Sink {
             } else {
                 None
             };
-            let encoder = Encoder::new(
-                stream_connection::SEND_CODEC,
-                width,
-                height,
-                self.fps,
-                kbps(height, None),
-                self.effort,
-                self.hardware,
-            )?;
-            tracing::info!(
-                engine = encoder.engine(),
-                width,
-                height,
-                "encoding the stream"
-            );
+            let encoder = match hevc {
+                Some(encoder) => encoder,
+                None => self.encoder(stream_connection::SEND_CODEC, width, height)?,
+            };
             self.video = Some(Video {
                 sender,
                 encoder,
                 _sound: sound,
             });
         }
+        let Some(video) = self.video.as_ref() else {
+            return Ok(());
+        };
+        // Discord's choice of codec changes as viewers come and go.
+        let codec = video.sender.codec().unwrap_or(video.encoder.codec());
+        let resized = video.encoder.size() != (width, height);
+        if resized || codec != video.encoder.codec() {
+            let encoder = self.encoder(codec, width, height)?;
+            let video = self.video.as_mut().expect("checked above");
+            video.encoder = encoder;
+            if resized {
+                video.sender.resize(width, height);
+            }
+        }
         let Some(video) = self.video.as_mut() else {
             return Ok(());
         };
-        if video.encoder.size() != (width, height) {
-            video.encoder = Encoder::new(
-                stream_connection::SEND_CODEC,
-                width,
-                height,
-                self.fps,
-                kbps(height, None),
-                self.effort,
-                self.hardware,
-            )?;
-            video.sender.resize(width, height);
-        }
         let wanted = kbps(height, video.sender.bandwidth_estimate());
         let aimed = video.encoder.bitrate();
         // Not on every wobble, which would churn the rate control.
@@ -557,14 +559,50 @@ impl Sink {
         }
         let pts = self.started.elapsed().as_micros() as u64 * encode::CLOCK / 1_000_000;
         let keyframe = video.sender.take_keyframe_request();
-        if let Some(frame) = video.encoder.encode_i420(picture, pts, keyframe)? {
-            video.sender.send(stream_connection::Frame {
+        let codec = video.encoder.codec();
+        match video.encoder.encode_i420(picture, pts, keyframe) {
+            Ok(Some(frame)) => video.sender.send(stream_connection::Frame {
                 data: frame.data.to_vec(),
+                codec,
                 timestamp: pts as u32,
                 keyframe: frame.keyframe,
-            });
+            }),
+            Ok(None) => {}
+            // Only the GPU encodes H265: Discord chooses H264 instead, which
+            // the next frame encodes.
+            Err(error) if codec == Codec::H265 => {
+                tracing::warn!(
+                    error = format!("{error:#}"),
+                    "the GPU's H265 encoder failed"
+                );
+                video.sender.withdraw(Codec::H265);
+            }
+            Err(error) => return Err(error),
         }
         Ok(())
+    }
+
+    /// An encoder for the stream in `codec`, at the bitrate Discord's cap
+    /// for its height allows.
+    fn encoder(&self, codec: Codec, width: u32, height: u32) -> Result<Encoder> {
+        let kbps = kbps(height, None);
+        let encoder = Encoder::new(
+            codec,
+            width,
+            height,
+            self.fps,
+            kbps,
+            self.effort,
+            self.hardware,
+        )?;
+        tracing::info!(
+            engine = encoder.engine(),
+            ?codec,
+            width,
+            height,
+            "encoding the stream"
+        );
+        Ok(encoder)
     }
 
     /// Takes Yapfast's controls, reports the stream starting, and fails once

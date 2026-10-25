@@ -178,7 +178,7 @@ type Opened = (*mut Raw, Encode, SetBitrate, Free, String);
 impl Encoder {
     /// An encoder for `width` by `height` frames, which must be even. With
     /// `hardware`, H264 goes to the GPU's encoder where there is one, and to
-    /// x264 otherwise.
+    /// x264 otherwise. H265 has only the GPU's.
     pub fn new(
         codec: Codec,
         width: u32,
@@ -349,8 +349,8 @@ impl Encoder {
 
     /// Encodes three planes, each with its stride, into `out`: the encoded
     /// size and whether it's a keyframe, or None when the frame was skipped.
-    /// When a hardware encoder fails, x264 takes over from this frame, with
-    /// a keyframe.
+    /// When a hardware H264 encoder fails, x264 takes over from this frame,
+    /// with a keyframe; H265 has nothing to take over.
     fn encode_planes(
         &mut self,
         planes: [(&[u8], u32); 3],
@@ -358,7 +358,7 @@ impl Encoder {
         keyframe: bool,
     ) -> Result<Option<(usize, bool)>> {
         match self.encode_once(planes, pts, keyframe) {
-            Err(error) if self.hardware() => {
+            Err(error) if self.hardware() && self.codec != Codec::H265 => {
                 tracing::warn!(engine = self.engine, %error, "the GPU's encoder failed; encoding with x264");
                 let (codec, width, height, fps) = (self.codec, self.width, self.height, self.fps);
                 let opened = open_software(codec, width, height, fps, self.kbps, self.effort)?;
@@ -437,6 +437,7 @@ fn open_software(
             yapfast_h264_free,
             "x264".into(),
         ),
+        Codec::H265 => bail!("H265 encodes only on a GPU, and this one has no encoder for it"),
     };
     if opened.0.is_null() {
         bail!("could not start the {codec:?} encoder");
@@ -449,6 +450,7 @@ fn open_software(
 fn open_hardware(codec: Codec, width: u32, height: u32, fps: u32, kbps: u32) -> Option<Opened> {
     let number = match codec {
         Codec::H264 => 0,
+        Codec::H265 => 1,
         Codec::Vp8 => return None,
     };
     let mut report = [0u8; 512];
@@ -585,6 +587,36 @@ mod tests {
         for effort in [Effort::Light, Effort::High] {
             assert_eq!(check_h264(effort, (64, 36), false), "x264");
         }
+    }
+
+    /// H265 on the GPU, where it has an encoder for it: parameter sets and
+    /// an IDR first, a delta, then a forced IDR. Yapfast can't decode H265,
+    /// so this reads the units' types.
+    #[test]
+    fn encodes_h265_on_the_gpu() {
+        if Encoder::new(Codec::H265, 320, 180, 30, 500, Effort::Light, true).is_err() {
+            eprintln!("no GPU encoder for H265 here");
+            return;
+        }
+        assert!(Encoder::new(Codec::H265, 320, 180, 30, 500, Effort::Light, false).is_err());
+        let (frames, engine) = encode_four(Codec::H265, Effort::Light, (320, 180), true);
+        eprintln!("encoded with {engine}");
+        let types = |data| -> Vec<u8> {
+            yapfast_discord::rtp::nal_units(data)
+                .iter()
+                .map(|unit| (unit[0] >> 1) & 0x3f)
+                .collect()
+        };
+        let idr = |types: &[u8]| types.iter().any(|kind| matches!(kind, 19 | 20));
+        let first = types(&frames[0].1);
+        assert!(
+            first.starts_with(&[32, 33, 34]) && idr(&first),
+            "VPS, SPS, PPS, IDR: {first:?}"
+        );
+        assert!(!idr(&types(&frames[1].1)), "a delta frame");
+        assert!(idr(&types(&frames[2].1)), "the forced keyframe");
+        let keys: Vec<bool> = frames.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys[..3], [true, false, true]);
     }
 
     /// The GPU's encoder where this machine has one, x264 where it hasn't:

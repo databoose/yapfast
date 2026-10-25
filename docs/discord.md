@@ -737,13 +737,14 @@ there (`yapfast_discord::stream_connection`). The connection is a call's
 use: heartbeats acknowledge the last sequence number, and binary DAVE
 messages start with one. It identifies with the stream's RTC server and `video: true`,
 discovers its address, then uses `aead_aes256_gcm_rtpsize` transport
-encryption. Yapfast offers H264 only and announces its size with op 12, again
-whenever someone connects. Frames come from x264 (`vendor/x264-src`, built
+encryption. Yapfast offers H264, and H265 before it when the GPU encodes H265
+([Encoding on the GPU](#encoding-on-the-gpu)), and announces its size with
+op 12, again whenever someone connects. Frames come from x264 (`vendor/x264-src`, built
 from source) through `native/h264.c`, with a keyframe at least every 3 s and
 whenever RTCP asks for one; [Choosing the H264 encoder](#choosing-the-h264-encoder)
 says how it's set up and why. Yapfast also has VP8 (`native/vp8.c`, still built and tested); every Go Live
 sender known to work sends H264. H264 goes as whole NAL units or FU-A
-fragments, and past a frame's first 8 packets, 4 go out each millisecond: a
+fragments, H265 as whole units or FU fragments (RFC 7798), and past a frame's first 8 packets, 4 go out each millisecond: a
 1080p keyframe of 200 sent at once can overflow buffers on the way. Yapfast keeps
 the last 2048 video packets, and when a viewer reports some lost with a
 generic NACK (RTCP 205), resends up to 128 of them as Discord's client does:
@@ -862,7 +863,9 @@ own client works: H264 with DAVE, confirmed by hand.
 
 The fake server checks the transport, packetization, sender reports and frames
 that Yapfast sends, the sound's Opus packets and soundshare flag, reading an H264
-picture's size from its SPS, without DAVE. To viewers it streams the
+or H265 picture's size from its SPS, without DAVE. It chooses a streamer's
+codec as Discord does, and `POST /_control/stream-viewer?user=bob&decodes=h264,vp8`
+has a viewer watch who can't decode H265, which switches the stream with op 14. To viewers it streams the
 recordings in `testing/fixtures` (VP8, or H264 after `POST
 /_control/stream-codec`) once they ask with op 15. Checked by hand against
 real Discord: Discord's client shows Yapfast's stream at 1080p with its sound,
@@ -921,6 +924,19 @@ frame FFmpeg would insert (the one patch to FFmpeg); VA-API's encoders
 can't, so theirs opens again at the new bitrate, starting with a keyframe.
 "Higher quality" changes nothing on the GPU: NVENC's slowest preset scored
 within 0.1 VMAF of p4.
+
+Where NVENC or VA-API encodes H265, the stream offers it too, first. Discord
+picks the codec Yapfast offers first that every viewer's client decodes
+(op 4's `video_codec`), and when someone who can't decode it starts watching,
+switches the stream with op 14; Yapfast then opens the other encoder and
+starts it with a keyframe, dropping frames still in the old codec. When H265
+fails mid-stream, Yapfast withdraws it with its own op 14 `codecs`, marking
+it not to encode, and goes on in H264. Yapfast doesn't decode H265 itself,
+so it offers H265 only to encode: watching another Yapfast's stream switches
+it to H264. Which of Discord's own clients decode H265 isn't checked yet. On
+the same minute, through FFmpeg's command line with these settings, NVENC's
+H265 scored 92.9 at 2.5 Mbit/s against H264's 88.3, with a worst 1% of 59.2
+against 43.2, and at 1.5 Mbit/s 87.6, about H264 at 2.5.
 
 Measured through `Encoder` on an RTX 3090 against x264 superfast, on the
 busiest minute of an action trailer at 1080p30, NVENC's H264 matched x264 at
