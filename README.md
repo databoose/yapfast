@@ -6,7 +6,15 @@
 
 <p align="center">
   <b>A Discord client without the web browser.</b><br>
-  About 30 MB of RAM, where Discord's own app takes 720.
+  About 30 MB of RAM idle, where Discord's own app takes 720 (<a href="#measured-against-vesktop">measured</a>).
+</p>
+
+<p align="center">
+  Native app written in Rust · Windows and Linux · Voice, video and screen sharing · Drawn on the CPU by default
+</p>
+
+<p align="center">
+  <a href="https://github.com/yapfast/yapfast/releases/latest"><img src="https://img.shields.io/github/v/release/yapfast/yapfast?label=beta&color=f0b232" alt="The latest release, a beta"></a>
 </p>
 
 <p align="center">
