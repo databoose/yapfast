@@ -68,9 +68,8 @@ It's a beta, and it's what I use for Discord every day, so it had better
 be usable. Still, there are rough edges; when you hit one,
 [open an issue](https://github.com/yapfast/yapfast/issues) and I'll fix it, or
 come hang out on the [Yapfast Discord server](https://yapfast.com/discord-invite)
-and tell me there. The connection drops every now and then (no more often than
-Vesktop's or the official app's does for me), and the noise suppression could
-be better. Know an open source one that does a better job? PLEASE tell me.
+and tell me there. The noise suppression could be better, too. Know an open
+source one that does a better job? PLEASE tell me.
 
 ## Measured against Vesktop
 
