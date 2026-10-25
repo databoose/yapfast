@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>A Discord client without the web browser.</b><br>
-  About 30 MB of RAM, where Discord's own app takes 800.
+  About 30 MB of RAM, where Discord's own app takes 720.
 </p>
 
 <p align="center">
@@ -35,7 +35,7 @@
 ## Why?
 
 Discord's desktop app is a whole ass Chromium running Discord's website, and it
-sits at about 800 MB of RAM doing nothing (insane, I know right?!?). That
+sits at about 720 MB of RAM doing nothing (insane, I know right?!?). That
 annoyed me enough to write my own in Rust.
 
 Yapfast does the same job (doing nothing) in about 30 MB. There's no browser
@@ -51,8 +51,8 @@ the messages it saved last time and catches up while you read.
 Sitting in a call with the window open, it's about 45 MB. There's a GPU
 renderer too, behind **Render with the GPU** in Settings, but it takes more
 memory, and drawing on the processor already keeps a 180 Hz monitor fed, so the
-processor is the default. Next to Vesktop on the same PC, Yapfast took 86 to
-96% less memory in everything I tried;
+processor is the default. Next to Vesktop (Discord's own app with Vencord on
+top) on the same PC, Yapfast took 86 to 96% less memory in everything I tried;
 [here's the table](docs/measurements/README.md). Your numbers will depend on
 how many servers and DMs you have.
 

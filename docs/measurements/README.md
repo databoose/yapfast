@@ -9,6 +9,9 @@
 | In a call | 888 MB | 44 MB (−95%) | 0.46% | 0.33% (−28%) |
 | Sharing your screen¹ | 1,013 MB | 145 MB (−86%) | 2.15% | 2.9% (+35%) |
 
+Vesktop is basically Discord's own app: the same Discord web app, in the same
+Electron, with Vencord on top. So its numbers stand in for Discord's.
+
 ¹ Sharing a 1920×1080 monitor at 30 frames a second, while in the call.
 Yapfast uses more CPU here than Vesktop, as it converts and encodes each frame
 on the processor.
