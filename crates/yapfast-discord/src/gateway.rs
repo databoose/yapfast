@@ -116,10 +116,17 @@ const SEND_WINDOW: Duration = Duration::from_secs(60);
 /// Discord allows 5 presence updates in 20 seconds, which the web client
 /// keeps to.
 const PRESENCE_LIMIT: usize = 5;
-#[cfg(not(test))]
-const PRESENCE_WINDOW: Duration = Duration::from_secs(20);
-#[cfg(test)]
-const PRESENCE_WINDOW: Duration = Duration::from_millis(300);
+
+/// How long [`PRESENCE_LIMIT`] updates take: Discord's 20 seconds, or 300 ms
+/// in unit tests and against the test server, which has no such limit, so
+/// that tests changing the status don't wait out Discord's.
+fn presence_window() -> Duration {
+    if cfg!(test) || client::test_server().is_some() {
+        Duration::from_millis(300)
+    } else {
+        Duration::from_secs(20)
+    }
+}
 /// The longest Yapfast holds back member requests for a server when Discord
 /// asks it to wait.
 const MEMBERS_HELD: Duration = Duration::from_secs(5 * 60);
@@ -311,7 +318,7 @@ impl Gateway {
             session_id: None,
             resume_url: None,
             limiter,
-            presences: Limiter::new(PRESENCE_LIMIT, PRESENCE_WINDOW),
+            presences: Limiter::new(PRESENCE_LIMIT, presence_window()),
             presence: None,
             resumes: 0,
         };
@@ -1005,7 +1012,7 @@ mod tests {
             session_id: None,
             resume_url: None,
             limiter: limiter(),
-            presences: Limiter::new(PRESENCE_LIMIT, PRESENCE_WINDOW),
+            presences: Limiter::new(PRESENCE_LIMIT, presence_window()),
             presence: None,
             resumes: 0,
         };
@@ -1442,7 +1449,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(peer.command().await["d"]["n"], "latest");
-        assert!(held.elapsed() >= PRESENCE_WINDOW / 2);
+        assert!(held.elapsed() >= presence_window() / 2);
     }
 
     /// Compresses payloads as Discord's gateway does, sharing one stream.
