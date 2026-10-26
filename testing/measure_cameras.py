@@ -22,11 +22,13 @@ import subprocess
 import tempfile
 import time
 
+from voice_harness import provision
+
 ROOT = Path(__file__).resolve().parent.parent
 INPUT = runpy.run_path(str(ROOT / 'scripts/framework-input'))
 INPUT['require_private_display']()
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-parser.add_argument('--exe', type=Path, default=ROOT / 'target/fast/yapfast')
+parser.add_argument('--exe', type=Path, default=ROOT / 'target/measure/yapfast')
 parser.add_argument('--renderer', action='append', choices=['gpu', 'software'])
 parser.add_argument('--warmup', type=int, default=15, help='seconds before each sample')
 parser.add_argument('--seconds', type=int, default=20, help='sample length')
@@ -38,15 +40,6 @@ args.output.mkdir(parents=True, exist_ok=True)
 WIDTH, HEIGHT = 1120, 760
 EXTRA = 3
 CAMERA = dict(os.environ, YAPFAST_CAMERA_TEST_PATTERN='1')
-
-
-def provision():
-    output = subprocess.run(['cargo', 'run', '--locked', '--profile', 'fast', '--', '--voice-demo'],
-                            check=True, capture_output=True, text=True, cwd=ROOT).stdout
-    for line in output.splitlines():
-        if '--data-dir' in line and line.rstrip().endswith('/alice'):
-            return ROOT / Path(line.split('--data-dir', 1)[1].strip()).parent
-    raise SystemExit('voice demo did not report its accounts:\n' + output)
 
 
 def capture(name):

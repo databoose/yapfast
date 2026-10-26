@@ -24,6 +24,8 @@ import threading
 import time
 import wave
 
+from voice_harness import provision as voice_demo, test_binary
+
 ROOT = Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument('--wait-alone', type=float, default=600, help='seconds Alice waits alone (default 600)')
@@ -40,17 +42,6 @@ for tool in ('pactl', 'pw-play', 'parec', 'pasta', 'nft', 'ip', 'cargo'):
         raise SystemExit(f'{tool} is required; run inside the development shell on a Linux desktop with PipeWire.')
 
 
-def test_binary():
-    output = subprocess.run(['cargo', 'test', '--locked', '-p', 'yapfast-core', '--no-run', '--message-format=json'],
-                            check=True, capture_output=True, text=True, cwd=ROOT).stdout
-    for line in output.splitlines():
-        message = json.loads(line)
-        if message.get('reason') == 'compiler-artifact' and message.get('executable') \
-                and message['target']['name'] == 'yapfast_core' and 'lib' in message['target']['kind']:
-            return message['executable']
-    raise SystemExit('could not find the yapfast-core test executable')
-
-
 # Without a session bus the fixture uses Yapfast's private-file credential fallback.
 # This keeps disposable secrets out of the desktop keyring, and works inside
 # Bob's namespace, where D-Bus would see a different user ID.
@@ -58,12 +49,7 @@ NO_BUS = dict(os.environ, DBUS_SESSION_BUS_ADDRESS='unix:path=/nonexistent/yapfa
 
 
 def provision():
-    output = subprocess.run(['cargo', 'run', '--locked', '--', '--voice-demo'],
-                            check=True, capture_output=True, text=True, cwd=ROOT, env=NO_BUS).stdout
-    for line in output.splitlines():
-        if '--data-dir' in line and line.rstrip().endswith('/alice'):
-            return ROOT / Path(line.split('--data-dir', 1)[1].strip()).parent
-    raise SystemExit('voice demo did not report its accounts:\n' + output)
+    return voice_demo(env=NO_BUS)
 
 
 NAMESPACE_MEDIA = """

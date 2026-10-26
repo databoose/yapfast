@@ -34,7 +34,7 @@ import voice_harness
 INPUT = runpy.run_path(str(ROOT / 'scripts/framework-input'))
 INPUT['require_private_display']()
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-parser.add_argument('--exe', type=Path, default=ROOT / 'target/release/yapfast')
+parser.add_argument('--exe', type=Path, default=ROOT / 'target/measure/yapfast')
 parser.add_argument('--renderer', choices=['gpu', 'software'], default='gpu')
 parser.add_argument('--sizes', default='10,25,50', help='people in the call, including Alice')
 parser.add_argument('--warmup', type=int, default=20, help='seconds after each join step')

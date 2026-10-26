@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare Yapfast's memory with only Matrix, only Discord, or both networks built in.
 
-Each build is a `fast` profile binary with different Cargo features (see
+Each build is a `measure` profile binary with different Cargo features (see
 docs/building.md); the comparison is between builds, so LTO isn't needed. All run against test data only: Matrix against the local
 stack with a seeded fixture account, Discord against testing/fake_discord.ts.
 Both histories hold the same 60 messages with the same image, file and reply.
@@ -11,7 +11,7 @@ Each profile opens #general, warms up, samples Yapfast's process while idle, the
 samples again while Bob posts a message every 2 s in the open channel. Voice
 isn't measured: the fake Discord has no voice server.
 
-Start the local stack (scripts/test-stack up). Copy target/fast/yapfast, built
+Start the local stack (scripts/test-stack up). Copy target/measure/yapfast, built
 with each feature set, into --builds (target/networks) as yapfast-matrix,
 yapfast-discord and yapfast-combined; docs/measurements/README.md gives the builds.
 Find the yapfast-core test binary with
@@ -25,7 +25,7 @@ Find the yapfast-core test binary with
         --load-executable target/fast/deps/yapfast_core-HASH'
 
 (one line). Without --load-executable it runs `cargo test --no-run` itself,
-with the debug profile, inside the private session. This script starts
+with the `fast` profile, inside the private session. This script starts
 testing/fake_discord.ts itself.
 """
 import argparse
@@ -40,6 +40,8 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+
+from voice_harness import test_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 INPUT = runpy.run_path(str(ROOT / 'scripts/framework-input'))
@@ -67,17 +69,6 @@ EXTRA_MESSAGES = 56
 # Rail centres: Yapfast lists Matrix servers before Discord ones.
 FIRST_SERVER, SECOND_SERVER = (36, 101), (36, 158)
 MATRIX_GENERAL = (141, 148)
-
-
-def test_binary():
-    output = subprocess.run(['cargo', 'test', '--locked', '-p', 'yapfast-core', '--no-run', '--message-format=json'],
-                            check=True, capture_output=True, text=True, cwd=ROOT).stdout
-    for line in output.splitlines():
-        message = json.loads(line)
-        if message.get('reason') == 'compiler-artifact' and message.get('executable') \
-                and message['target']['name'] == 'yapfast_core' and 'lib' in message['target']['kind']:
-            return message['executable']
-    raise SystemExit('could not find the yapfast-core test executable')
 
 
 def provision(executable):
@@ -280,7 +271,7 @@ def prewarm(executable, data):
 builds = {name: (args.builds / f'yapfast-{name}').resolve() for name in ('matrix', 'discord', 'combined')}
 for name, path in builds.items():
     if not path.exists():
-        raise SystemExit(f'missing {path}; copy each feature build of target/fast/yapfast there')
+        raise SystemExit(f'missing {path}; copy each feature build of target/measure/yapfast there')
 results = []
 load = discord = None
 executable = str(args.load_executable.resolve()) if args.load_executable else test_binary()

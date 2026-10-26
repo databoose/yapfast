@@ -13,8 +13,8 @@ frames a second; make a 720p one with:
     -profile:v baseline -b:v 1500k -maxrate 1500k -bufsize 1500k -g 60 \\
     -x264-params aud=1 -bsf:v h264_mp4toannexb -f h264 camera-720p.h264
 
-Runs Yapfast through scripts/ui-session, which builds the Discord-only `fast`
-build, on a private display with a private PulseAudio.
+Runs Yapfast through scripts/ui-session, which builds the Discord-only
+`measure` build, on a private display with a private PulseAudio.
 """
 import argparse
 import json
@@ -82,7 +82,8 @@ build = not args.no_build
 try:
     for renderer in renderers:
         subprocess.run([str(ROOT / 'scripts/ui-session'), 'stop'], cwd=ROOT, capture_output=True)
-        session('start', '--discord', '--renderer', renderer, *([] if build else ['--no-build']))
+        session('start', '--discord', '--profile', 'measure', '--renderer', renderer,
+                *([] if build else ['--no-build']))
         build = False
         notes = {'renderer': renderer, 'warmup_seconds': args.warmup}
         session('do', 'sleep 3', 'click 36 101', 'sleep 1', 'click 142 186', 'sleep 3')  # Server, Lounge
@@ -113,7 +114,7 @@ finally:
     keep_shots()
     (args.output / 'results.json').write_text(json.dumps({
         'recorded_on': time.strftime('%Y-%m-%d'),
-        'binary': str(ROOT / 'target/fast/yapfast'),
+        'binary': str(ROOT / 'target/measure/yapfast'),
         'os': f'{platform.system()} {platform.release()}', 'machine': platform.machine(),
         'isolation': 'scripts/ui-session: private headless Weston and PulseAudio',
         'remote_load': f'testing/fake_discord.ts; Bob, Carol and Dave film {args.camera.name} at 30 frames '

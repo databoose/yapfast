@@ -21,11 +21,13 @@ import subprocess
 import tempfile
 import time
 
+from voice_harness import provision, test_binary
+
 ROOT = Path(__file__).resolve().parent.parent
 INPUT = runpy.run_path(str(ROOT / 'scripts/framework-input'))
 INPUT['require_private_display']()
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-parser.add_argument('--exe', type=Path, default=ROOT / 'target/release/yapfast')
+parser.add_argument('--exe', type=Path, default=ROOT / 'target/measure/yapfast')
 parser.add_argument('--renderer', action='append', choices=['gpu', 'software'])
 parser.add_argument('--warmup', type=int, default=30, help='seconds before each sample')
 parser.add_argument('--seconds', type=int, default=60, help='sample length')
@@ -38,26 +40,6 @@ args = parser.parse_args()
 renderers = args.renderer or ['gpu', 'software']
 args.output.mkdir(parents=True, exist_ok=True)
 WIDTH, HEIGHT = 1120, 760
-
-
-def test_binary():
-    output = subprocess.run(['cargo', 'test', '--locked', '-p', 'yapfast-core', '--no-run', '--message-format=json'],
-                            check=True, capture_output=True, text=True, cwd=ROOT).stdout
-    for line in output.splitlines():
-        message = json.loads(line)
-        if message.get('reason') == 'compiler-artifact' and message.get('executable') \
-                and message['target']['name'] == 'yapfast_core' and 'lib' in message['target']['kind']:
-            return message['executable']
-    raise SystemExit('could not find the yapfast-core test executable')
-
-
-def provision():
-    output = subprocess.run(['cargo', 'run', '--locked', '--', '--voice-demo'],
-                            check=True, capture_output=True, text=True, cwd=ROOT).stdout
-    for line in output.splitlines():
-        if '--data-dir' in line and line.rstrip().endswith('/alice'):
-            return ROOT / Path(line.split('--data-dir', 1)[1].strip()).parent
-    raise SystemExit('voice demo did not report its accounts:\n' + output)
 
 
 def capture(name):

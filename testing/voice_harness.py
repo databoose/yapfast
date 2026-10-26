@@ -15,10 +15,27 @@ WIDTH, HEIGHT = 1120, 760
 TICKS = os.sysconf('SC_CLK_TCK')
 
 
-def provision():
+# The other people, the fixture and the tests run from the `fast` profile, which
+# everyday builds keep current. The Yapfast a script measures comes separately,
+# from the `measure` profile, which optimizes the Slint interface too.
+
+
+def test_binary():
+    """The yapfast-core test executable, which runs the other people."""
+    output = subprocess.run(['cargo', 'test', '--locked', '--profile', 'fast', '-p', 'yapfast-core', '--no-run',
+                             '--message-format=json'], check=True, capture_output=True, text=True, cwd=ROOT).stdout
+    for line in output.splitlines():
+        message = json.loads(line)
+        if message.get('reason') == 'compiler-artifact' and message.get('executable') \
+                and message['target']['name'] == 'yapfast_core' and 'lib' in message['target']['kind']:
+            return message['executable']
+    raise SystemExit('could not find the yapfast-core test executable')
+
+
+def provision(env=None):
     """Create a voice-demo fixture: Alice, Bob, a Space, a text and a voice room."""
-    output = subprocess.run(['cargo', 'run', '--locked', '--', '--voice-demo'],
-                            check=True, capture_output=True, text=True, cwd=ROOT).stdout
+    output = subprocess.run(['cargo', 'run', '--locked', '--profile', 'fast', '--', '--voice-demo'],
+                            check=True, capture_output=True, text=True, cwd=ROOT, env=env).stdout
     for line in output.splitlines():
         if '--data-dir' in line and line.rstrip().endswith('/alice'):
             return ROOT / Path(line.split('--data-dir', 1)[1].strip()).parent
