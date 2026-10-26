@@ -129,7 +129,8 @@ impl Adapter {
 }
 
 /// What the sidebar was built from, kept to tell whether it changed. The
-/// lists are kept as a hash: copies of them took megabytes on a large account.
+/// rooms and servers go by their count of changes and the other lists by a
+/// hash: copies of them took megabytes on a large account.
 #[derive(PartialEq)]
 pub(super) struct SidebarShown {
     lists: u64,
@@ -141,6 +142,7 @@ pub(super) struct SidebarShown {
     browse_filter: SharedString,
     picture_changes: u64,
     category_changes: u64,
+    list_changes: u64,
     /// Whether Discord took changes, which the header's invite button needs.
     discord_online: bool,
 }
@@ -157,16 +159,17 @@ impl SidebarShown {
             browse_filter: window.get_browse_filter(),
             picture_changes: state.picture_changes,
             category_changes: state.category_changes,
+            list_changes: state.list_changes,
             discord_online: state.discord_online,
         }
     }
 
+    /// The smaller lists the sidebar shows; the rooms and servers count
+    /// their changes.
     fn lists(state: &AppState) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::hash::DefaultHasher::new();
         (
-            &state.rooms,
-            &state.servers,
             &state.friends,
             &state.friend_requests,
             &state.discord_blocked,
@@ -187,6 +190,7 @@ impl SidebarShown {
             && self.browse_filter == window.get_browse_filter()
             && self.picture_changes == state.picture_changes
             && self.category_changes == state.category_changes
+            && self.list_changes == state.list_changes
             && self.discord_online == state.discord_online
             && self.lists == Self::lists(state)
     }

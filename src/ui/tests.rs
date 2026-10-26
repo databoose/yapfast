@@ -2410,6 +2410,7 @@ fn signed_in_controls_keep_trust_and_plaintext_sending_gates() {
             .find(|room| room.id == id)
             .unwrap()
             .encrypted = false;
+        adapter.app.state.list_changes += 1;
         adapter.refresh(&window);
     }
     assert!(!window.get_composer_enabled() && !window.get_can_send());
@@ -2515,6 +2516,7 @@ fn typing_and_the_call_show_without_building_the_rest_again() {
     adapter.refresh(&window);
     assert_eq!(adapter.models.rooms.row_data(0).unwrap().name, "Marked");
     Arc::make_mut(&mut adapter.app.state.rooms[0]).name = "Renamed".into();
+    adapter.app.state.list_changes += 1;
     adapter.refresh(&window);
     assert_ne!(adapter.models.rooms.row_data(0).unwrap().name, "Marked");
 }
@@ -2983,6 +2985,7 @@ fn an_unread_dm_shows_on_the_rail_above_the_servers_and_opens() {
             .unwrap();
         riley.unread = 2;
         riley.mentions = 2;
+        adapter.app.state.list_changes += 1;
         adapter.refresh(&window);
     }
     let unread = rail(&window);

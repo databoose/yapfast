@@ -70,6 +70,7 @@ impl Application {
         .into_iter()
         .map(Arc::new)
         .collect();
+        self.state.list_changes = self.state.list_changes.wrapping_add(1);
         for (room, lines) in [
             (
                 "announcements",

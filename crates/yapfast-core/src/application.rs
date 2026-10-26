@@ -503,6 +503,10 @@ pub struct AppState {
     /// decide who sees them, so a client can tell when
     /// [`Application::categories`] may list others.
     pub category_changes: u64,
+    /// Counts changes to [`Self::rooms`] and [`Self::servers`], so a client
+    /// can tell when its own copies of them are out of date. Whatever
+    /// changes either counts it.
+    pub list_changes: u64,
     pub navigation: Navigation,
     pub selected: Option<String>,
     /// The selected voice channel shows its chat in place of its call.
