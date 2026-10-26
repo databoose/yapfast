@@ -1764,10 +1764,13 @@ pub enum Command {
     /// ones, reusing those the backend kept where it can.
     Present(String),
     /// The timeline items in or near the viewport. Only their image previews
-    /// need decoding; metadata for other loaded items stays available.
+    /// need decoding; metadata for other loaded items stays available. While
+    /// the timeline follows its newest message, `at_end`, a busy one lets go
+    /// of its oldest; rows above go without moving it only then.
     VisibleMessages {
         room: String,
         items: Vec<String>,
+        at_end: bool,
     },
     Recover(String),
     RefreshTrust,
@@ -4204,6 +4207,7 @@ mod tests {
                 Command::VisibleMessages {
                     room: matrix.clone(),
                     items: vec![],
+                    at_end: false,
                 },
                 Route::Matrix,
             ),
@@ -4211,6 +4215,7 @@ mod tests {
                 Command::VisibleMessages {
                     room: discord.clone(),
                     items: vec![],
+                    at_end: false,
                 },
                 Route::Discord,
             ),

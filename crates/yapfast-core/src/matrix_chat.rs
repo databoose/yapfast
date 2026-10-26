@@ -814,7 +814,7 @@ impl Matrix {
                     publish_timeline(active, client, &self.media_sender, events).await;
                 }
             }
-            Command::VisibleMessages { room, items } => {
+            Command::VisibleMessages { room, items, .. } => {
                 if let Some(active) = open.as_mut().filter(|active| active.id() == room) {
                     let visible = items.into_iter().collect();
                     if active.visible != visible {
@@ -3141,6 +3141,7 @@ mod tests {
                 .send(Command::VisibleMessages {
                     room: room.clone(),
                     items: metadata.iter().map(|m| m.item.clone()).collect(),
+                    at_end: false,
                 })
                 .unwrap();
             let messages = timeline_where(&mut events, |messages| {
@@ -3233,6 +3234,7 @@ mod tests {
                 .send(Command::VisibleMessages {
                     room: room.clone(),
                     items: vec![],
+                    at_end: false,
                 })
                 .unwrap();
             timeline_where(&mut events, |messages| {
@@ -3262,6 +3264,7 @@ mod tests {
                 .send(Command::VisibleMessages {
                     room: other.to_string(),
                     items: metadata.iter().map(|m| m.item.clone()).collect(),
+                    at_end: false,
                 })
                 .unwrap();
             timeline_where(&mut events, |messages| {

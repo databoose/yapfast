@@ -116,6 +116,13 @@ impl Run {
     }
 }
 
+/// Messages an open channel keeps above the oldest in view, beside the
+/// newest [`KEPT_MESSAGES`].
+const KEPT_ABOVE_VIEW: usize = 50;
+/// How many more messages than it keeps an open channel takes in before it
+/// lets go of its oldest, so it doesn't each time one comes.
+const LET_GO_AFTER: usize = 100;
+
 /// Which page of a channel's history a load asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Load {
@@ -586,6 +593,29 @@ impl OpenChannel {
                 None => false,
             },
         }
+    }
+
+    /// Lets go of the oldest messages well above those in view, once a
+    /// busy channel holds [`LET_GO_AFTER`] more than it keeps, so following
+    /// it doesn't hold every message that came; returns whether any went.
+    /// Only for a timeline that follows its newest message: rows above go
+    /// without moving it then. They load again as the timeline nears them.
+    pub(super) fn let_go_above_view(&mut self) -> bool {
+        let messages = &self.shown.messages;
+        if self.detached() || messages.len() <= KEPT_MESSAGES + LET_GO_AFTER {
+            return false;
+        }
+        // Without a view, nothing is known to be off screen.
+        let Some(oldest) = self.visible.iter().min() else {
+            return false;
+        };
+        let in_view = messages.range(oldest..).count();
+        let keep = (in_view + KEPT_ABOVE_VIEW).max(KEPT_MESSAGES);
+        if messages.len() <= keep + LET_GO_AFTER {
+            return false;
+        }
+        self.shown.keep_newest(keep);
+        true
     }
 
     /// Shows the message at once and sends it in the background.

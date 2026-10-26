@@ -72,7 +72,15 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
                     .iter()
                     .map(|message| message.item.clone())
                     .collect();
-                adapter.action(&window, Action::VisibleMessages { room, items });
+                let at_end = window.invoke_timeline_at_end();
+                adapter.action(
+                    &window,
+                    Action::VisibleMessages {
+                        room,
+                        items,
+                        at_end,
+                    },
+                );
             },
         );
     });
@@ -113,7 +121,14 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
                     .map(|message| message.item.clone())
                     .collect();
                 let room = aside.room.clone();
-                adapter.action(&window, Action::VisibleMessages { room, items });
+                adapter.action(
+                    &window,
+                    Action::VisibleMessages {
+                        room,
+                        items,
+                        at_end: false,
+                    },
+                );
             },
         );
     });

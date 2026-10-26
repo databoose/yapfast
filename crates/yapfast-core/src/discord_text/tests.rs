@@ -560,6 +560,39 @@ fn a_busy_closed_channel_keeps_only_its_newest_messages() {
 }
 
 #[test]
+fn a_busy_open_channel_lets_go_of_messages_well_above_the_view() {
+    let mut open = OpenChannel::new("discord:10:11").unwrap();
+    open.loaded(Load::Latest, shown(page([1, 2])));
+    let view = |open: &mut OpenChannel, from: u64, to: u64| {
+        open.visible((from..=to).map(|id| format!("d:{id}")).collect());
+    };
+    // The timeline follows its newest message, and says so as each comes.
+    let come = |open: &mut OpenChannel, ids: std::ops::RangeInclusive<u64>| {
+        for id in ids {
+            open.live(&Live::Created(message(&id.to_string(), None)));
+            open.let_go_above_view();
+        }
+    };
+    // Without a view, nothing is known to be off screen.
+    come(&mut open, 3..=400);
+    assert_eq!(open.shown.messages.len(), 400);
+    // Following the newest, it keeps the newest it keeps when closed.
+    view(&mut open, 390, 400);
+    come(&mut open, 401..=401);
+    assert_eq!(ids(&open), (202..=401).collect::<Vec<_>>());
+    assert!(!open.shown.complete, "the oldest went, so they load again");
+    come(&mut open, 402..=500);
+    assert_eq!(open.shown.messages.len(), 299, "not each time one comes");
+    // Those in view and some above them stay, wherever the view is.
+    view(&mut open, 220, 230);
+    come(&mut open, 501..=600);
+    assert_eq!(ids(&open).first(), Some(&202));
+    view(&mut open, 400, 410);
+    come(&mut open, 601..=601);
+    assert_eq!(ids(&open).first(), Some(&350));
+}
+
+#[test]
 fn a_window_of_older_messages_shows_in_place_of_the_newest_until_it_reaches_them() {
     let mut open = OpenChannel::new("discord:10:11").unwrap();
     let newest = |open: &OpenChannel| -> Vec<u64> {

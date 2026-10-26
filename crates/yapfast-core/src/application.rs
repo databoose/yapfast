@@ -1277,10 +1277,12 @@ pub enum Action {
     /// message, as the timeline does when scrolled near its top, unless one
     /// is on its way or the first message is loaded.
     Earlier,
-    /// Items in or near the selected timeline's viewport, in timeline order.
+    /// Items in or near the selected timeline's viewport, in timeline order,
+    /// and whether it follows the newest message.
     VisibleMessages {
         room: String,
         items: Vec<String>,
+        at_end: bool,
     },
     /// Show the selected room's message with this item; see
     /// [`AppState::jump`]. When the timeline doesn't have it, the messages
@@ -2301,26 +2303,41 @@ impl Application {
 
     fn dispatch_action(&mut self, action: Action) -> Vec<Effect> {
         match action {
-            Action::VisibleMessages { room, items }
-                if self
-                    .state
-                    .aside
-                    .as_ref()
-                    .is_some_and(|aside| aside.room == room) =>
+            Action::VisibleMessages {
+                room,
+                items,
+                at_end,
+            } if self
+                .state
+                .aside
+                .as_ref()
+                .is_some_and(|aside| aside.room == room) =>
             {
                 if self.aside_visible == items {
                     return vec![];
                 }
                 self.aside_visible = items.clone();
-                vec![Effect::Backend(Command::VisibleMessages { room, items })]
+                vec![Effect::Backend(Command::VisibleMessages {
+                    room,
+                    items,
+                    at_end,
+                })]
             }
-            Action::VisibleMessages { room, items } => {
+            Action::VisibleMessages {
+                room,
+                items,
+                at_end,
+            } => {
                 if self.state.selected.as_ref() != Some(&room) || self.visible_messages == items {
                     return vec![];
                 }
                 self.visible_messages = items.clone();
                 self.pictured_timeline = Arc::new(Vec::new());
-                vec![Effect::Backend(Command::VisibleMessages { room, items })]
+                vec![Effect::Backend(Command::VisibleMessages {
+                    room,
+                    items,
+                    at_end,
+                })]
             }
             Action::Navigate(navigation) => self.navigate(navigation),
             Action::OpenDmScreen(screen) => self.open_dm_screen(screen),

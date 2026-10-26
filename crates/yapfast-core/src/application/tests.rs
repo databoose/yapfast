@@ -4796,6 +4796,7 @@ fn custom_emoji_are_requested_only_for_nearby_messages_and_stale_views_are_ignor
     let view = |room: &str, from, until| Action::VisibleMessages {
         room: room.into(),
         items: (from..until).map(|index| format!("e:${index}")).collect(),
+        at_end: false,
     };
     assert_eq!(asked(app.dispatch(view("dm", 90, 100))).len(), 10);
     assert!(asked(app.dispatch(view("dm", 90, 100))).is_empty());
@@ -4902,6 +4903,7 @@ fn avatars_stay_only_near_the_rows_on_screen() {
     app.dispatch(Action::VisibleMessages {
         room: "dm".into(),
         items: (280..290).map(|index| format!("e:${index}")).collect(),
+        at_end: false,
     });
     for index in 0..=KEPT_PICTURES {
         app.requested_pictures.insert(format!("{index}.png"));

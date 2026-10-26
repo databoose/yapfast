@@ -223,8 +223,9 @@ pub fn command(
         return;
     };
     match command {
-        Command::VisibleMessages { items, .. } => {
-            if channel.visible(items) {
+        Command::VisibleMessages { items, at_end, .. } => {
+            let moved = channel.visible(items);
+            if (at_end && channel.let_go_above_view()) || moved {
                 publish(channel, discord, done, events);
             }
         }
