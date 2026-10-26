@@ -353,26 +353,6 @@ component VideoCell inherits Rectangle {
 
 /// A file, or an image without a preview, as a card.
 export struct FileCell { index: int, name: string, detail: string }
-/// An embed's field, and a row of them: inline fields share a row.
-export struct EmbedField { name: styled-text, value: styled-text }
-export struct EmbedFieldRow { fields: [EmbedField] }
-/// A Discord link preview or bot card. `title` links to the page when
-/// there's one. A video's pictures are its poster, which opens `url`.
-export struct EmbedCard {
-    color: color, has-color: bool,
-    provider: styled-text, has-provider: bool, author: styled-text, has-author: bool, title: styled-text, has-title: bool, url: string,
-    description: styled-text, has-description: bool,
-    field-rows: [EmbedFieldRow],
-    footer: styled-text, has-footer: bool,
-    /// The small picture beside the text; `thumbnail-index` is its place among the message's attachments.
-    thumbnail: image, thumbnail-index: int, has-thumbnail: bool, thumbnail-loading: bool,
-    images: [ImageCell], gallery-width: int, gallery-height: int,
-    video: bool,
-}
-/// A Discord app's button. Only a link's is `enabled`: the others would ask
-/// the app, which Yapfast can't yet.
-export enum CardButtonStyle { primary, secondary, success, danger, link }
-export struct CardButton { label: string, style: CardButtonStyle, url: string, enabled: bool }
 /// A block of a message's or card's text, as Discord's client lays them
 /// out: Markdown (0), a heading (1 to 3), subtext (4) or fenced code (5).
 /// Slint's Markdown draws none but the first. A `quoted` block is behind a
@@ -384,6 +364,28 @@ export struct TextBlock {
     quoted: bool, quote-start: bool, quote-end: bool,
     margin: length, padding: length,
 }
+/// An embed's field, and a row of them: inline fields share a row. A value
+/// with headings, quotes or code is in `value-blocks`.
+export struct EmbedField { name: styled-text, value: styled-text, value-blocks: [TextBlock] }
+export struct EmbedFieldRow { fields: [EmbedField] }
+/// A Discord link preview or bot card. `title` links to the page when
+/// there's one. A video's pictures are its poster, which opens `url`.
+export struct EmbedCard {
+    color: color, has-color: bool,
+    provider: styled-text, has-provider: bool, author: styled-text, has-author: bool, title: styled-text, has-title: bool, url: string,
+    /// A description with headings, quotes or code is in `description-blocks`.
+    description: styled-text, has-description: bool, description-blocks: [TextBlock],
+    field-rows: [EmbedFieldRow],
+    footer: styled-text, has-footer: bool,
+    /// The small picture beside the text; `thumbnail-index` is its place among the message's attachments.
+    thumbnail: image, thumbnail-index: int, has-thumbnail: bool, thumbnail-loading: bool,
+    images: [ImageCell], gallery-width: int, gallery-height: int,
+    video: bool,
+}
+/// A Discord app's button. Only a link's is `enabled`: the others would ask
+/// the app, which Yapfast can't yet.
+export enum CardButtonStyle { primary, secondary, success, danger, link }
+export struct CardButton { label: string, style: CardButtonStyle, url: string, enabled: bool }
 export enum CardRowKind { text, media, separator, buttons, select, unknown }
 /// A row of a Discord app's card, of one `kind`, with the fields it uses:
 /// text and what a section shows beside it; pictures in a gallery and file
@@ -1028,6 +1030,75 @@ export component BotTag inherits Rectangle {
     tag-text := Text { text: "BOT"; color: #ffffff; font-size: 10px; font-weight: 700; letter-spacing: 0.3px; }
 }
 
+// A block of text: a heading or subtext at its size, or fenced code in its
+// box, behind a quote's bar when quoted. Inside a card's container, text and
+// subtext are smaller, as in Discord's client; headings are not.
+component TextBlockView inherits VerticalLayout {
+    in property <TextBlock> block;
+    in property <length> font-size;
+    in property <bool> framed;
+    in property <color> color: Theme.text;
+    // Headings are in the strongest colour of their text, as in Discord's client.
+    in property <color> heading-color: root.color;
+    in property <int> max-lines;
+    callback open-link(string);
+    property <length> code-size: root.font-size * 0.875;
+    padding-top: root.block.margin;
+    HorizontalLayout {
+        if root.block.quoted: Rectangle {
+            width: 4px; background: Theme.reply-spine;
+            border-top-left-radius: root.block.quote-start ? 2px : 0px;
+            border-top-right-radius: self.border-top-left-radius;
+            border-bottom-left-radius: root.block.quote-end ? 2px : 0px;
+            border-bottom-right-radius: self.border-bottom-left-radius;
+        }
+        VerticalLayout {
+            padding-top: root.block.padding;
+            padding-left: root.block.quoted ? 12px : 0px;
+            if root.block.level == 5: Rectangle {
+                background: Theme.panel; border-radius: 4px; border-width: 1px; border-color: Theme.line;
+                VerticalLayout {
+                    padding: root.code-size / 2;
+                    StyledText {
+                        min-width: 0px;
+                        text: root.block.text; link-color: Theme.link; default-color: Theme.text;
+                        default-font-family: "monospace"; default-font-size: root.code-size; max-lines: root.max-lines;
+                    }
+                }
+            }
+            if root.block.level != 5: StyledText {
+                min-width: 0px;
+                text: root.block.text; link-color: Theme.link;
+                // A quote's text is dimmer, but not its headings.
+                default-color: root.block.level == 4 || (root.block.quoted && root.block.level == 0) ? Theme.secondary
+                    : root.block.level >= 1 && root.block.level <= 3 ? root.heading-color : root.color;
+                default-font-size: root.block.level == 1 ? root.font-size * 1.5 : root.block.level == 2 ? root.font-size * 1.25
+                    : root.block.level == 3 ? root.font-size
+                    : root.font-size * (root.block.level == 4 ? (root.framed ? 0.75 : 0.875) : (root.framed ? 0.875 : 1));
+                max-lines: root.max-lines;
+                link-clicked(link) => { root.open-link(link); }
+            }
+        }
+    }
+}
+
+// Text in blocks, as a card's or a message's body. `max-lines` caps each
+// block's lines, when not 0.
+export component TextBlocks inherits VerticalLayout {
+    in property <[TextBlock]> blocks;
+    in property <length> font-size;
+    in property <bool> framed;
+    in property <color> color: Theme.text;
+    in property <color> heading-color: root.color;
+    in property <int> max-lines;
+    callback open-link(string);
+    for block in root.blocks: TextBlockView {
+        block: block; font-size: root.font-size; framed: root.framed; color: root.color; heading-color: root.heading-color;
+        max-lines: root.max-lines;
+        open-link(link) => { root.open-link(link); }
+    }
+}
+
 // Link previews and bot cards, behind a bar of their colour.
 export component EmbedView inherits HorizontalLayout {
     in property <EmbedCard> embed;
@@ -1056,18 +1127,26 @@ export component EmbedView inherits HorizontalLayout {
                     text: root.embed.title; default-color: Theme.text; link-color: Theme.link; default-font-size: 16px;
                     link-clicked(link) => { root.open-link(link); }
                 }
-                if root.embed.has-description: StyledText {
+                if root.embed.has-description && root.embed.description-blocks.length == 0: StyledText {
                     text: root.embed.description; default-color: Theme.secondary; link-color: Theme.link; default-font-size: 14px;
                     link-clicked(link) => { root.open-link(link); }
+                }
+                if root.embed.description-blocks.length > 0: TextBlocks {
+                    blocks: root.embed.description-blocks; font-size: 14px; color: Theme.secondary; heading-color: Theme.text;
+                    open-link(link) => { root.open-link(link); }
                 }
                 for row in root.embed.field-rows: HorizontalLayout {
                     spacing: 8px;
                     for field in row.fields: VerticalLayout {
                         spacing: 2px; horizontal-stretch: 1;
                         StyledText { text: field.name; link-color: Theme.link; default-color: Theme.text; default-font-size: 14px; }
-                        StyledText {
+                        if field.value-blocks.length == 0: StyledText {
                             text: field.value; default-color: Theme.secondary; link-color: Theme.link; default-font-size: 14px;
                             link-clicked(link) => { root.open-link(link); }
+                        }
+                        if field.value-blocks.length > 0: TextBlocks {
+                            blocks: field.value-blocks; font-size: 14px; color: Theme.secondary; heading-color: Theme.text;
+                            open-link(link) => { root.open-link(link); }
                         }
                     }
                 }
@@ -1131,66 +1210,6 @@ export component EmbedView inherits HorizontalLayout {
         }
     }
     Rectangle { horizontal-stretch: 1; }
-}
-
-// A block of text: a heading or subtext at its size, or fenced code in its
-// box, behind a quote's bar when quoted. Inside a card's container, text and
-// subtext are smaller, as in Discord's client; headings are not.
-component TextBlockView inherits VerticalLayout {
-    in property <TextBlock> block;
-    in property <length> font-size;
-    in property <bool> framed;
-    in property <color> color: Theme.text;
-    callback open-link(string);
-    property <length> code-size: root.font-size * 0.875;
-    padding-top: root.block.margin;
-    HorizontalLayout {
-        if root.block.quoted: Rectangle {
-            width: 4px; background: Theme.reply-spine;
-            border-top-left-radius: root.block.quote-start ? 2px : 0px;
-            border-top-right-radius: self.border-top-left-radius;
-            border-bottom-left-radius: root.block.quote-end ? 2px : 0px;
-            border-bottom-right-radius: self.border-bottom-left-radius;
-        }
-        VerticalLayout {
-            padding-top: root.block.padding;
-            padding-left: root.block.quoted ? 12px : 0px;
-            if root.block.level == 5: Rectangle {
-                background: Theme.panel; border-radius: 4px; border-width: 1px; border-color: Theme.line;
-                VerticalLayout {
-                    padding: root.code-size / 2;
-                    StyledText {
-                        min-width: 0px;
-                        text: root.block.text; link-color: Theme.link; default-color: Theme.text;
-                        default-font-family: "monospace"; default-font-size: root.code-size;
-                    }
-                }
-            }
-            if root.block.level != 5: StyledText {
-                min-width: 0px;
-                text: root.block.text; link-color: Theme.link;
-                // A quote's text is dimmer, but not its headings.
-                default-color: root.block.level == 4 || (root.block.quoted && root.block.level == 0) ? Theme.secondary : root.color;
-                default-font-size: root.block.level == 1 ? root.font-size * 1.5 : root.block.level == 2 ? root.font-size * 1.25
-                    : root.block.level == 3 ? root.font-size
-                    : root.font-size * (root.block.level == 4 ? (root.framed ? 0.75 : 0.875) : (root.framed ? 0.875 : 1));
-                link-clicked(link) => { root.open-link(link); }
-            }
-        }
-    }
-}
-
-// Text in blocks, as a card's or a message's body.
-component TextBlocks inherits VerticalLayout {
-    in property <[TextBlock]> blocks;
-    in property <length> font-size;
-    in property <bool> framed;
-    in property <color> color: Theme.text;
-    callback open-link(string);
-    for block in root.blocks: TextBlockView {
-        block: block; font-size: root.font-size; framed: root.framed; color: root.color;
-        open-link(link) => { root.open-link(link); }
-    }
 }
 
 // A Discord app's button. A link's opens its page; the others show what the

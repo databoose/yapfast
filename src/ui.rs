@@ -614,10 +614,16 @@ fn message_text(row: &MessageRow) -> String {
             plain(&row.time_styled)
         ));
     }
-    if row.blocks.row_count() > 0 {
-        lines.extend(row.blocks.iter().map(|block| plain(&block.text)));
-    } else if !row.body.is_empty() {
-        lines.push(plain(&row.styled));
+    // Text in blocks reads as each block's.
+    let text = |styled: &slint::StyledText, blocks: &ModelRc<TextBlock>| {
+        if blocks.row_count() == 0 {
+            return plain(styled);
+        }
+        let blocks: Vec<String> = blocks.iter().map(|block| plain(&block.text)).collect();
+        blocks.join("\n")
+    };
+    if !row.body.is_empty() {
+        lines.push(text(&row.styled, &row.blocks));
     }
     let pictures = |count: usize| std::iter::repeat_n("[Picture]".to_string(), count);
     lines.extend(pictures(row.images.row_count()));
@@ -627,7 +633,6 @@ fn message_text(row: &MessageRow) -> String {
             (embed.has_provider, &embed.provider),
             (embed.has_author, &embed.author),
             (embed.has_title, &embed.title),
-            (embed.has_description, &embed.description),
         ];
         card.extend(
             texts
@@ -635,11 +640,14 @@ fn message_text(row: &MessageRow) -> String {
                 .filter(|(shown, _)| *shown)
                 .map(|(_, text)| plain(text)),
         );
+        if embed.has_description {
+            card.push(text(&embed.description, &embed.description_blocks));
+        }
         for fields in embed.field_rows.iter() {
             let (names, values): (Vec<_>, Vec<_>) = fields
                 .fields
                 .iter()
-                .map(|field| (plain(&field.name), plain(&field.value)))
+                .map(|field| (plain(&field.name), text(&field.value, &field.value_blocks)))
                 .unzip();
             card.push(names.join(" "));
             card.push(values.join(" "));

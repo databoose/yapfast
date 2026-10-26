@@ -380,9 +380,15 @@ pub(super) fn field_rows(fields: &[EmbedField]) -> ModelRc<EmbedFieldRow> {
     let mut rows: Vec<Vec<yapfast_ui::EmbedField>> = Vec::new();
     let mut open = false;
     for field in fields {
+        let value_blocks = markdown_blocks(&field.value);
         let cell = yapfast_ui::EmbedField {
             name: bold(&field.name),
-            value: markdown(&field.value),
+            value: if value_blocks.row_count() > 0 {
+                slint::StyledText::default()
+            } else {
+                markdown(&field.value)
+            },
+            value_blocks,
         };
         match rows.last_mut() {
             Some(row) if open && field.inline && row.len() < 3 => row.push(cell),
@@ -458,7 +464,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
     let jumbo = message.formatted && custom_emoji::only_emoji(&linked);
     // Headings, quotes and code each show apart; text alone shows as one.
     let blocks = if message.formatted && message.notice.is_none() {
-        body_blocks(message, revealed)
+        body_blocks(message, Some(revealed))
     } else {
         None
     };
@@ -534,6 +540,7 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
             let (images, gallery_width, gallery_height) =
                 gallery(&previews(Placement::Embed(index)), &covered);
             let thumbnail = previews(Placement::Thumbnail(index)).into_iter().next();
+            let description_blocks = markdown_blocks(&embed.description);
             EmbedCard {
                 color: role_color(embed.color),
                 has_color: embed.color.is_some(),
@@ -544,8 +551,13 @@ pub(super) fn message_row(message: &ChatMessage, revealed: &HashSet<String>) -> 
                 title: embed_title(&embed.title, &embed.url),
                 has_title: !embed.title.is_empty(),
                 url: embed.url.clone().into(),
-                description: markdown(&embed.description),
+                description: if description_blocks.row_count() > 0 {
+                    slint::StyledText::default()
+                } else {
+                    markdown(&embed.description)
+                },
                 has_description: !embed.description.is_empty(),
+                description_blocks,
                 field_rows: field_rows(&embed.fields),
                 footer: slint::StyledText::from_plain_text(&embed.footer),
                 has_footer: !embed.footer.is_empty(),
@@ -894,9 +906,23 @@ pub(super) fn text_blocks(text: &str) -> Vec<TextBlock> {
     })
 }
 
+/// Someone's Markdown in blocks, as [`markdown`] styles it, when it has
+/// headings, quotes or code; otherwise none, and [`markdown`] shows it.
+pub(super) fn markdown_blocks(markdown: &str) -> ModelRc<TextBlock> {
+    blocks_of(markdown, |_, text| links::escape_html(text).into_owned())
+        .map_or_else(ModelRc::default, |blocks| {
+            ModelRc::new(VecModel::from(blocks))
+        })
+}
+
 /// A message's body in the blocks Discord's client lays out, with its
-/// mentions, custom emoji and spoilers; `None` when it's text alone.
-fn body_blocks(message: &ChatMessage, revealed: &HashSet<String>) -> Option<Vec<TextBlock>> {
+/// mentions, custom emoji and spoilers; `None` when it's text alone. Its
+/// spoilers are covered but those `revealed`, or all hidden as text
+/// without it, as a found message's are.
+fn body_blocks(
+    message: &ChatMessage,
+    revealed: Option<&HashSet<String>>,
+) -> Option<Vec<TextBlock>> {
     let mut spoilers = 0;
     blocks_of(&message.body, |block, text| {
         let mentions: Vec<_> = message
@@ -915,6 +941,9 @@ fn body_blocks(message: &ChatMessage, revealed: &HashSet<String>) -> Option<Vec<
             })
             .collect();
         let linked = custom_emoji::text(&with_mentions(text, &mentions), &message.emoji);
+        let Some(revealed) = revealed else {
+            return spoiler::hide(&linked);
+        };
         if !message.spoilers {
             return linked;
         }
@@ -1051,7 +1080,14 @@ const FOUND_GALLERY_WIDTH: i32 = 300;
 /// timeline stamps it on the chosen clock, its spoilers hidden, its first
 /// pictures shown and its other files named.
 pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
-    let styled = if message.formatted {
+    let blocks = if message.formatted {
+        body_blocks(message, None)
+    } else {
+        None
+    };
+    let styled = if blocks.is_some() {
+        slint::StyledText::default()
+    } else if message.formatted {
         let linked = with_mentions(&message.body, &message.mentions);
         styled(&spoiler::hide(&custom_emoji::text(&linked, &message.emoji)))
     } else {
@@ -1099,6 +1135,9 @@ pub(super) fn found_row(message: &ChatMessage, twelve_hour: bool) -> FoundRow {
         },
         styled,
         has_body: !message.body.trim().is_empty(),
+        blocks: blocks.map_or_else(ModelRc::default, |blocks| {
+            ModelRc::new(VecModel::from(blocks))
+        }),
         files: files.join(", ").into(),
         images,
         gallery_width,

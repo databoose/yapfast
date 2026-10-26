@@ -2,7 +2,7 @@ import { ScrollView, ListView } from "scrollview.slint";
 import { Theme, Middle, Label } from "theme.slint";
 import { ActionButton, IconButton, Avatar, Picture, Skeleton, SpoilerCover } from "controls.slint";
 import { StatusDot } from "rail.slint";
-import { ImageCell, PollCard, PollView } from "messages.slint";
+import { ImageCell, PollCard, PollView, TextBlock, TextBlocks } from "messages.slint";
 
 /// A pinned message or a search result: who wrote it, when, and what it says.
 export struct FoundRow {
@@ -11,7 +11,8 @@ export struct FoundRow {
     color: color, has-color: bool,
     /// The day and time it was sent.
     when: string,
-    styled: styled-text, has-body: bool,
+    /// A body with headings, quotes or code is in `blocks`.
+    styled: styled-text, has-body: bool, blocks: [TextBlock],
     /// Its first pictures, laid out as the timeline's gallery but smaller.
     images: [ImageCell], gallery-width: int, gallery-height: int,
     /// Its other files, named, when it has any.
@@ -150,12 +151,16 @@ export component FoundCard inherits Rectangle {
                     }
                     Text { text: root.found.when; color: Theme.muted; font-size: 12px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
                 }
-                if root.found.has-body: StyledText {
+                if root.found.has-body && root.found.blocks.length == 0: StyledText {
                     // An overlong word breaks rather than widening every card.
                     min-width: 0px;
                     text: root.found.styled; default-color: Theme.text; link-color: Theme.link;
                     default-font-size: 15px; max-lines: 8;
                     link-clicked(link) => { root.open-link(link); }
+                }
+                if root.found.blocks.length > 0: TextBlocks {
+                    blocks: root.found.blocks; font-size: 15px; max-lines: 8;
+                    open-link(link) => { root.open-link(link); }
                 }
                 // Clicks go through to the card, which shows the message.
                 if root.found.images.length > 0: HorizontalLayout {

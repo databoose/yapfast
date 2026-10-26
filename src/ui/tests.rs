@@ -6113,3 +6113,67 @@ fn spoilers_count_on_across_blocks() {
     assert!(hidden[0] == second[0], "the first is still hidden");
     assert!(hidden[1] != second[1], "the heading's is the second");
 }
+
+#[test]
+fn an_embed_shows_headings_and_code_in_its_description_and_fields() {
+    i_slint_backend_testing::init_no_event_loop();
+    let message = ChatMessage {
+        embeds: vec![yapfast_core::chat::Embed {
+            description: "## Status\n```\nall good\n```".into(),
+            fields: vec![
+                yapfast_core::chat::EmbedField {
+                    name: "Plain".into(),
+                    value: "just **text**".into(),
+                    inline: false,
+                },
+                yapfast_core::chat::EmbedField {
+                    name: "Quoted".into(),
+                    value: "> said".into(),
+                    inline: false,
+                },
+            ],
+            ..Default::default()
+        }],
+        ..formatted("")
+    };
+    let row = message_row_plain(&message);
+    let embed = row.embeds.row_data(0).unwrap();
+    let levels: Vec<_> = embed
+        .description_blocks
+        .iter()
+        .map(|block| block.level)
+        .collect();
+    assert_eq!(levels, [2, 5]);
+    let fields: Vec<_> = embed
+        .field_rows
+        .iter()
+        .flat_map(|row| row.fields.iter().collect::<Vec<_>>())
+        .collect();
+    assert_eq!(fields[0].value_blocks.row_count(), 0);
+    assert_eq!(
+        i_slint_core::yapfast_selection::plain(&fields[0].value),
+        "just text"
+    );
+    assert!(fields[1].value_blocks.row_data(0).unwrap().quoted);
+    let text = message_text(&MessageRow {
+        first: false,
+        ..row
+    });
+    assert_eq!(text, "Status\nall good\nPlain\njust text\nQuoted\nsaid");
+}
+
+#[test]
+fn a_found_message_shows_its_blocks_with_spoilers_hidden() {
+    i_slint_backend_testing::init_no_event_loop();
+    let message = ChatMessage {
+        spoilers: true,
+        ..formatted("# Plans\n> meet at ||the park||")
+    };
+    let row = found_row(&message, false);
+    let plain: Vec<_> = row
+        .blocks
+        .iter()
+        .map(|block| i_slint_core::yapfast_selection::plain(&block.text))
+        .collect();
+    assert_eq!(plain, ["Plans", "meet at (spoiler)"]);
+}
