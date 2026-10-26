@@ -2,11 +2,13 @@
 # Runs crates/yapfast-discord/tests/fake_server.rs, then yapfast-core's ignored
 # discord_text tests, against testing/fake_discord.ts, then
 # crates/yapfast-discord/tests/fake_env.rs against it with an environment.
-# Usage: scripts/test-fake-discord [TEST_ARGS…], such as a test name filter
+# Usage: scripts/test-fake-discord [FILTER…], test names or parts of them
 # (`scripts/test-fake-discord forum`), passed to each test binary.
-# Each fake_server.rs test starts a fake of its own on a free port this
-# picks, one test at a time, logging to target/fake-discord-TEST.log; `grep
-# -n '^async fn' crates/yapfast-discord/tests/fake_server.rs` lists them.
+# Each fake_server.rs test starts a fake of its own, logging to
+# target/fake-discord-TEST.log; `grep -n '^async fn'
+# crates/yapfast-discord/tests/fake_server.rs` lists them. cargo nextest
+# runs them side by side, eight at a time (.config/nextest.toml); without
+# it, cargo test runs them one after another.
 # For the discord_text tests it starts one fake, waits until it answers,
 # runs them with the `fast` profile, then stops it; its log is
 # target/fake-discord.log. Then it does the same for fake_env.rs, against
@@ -21,10 +23,9 @@ fi
 
 mkdir -p target
 fakes=()
-rpc_dir=$(mktemp -d /tmp/yapfast-rpc.XXXXXX)
 # Stops every fake: a stopped one's status fails `wait`, which mustn't end
 # the trap before the next.
-trap 'for fake in "${fakes[@]}"; do kill "$fake" 2>/dev/null || true; wait "$fake" 2>/dev/null || true; done; rm -rf -- "$rpc_dir"' EXIT
+trap 'for fake in "${fakes[@]}"; do kill "$fake" 2>/dev/null || true; wait "$fake" 2>/dev/null || true; done' EXIT
 
 # Starts the fake on a free port, logging to the file given first, with the
 # other arguments, and waits until it answers; sets $server to its address.
@@ -56,9 +57,12 @@ start_fake() {
   server="http://127.0.0.1:$port"
 }
 
-YAPFAST_DISCORD_TEST_SERVER=http://127.0.0.1:$(free_port) YAPFAST_DISCORD_RPC_DIR=$rpc_dir \
-YAPFAST_DISCORD_GAMES_CACHE=$rpc_dir/games.json YAPFAST_STEAM_DIR=$rpc_dir/steam \
+if command -v cargo-nextest >/dev/null; then
+  cargo nextest run --locked --cargo-profile fast -p yapfast-discord --test fake_server \
+    --run-ignored only --no-fail-fast "$@"
+else
   cargo test --locked --profile fast -p yapfast-discord --test fake_server -- --ignored "$@"
+fi
 # The shared core's Discord side, against a fake of its own.
 start_fake target/fake-discord.log
 YAPFAST_DISCORD_TEST_SERVER=$server \

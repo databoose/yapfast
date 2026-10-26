@@ -26,8 +26,12 @@
   an endpoint, payload or gateway event there before adding or changing one,
   and give the fake the same shape. How Yapfast does each Discord feature,
   one doc per area: `docs/discord/`.
-- Discord service tests: `scripts/test-fake-discord [FILTER]`, one area in
-  seconds. Matrix and LiveKit: `scripts/test-stack up`.
+- Discord service tests: `scripts/test-fake-discord [FILTER]`. While
+  working, run the tests of the area you changed by name (`forum`,
+  `calls_in_dms`), a second or so each. Run the whole suite, about 30 s, once
+  before the last commit of work on `crates/yapfast-discord`,
+  `discord_text` or `testing/fake_discord.ts`; `scripts/check` doesn't run
+  it. Matrix and LiveKit: `scripts/test-stack up`.
 - Where code lives, and how a UI change flows from `ui/*.slint` to
   `application/`: `docs/architecture.md`. Shells, logging (`YAPFAST_LOG`, not
   `RUST_LOG`), dependency sources and media libraries: `docs/building.md`.

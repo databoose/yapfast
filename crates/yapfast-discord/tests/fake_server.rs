@@ -1,7 +1,6 @@
-//! Yapfast's Discord service against testing/fake_discord.ts. Each test
-//! starts the fake afresh with bun on the port YAPFAST_DISCORD_TEST_SERVER
-//! names, one test at a time; `scripts/test-fake-discord [FILTER]` picks
-//! the port and runs them.
+//! Yapfast's Discord service against testing/fake_discord.ts, which each
+//! test starts afresh with bun. `scripts/test-fake-discord [FILTER]` runs
+//! them, side by side under cargo nextest.
 
 use std::{sync::Arc, time::Duration};
 
@@ -863,11 +862,14 @@ fn waits_as_detected_game() {
     }
 }
 
-/// The fake Discord, started afresh for each test on the port
-/// YAPFAST_DISCORD_TEST_SERVER names, so no test sees what another left.
-/// Tests take turns at it.
+/// The fake Discord, started afresh for each test, so no test sees what
+/// another left. The first in a process lets the fake pick a free port and
+/// points Yapfast at it; the rest take turns on that port, as `cargo test`
+/// runs them. `cargo nextest` runs each test in a process of its own, so
+/// there each test has a port of its own and they run side by side.
 struct Fake {
     process: std::process::Child,
+    _games: Option<Games>,
     _turn: tokio::sync::MutexGuard<'static, ()>,
 }
 
@@ -875,6 +877,50 @@ impl Drop for Fake {
     fn drop(&mut self) {
         let _ = self.process.kill();
         let _ = self.process.wait();
+    }
+}
+
+/// Directories of a test's own for Rich Presence's socket, the game list
+/// and Steam, which turn both on against the fake while it runs.
+struct Games {
+    _directory: tempfile::TempDir,
+}
+
+impl Games {
+    const VARIABLES: [&str; 3] = [
+        "YAPFAST_DISCORD_RPC_DIR",
+        "YAPFAST_DISCORD_GAMES_CACHE",
+        "YAPFAST_STEAM_DIR",
+    ];
+
+    fn new() -> Games {
+        // In /tmp, as a socket's path must stay under 108 bytes.
+        let directory = tempfile::Builder::new()
+            .prefix("yapfast-rpc")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let paths = [
+            directory.path().to_owned(),
+            directory.path().join("games.json"),
+            directory.path().join("steam"),
+        ];
+        for (variable, path) in Self::VARIABLES.into_iter().zip(paths) {
+            // SAFETY: the test holds the turn, and its session, which
+            // reads these, hasn't started.
+            unsafe { std::env::set_var(variable, path) };
+        }
+        Games {
+            _directory: directory,
+        }
+    }
+}
+
+impl Drop for Games {
+    fn drop(&mut self) {
+        for variable in Self::VARIABLES {
+            // SAFETY: the test still holds the turn.
+            unsafe { std::env::remove_var(variable) };
+        }
     }
 }
 
@@ -895,37 +941,70 @@ impl Fixture {
     /// Starts the fake for the test `name`, logging to
     /// target/fake-discord-`name`.log, and Alice's session on it.
     async fn start(name: &str) -> Fixture {
+        Self::open(name, false).await
+    }
+
+    /// The same, with Rich Presence and game detection on.
+    async fn start_with_games(name: &str) -> Fixture {
+        Self::open(name, true).await
+    }
+
+    async fn open(name: &str, games: bool) -> Fixture {
         static TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        static PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
         let turn = TURN.lock().await;
-        let server = client::test_server().expect("set YAPFAST_DISCORD_TEST_SERVER");
-        let port = server.rsplit(':').next().unwrap();
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let log =
             std::fs::File::create(root.join(format!("target/fake-discord-{name}.log"))).unwrap();
-        let process = std::process::Command::new("bun")
-            .args(["testing/fake_discord.ts", "--port", port])
+        let port = PORT.get().copied().unwrap_or(0).to_string();
+        let mut process = std::process::Command::new("bun")
+            .args(["testing/fake_discord.ts", "--port", &port])
             .current_dir(&root)
             .stdout(log.try_clone().unwrap())
-            .stderr(log)
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("could not start bun testing/fake_discord.ts");
-        let mut fake = Fake {
+        // The fake says where it listens once it does; the rest of what it
+        // says goes to the log.
+        let said = process.stderr.take().unwrap();
+        let (listening, address) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            let mut log = log;
+            let mut listening = Some(listening);
+            for line in std::io::BufReader::new(said).lines().map_while(Result::ok) {
+                let found = line
+                    .strip_prefix("fake Discord on ")
+                    .and_then(|rest| rest.split_whitespace().next());
+                if let (Some(found), Some(listening)) = (found, listening.take()) {
+                    let _ = listening.send(found.to_owned());
+                }
+                let _ = writeln!(log, "{line}");
+            }
+        });
+        let fake = Fake {
             process,
+            _games: games.then(Games::new),
             _turn: turn,
         };
-        timeout(WAIT, async {
-            let address = server.trim_start_matches("http://");
-            while std::net::TcpStream::connect(address).is_err() {
-                if let Some(status) = fake.process.try_wait().unwrap() {
-                    panic!(
-                        "the fake Discord exited with {status}; see target/fake-discord-{name}.log"
-                    );
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("the fake Discord didn't answer");
+        let address = timeout(WAIT, address)
+            .await
+            .expect("the fake Discord didn't start")
+            .unwrap_or_else(|_| {
+                panic!("the fake Discord exited; see target/fake-discord-{name}.log")
+            });
+        if PORT.get().is_none() {
+            PORT.set(address.rsplit(':').next().unwrap().parse().unwrap())
+                .unwrap();
+            // SAFETY: the first test of the process sets this, holding the
+            // turn, before anything reads it.
+            unsafe { std::env::set_var("YAPFAST_DISCORD_TEST_SERVER", &address) };
+        }
+        let server = client::test_server().unwrap();
+        assert_eq!(
+            server, address,
+            "the test server was read before the fake started"
+        );
         // A test that refreshed the login, or failed, may have left another.
         token::store(client::TEST_TOKEN).unwrap();
         let token = token::load().unwrap();
@@ -2909,7 +2988,7 @@ async fn shows_status_and_games() {
         discord,
         server,
         ..
-    } = Fixture::start("shows_status_and_games").await;
+    } = Fixture::start_with_games("shows_status_and_games").await;
     // Alice's custom status from her settings shows from this session, and
     // changing it changes what the session shows.
     let custom = snapshot_where(&discord, |snapshot| snapshot.custom_status.is_some())

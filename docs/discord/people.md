@@ -513,11 +513,12 @@ A list of your own takes Discord's shape. Use `win32` for a Wine game and
 ]
 ```
 
-`scripts/test-fake-discord` gives the socket, the list and its cache private
-paths, and plays a handshake, activities, images, clearing, several clients,
-the share setting and a detected process through to the fake gateway. Other
-runs against the fake leave Rich Presence and detection off unless those
-paths are set, so they never take the desktop's socket.
+`shows_status_and_games` in `crates/yapfast-discord/tests/fake_server.rs` gives
+the socket, the list and its cache private paths, and plays a handshake,
+activities, images, clearing, several clients, the share setting and a detected
+process through to the fake gateway. Other runs against the fake leave Rich
+Presence and detection off unless those paths are set, so they never take the
+desktop's socket.
 
 `yapfast-game-detection-probe` measures the detector alone, without Discord,
 and prints counts, times and heap, never process names or paths:
