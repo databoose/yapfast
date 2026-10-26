@@ -27,7 +27,10 @@ impl AppState {
     /// The thread beside the open channel, as it lists.
     pub fn aside_room(&self) -> Option<&ChatRoom> {
         let aside = self.aside.as_ref()?;
-        self.rooms.iter().find(|room| room.id == aside.room)
+        self.rooms
+            .iter()
+            .map(Arc::as_ref)
+            .find(|room| room.id == aside.room)
     }
 
     /// What the composer of the thread beside holds.

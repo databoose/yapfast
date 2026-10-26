@@ -717,6 +717,7 @@ impl Application {
             state
                 .servers
                 .iter()
+                .map(Arc::as_ref)
                 .filter(|server| server.discord && !server.unavailable)
                 .filter(|server| discord::parse_server(&server.id) != shown_in)
                 .filter(|server| self.may(&server.id, chat::Permission::CreateInvite))

@@ -451,7 +451,7 @@ impl Adapter {
         let rooms_by_id: HashMap<&str, &yapfast_core::chat::ChatRoom> = state
             .rooms
             .iter()
-            .map(|room| (room.id.as_str(), room))
+            .map(|room| (room.id.as_str(), &**room))
             .collect();
         self.rail_call = call_room(state).map(str::to_owned);
         let rail = rail(state, &rooms_by_id, &self.layout.open_folders);
@@ -2784,7 +2784,7 @@ impl Adapter {
             let rooms_by_id = state
                 .rooms
                 .iter()
-                .map(|room| (room.id.as_str(), room))
+                .map(|room| (room.id.as_str(), &**room))
                 .collect();
             let rail = rail(state, &rooms_by_id, &self.layout.open_folders);
             update_model_by_id(&self.models.servers, rail, |row| row.id.clone());

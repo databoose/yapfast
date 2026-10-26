@@ -337,27 +337,58 @@ pub fn file_size(bytes: u64) -> String {
     }
 }
 
-/// Makes `list` hold `items`, copying only those that differ from what it
-/// held there: comparing a long list costs less than copying it.
-pub fn sync_list<'a, T: Clone + PartialEq + 'a>(
-    list: &mut Vec<T>,
-    items: impl IntoIterator<Item = &'a T>,
-) {
+/// Makes `list` share `items`, keeping what it held at each place where the
+/// item there is the same one, or equal to it. Returns whether it changed.
+pub fn sync_list<'a, T: PartialEq + 'a>(
+    list: &mut Vec<Arc<T>>,
+    items: impl IntoIterator<Item = &'a Arc<T>>,
+) -> bool {
+    sync_with(
+        list,
+        items,
+        |held, item| Arc::ptr_eq(held, item) || **held == ***item,
+        Arc::clone,
+    )
+}
+
+/// [`sync_list`] for items made afresh: the list keeps what it held where
+/// that's equal to the new item, so whoever shares it goes on sharing it.
+pub fn share_list<T: PartialEq>(
+    list: &mut Vec<Arc<T>>,
+    items: impl IntoIterator<Item = T>,
+) -> bool {
+    sync_with(list, items, |held, item| **held == *item, Arc::new)
+}
+
+fn sync_with<T, I>(
+    list: &mut Vec<Arc<T>>,
+    items: impl IntoIterator<Item = I>,
+    same: impl Fn(&Arc<T>, &I) -> bool,
+    share: impl Fn(I) -> Arc<T>,
+) -> bool {
+    let mut changed = false;
     let mut count = 0;
     for item in items {
         match list.get_mut(count) {
-            Some(held) if held == item => {}
-            Some(held) => held.clone_from(item),
-            None => list.push(item.clone()),
+            Some(held) if same(held, &item) => {}
+            Some(held) => {
+                *held = share(item);
+                changed = true;
+            }
+            None => {
+                list.push(share(item));
+                changed = true;
+            }
         }
         count += 1;
     }
+    changed |= list.len() > count;
     list.truncate(count);
-    // Growing a room at a time can leave room for twice as many; a large
-    // account's room list takes megabytes.
+    // Growing a room at a time can leave room for twice as many.
     if list.capacity() > count + count / 4 {
         list.shrink_to_fit();
     }
+    changed
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]

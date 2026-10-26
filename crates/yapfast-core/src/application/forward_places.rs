@@ -6,7 +6,7 @@
 //! how much it's used. A Matrix message lists its rooms as the sidebar
 //! does, those whose name holds the search.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use super::{AppState, PlacesUsed};
 use crate::chat::{ChatRoom, PlaceUses};
@@ -180,6 +180,7 @@ impl AppState {
         let places = self
             .rooms
             .iter()
+            .map(Arc::as_ref)
             .filter(|room| self.can_forward_to(&forwarding.room, room));
         let query = forwarding.query.trim().to_lowercase();
         if Network::of(&forwarding.room) != Network::Discord {

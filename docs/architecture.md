@@ -33,7 +33,9 @@ A client sends an `Action` to `Application::dispatch` and applies backend events
 with `Application::apply`. These methods return effects for starting a session
 or sending a backend command. `AppState` supplies ordinary Rust data for rendering,
 including shared timeline storage through `Arc<Vec<Arc<ChatMessage>>>`, whose
-rows a backend sends again unchanged when they didn't change. `dispatch`
+rows a backend sends again unchanged when they didn't change. Its rooms and
+servers are `Arc`s shared with each network's own lists, which keep a room
+or server while it stays the same. `dispatch`
 routes each action to a method in the module for its area, under
 [`application/`](../crates/yapfast-core/src/application): `compose`, `messages`,
 `rooms`, `aside`, which shows a Discord thread beside the open channel,

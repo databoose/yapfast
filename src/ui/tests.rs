@@ -2406,6 +2406,7 @@ fn signed_in_controls_keep_trust_and_plaintext_sending_gates() {
             .state
             .rooms
             .iter_mut()
+            .map(Arc::make_mut)
             .find(|room| room.id == id)
             .unwrap()
             .encrypted = false;
@@ -2513,7 +2514,7 @@ fn typing_and_the_call_show_without_building_the_rest_again() {
     adapter.models.rooms.set_row_data(0, row);
     adapter.refresh(&window);
     assert_eq!(adapter.models.rooms.row_data(0).unwrap().name, "Marked");
-    adapter.app.state.rooms[0].name = "Renamed".into();
+    Arc::make_mut(&mut adapter.app.state.rooms[0]).name = "Renamed".into();
     adapter.refresh(&window);
     assert_ne!(adapter.models.rooms.row_data(0).unwrap().name, "Marked");
 }
@@ -2977,6 +2978,7 @@ fn an_unread_dm_shows_on_the_rail_above_the_servers_and_opens() {
             .state
             .rooms
             .iter_mut()
+            .map(Arc::make_mut)
             .find(|room| room.id == "riley")
             .unwrap();
         riley.unread = 2;
@@ -3018,12 +3020,14 @@ fn a_folder_on_the_rail_holds_its_servers_until_opened() {
         }
     };
     let mut state = AppState::default();
-    state.servers = vec![
+    state.servers = [
         server("Alpha", None),
         server("Bravo", Some(&folder)),
         server("Charlie", Some(&folder)),
         server("Delta", None),
-    ];
+    ]
+    .map(Arc::new)
+    .into();
     state.navigation = Navigation::Server("Charlie".into());
     let shown = |open: &[&str]| {
         let open = open.iter().map(|&id| id.to_owned()).collect();
@@ -3204,13 +3208,15 @@ fn friends_in_a_servers_voice_channel_show_where() {
         preview: None,
     };
     let mut state = AppState::default();
-    state.rooms = vec![
+    state.rooms = [
         room("lounge", true, false, vec![person("ann"), person("bob")]),
         room("general", false, false, Vec::new()),
         // A DM call isn't a server's voice channel.
         room("dm", true, true, vec![person("cat")]),
-    ];
-    state.servers = vec![ChatServer {
+    ]
+    .map(Arc::new)
+    .into();
+    state.servers = vec![Arc::new(ChatServer {
         id: "Alpha".into(),
         name: "Alpha".into(),
         channels: vec!["lounge".into(), "general".into()],
@@ -3222,11 +3228,11 @@ fn friends_in_a_servers_voice_channel_show_where() {
         hide_muted: false,
         community: false,
         pinned: Vec::new(),
-    }];
+    })];
     let rooms_by_id = state
         .rooms
         .iter()
-        .map(|room| (room.id.as_str(), room))
+        .map(|room| (room.id.as_str(), &**room))
         .collect();
     let places = refresh::voice_places(&state, &rooms_by_id);
     let mut found: Vec<_> = places
@@ -3266,10 +3272,12 @@ fn a_call_shows_on_its_servers_icon_and_its_closed_folder() {
         }
     };
     let mut state = AppState::default();
-    state.servers = vec![
+    state.servers = [
         server("Alpha", "alpha-lounge", None),
         server("Bravo", "bravo-lounge", Some(&folder)),
-    ];
+    ]
+    .map(Arc::new)
+    .into();
     let calls = |state: &AppState, open: &[&str]| -> Vec<(String, bool)> {
         let open = open.iter().map(|&id| id.to_owned()).collect();
         refresh::rail_rows(state, &HashMap::new(), &open)

@@ -8,7 +8,7 @@ impl Application {
             return vec![];
         }
         self.state.preview = true;
-        self.state.servers = vec![
+        self.state.servers = [
             ChatServer {
                 id: "friends".into(),
                 name: "Friends".into(),
@@ -44,9 +44,12 @@ impl Application {
                 community: false,
                 pinned: Vec::new(),
             },
-        ];
+        ]
+        .into_iter()
+        .map(Arc::new)
+        .collect();
         self.state.navigation = Navigation::Server("friends".into());
-        self.state.rooms = vec![
+        self.state.rooms = [
             preview_room("general", "general", false, 4),
             preview_room("games", "games", false, 4),
             preview_room("weekend", "weekend plans", false, 4),
@@ -63,7 +66,10 @@ impl Application {
             preview_room("sam", "Sam", true, 2),
             preview_room("riley", "Riley", true, 2),
             preview_room("party", "Friday crew", true, 3),
-        ];
+        ]
+        .into_iter()
+        .map(Arc::new)
+        .collect();
         for (room, lines) in [
             (
                 "announcements",

@@ -480,8 +480,9 @@ pub struct AppState {
     pub online: bool,
     pub storage: Option<&'static str>,
     pub notice: Option<String>,
-    pub rooms: Vec<ChatRoom>,
-    pub servers: Vec<ChatServer>,
+    /// Shared with the networks' lists they're shown from.
+    pub rooms: Vec<Arc<ChatRoom>>,
+    pub servers: Vec<Arc<ChatServer>>,
     /// Who else is typing, by room.
     pub typing: HashMap<String, Vec<String>>,
     /// The `@` word being typed in the composer, if any.
@@ -615,6 +616,7 @@ impl AppState {
     pub fn selected_room(&self) -> Option<&ChatRoom> {
         self.rooms
             .iter()
+            .map(Arc::as_ref)
             .find(|room| Some(&room.id) == self.selected.as_ref())
     }
 
@@ -733,16 +735,19 @@ impl AppState {
             })
             .map(|room| room.parent.as_deref().unwrap_or(&room.id))
             .collect();
-        self.rooms.iter().filter(move |room| match &channels {
-            None => room.direct,
-            Some(channels) => {
-                !room.direct
-                    && channels.contains(room.id.as_str())
-                    && !(hide_muted && self.hidden_muted(room))
-                    && !(room.unlisted
-                        && !shown.contains(room.parent.as_deref().unwrap_or(&room.id)))
-            }
-        })
+        self.rooms
+            .iter()
+            .map(Arc::as_ref)
+            .filter(move |room| match &channels {
+                None => room.direct,
+                Some(channels) => {
+                    !room.direct
+                        && channels.contains(room.id.as_str())
+                        && !(hide_muted && self.hidden_muted(room))
+                        && !(room.unlisted
+                            && !shown.contains(room.parent.as_deref().unwrap_or(&room.id)))
+                }
+            })
     }
 
     /// Who else is typing in the open conversation, as the composer says it; empty
@@ -805,7 +810,7 @@ impl AppState {
         if let Some(person) = self
             .selected_room()
             .into_iter()
-            .chain(&self.rooms)
+            .chain(self.rooms.iter().map(Arc::as_ref))
             .flat_map(|room| &room.people)
             .find(|person| person.id == user)
         {
@@ -1787,8 +1792,8 @@ type TimelineArc = Arc<Vec<Arc<ChatMessage>>>;
 pub struct Application {
     pub state: AppState,
     /// The lists from Matrix; `state` shows them with Discord's.
-    matrix_rooms: Vec<ChatRoom>,
-    matrix_servers: Vec<ChatServer>,
+    matrix_rooms: Vec<Arc<ChatRoom>>,
+    matrix_servers: Vec<Arc<ChatServer>>,
     #[cfg(feature = "discord")]
     discord: Option<Arc<yapfast_discord::service::Snapshot>>,
     /// Discord's lists, made from `discord`.
@@ -3010,8 +3015,9 @@ impl Application {
                 self.state.notice = None;
             }
             Event::Rooms(index) => {
-                self.matrix_rooms = index.rooms;
-                self.matrix_servers = index.servers;
+                // Those that didn't change stay shared with the state's.
+                chat::share_list(&mut self.matrix_rooms, index.rooms);
+                chat::share_list(&mut self.matrix_servers, index.servers);
                 return self.show_lists();
             }
             Event::Image {

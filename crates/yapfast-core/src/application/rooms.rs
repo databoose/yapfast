@@ -237,6 +237,7 @@ impl AppState {
     pub(super) fn dm_with(&self, user: &str) -> Option<&ChatRoom> {
         self.rooms
             .iter()
+            .map(Arc::as_ref)
             .find(|room| room.direct && room.person.as_deref() == Some(user))
     }
 
@@ -362,6 +363,7 @@ impl AppState {
     fn folder_servers(&self, id: &str) -> impl Iterator<Item = &ChatServer> {
         self.servers
             .iter()
+            .map(Arc::as_ref)
             .filter(move |server| server.folder.as_ref().is_some_and(|folder| folder.id == id))
     }
 
@@ -391,6 +393,7 @@ impl AppState {
             .unwrap_or_default();
         self.rooms
             .iter()
+            .map(Arc::as_ref)
             .filter(move |room| channels.contains(&room.id) && unread(room))
     }
 }
@@ -860,6 +863,7 @@ impl Application {
             .state
             .rooms
             .iter()
+            .map(Arc::as_ref)
             .find(|room| Some(&room.id) == remembered && self.state.in_scope(room))
             // A message request opens only when chosen.
             .or_else(|| self.state.scoped_rooms().find(|room| !room.request))

@@ -206,7 +206,7 @@ fn voice_person(member: &yapfast_discord::service::VoiceMember) -> VoicePerson {
 /// listed locked, as in Discord, though their chat may be read, and
 /// channels it can't send in are read-only. Channels hidden from it are
 /// listed locked only with `show_hidden`.
-pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<ChatServer>) {
+pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<Arc<ChatRoom>>, Vec<Arc<ChatServer>>) {
     let mut index = Index::default();
     index.update(snapshot, show_hidden);
     (
@@ -218,12 +218,13 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<ChatRoom>, Vec<Chat
 /// [`index`], kept between snapshots: each server's rooms are made again
 /// only when the server, who is in its voice channels or its listed member
 /// count changed, so a large account's thousands of channels aren't remade
-/// for every change.
+/// for every change. Rooms and servers that come out the same as before are
+/// kept, so the application's lists go on sharing them.
 #[cfg(feature = "discord")]
 #[derive(Default)]
 pub struct Index {
     /// The DMs, made again for each snapshot.
-    dms: Vec<ChatRoom>,
+    dms: Vec<Arc<ChatRoom>>,
     servers: Vec<Indexed>,
 }
 
@@ -239,8 +240,8 @@ struct Indexed {
     listed: Option<(String, u64)>,
     /// Its threads on screen, which list while they show.
     viewing: Vec<String>,
-    rooms: Vec<ChatRoom>,
-    server: ChatServer,
+    rooms: Vec<Arc<ChatRoom>>,
+    server: Arc<ChatServer>,
 }
 
 #[cfg(feature = "discord")]
@@ -304,14 +305,14 @@ impl Indexed {
 #[cfg(feature = "discord")]
 impl Index {
     /// The DMs, then each server's rooms, as listed from the last snapshot.
-    pub fn rooms(&self) -> impl Iterator<Item = &ChatRoom> {
+    pub fn rooms(&self) -> impl Iterator<Item = &Arc<ChatRoom>> {
         self.dms
             .iter()
             .chain(self.servers.iter().flat_map(|indexed| &indexed.rooms))
     }
 
     /// The servers, as listed from the last snapshot.
-    pub fn servers(&self) -> impl Iterator<Item = &ChatServer> {
+    pub fn servers(&self) -> impl Iterator<Item = &Arc<ChatServer>> {
         self.servers.iter().map(|indexed| &indexed.server)
     }
 
@@ -334,10 +335,24 @@ impl Index {
             .flat_map(|folder| folder.servers.iter().map(move |id| (id.as_str(), folder)))
             .collect();
         for server in &snapshot.servers {
+            let folder = folders
+                .get(server.id.as_str())
+                .map(|folder| chat::ServerFolder {
+                    id: format!("{FOLDER_PREFIX}{}", folder.id),
+                    name: folder.name.clone(),
+                    color: folder.color,
+                });
             let mut indexed = match kept.remove(&server.id) {
                 Some(indexed) if indexed.current(snapshot, server, show_hidden, premium) => indexed,
-                _ => {
-                    let (made, listed) = server_rooms(snapshot, server, show_hidden, premium);
+                last => {
+                    let (made, mut listed) = server_rooms(snapshot, server, show_hidden, premium);
+                    listed.folder.clone_from(&folder);
+                    let (mut rooms, shown) = match last {
+                        Some(last) if *last.server == listed => (last.rooms, last.server),
+                        Some(last) => (last.rooms, Arc::new(listed)),
+                        None => (vec![], Arc::new(listed)),
+                    };
+                    chat::share_list(&mut rooms, made);
                     Indexed {
                         source: server.clone(),
                         show_hidden,
@@ -347,22 +362,18 @@ impl Index {
                             .collect(),
                         listed: Indexed::listed(snapshot, server).cloned(),
                         viewing: Indexed::viewing(snapshot, server),
-                        rooms: made,
-                        server: listed,
+                        rooms,
+                        server: shown,
                     }
                 }
             };
-            indexed.server.folder =
-                folders
-                    .get(server.id.as_str())
-                    .map(|folder| chat::ServerFolder {
-                        id: format!("{FOLDER_PREFIX}{}", folder.id),
-                        name: folder.name.clone(),
-                        color: folder.color,
-                    });
+            // A folder changes without its servers.
+            if indexed.server.folder != folder {
+                Arc::make_mut(&mut indexed.server).folder = folder;
+            }
             self.servers.push(indexed);
         }
-        self.dms = dm_rooms(snapshot, premium, me);
+        chat::share_list(&mut self.dms, dm_rooms(snapshot, premium, me));
     }
 
     /// [`Self::update`], into lists that change only where they differ.
@@ -371,12 +382,11 @@ impl Index {
         &mut self,
         snapshot: &Snapshot,
         show_hidden: bool,
-        rooms: &mut Vec<ChatRoom>,
-        servers: &mut Vec<ChatServer>,
-    ) {
+        rooms: &mut Vec<Arc<ChatRoom>>,
+        servers: &mut Vec<Arc<ChatServer>>,
+    ) -> bool {
         self.update(snapshot, show_hidden);
-        chat::sync_list(rooms, self.rooms());
-        chat::sync_list(servers, self.servers());
+        chat::sync_list(rooms, self.rooms()) | chat::sync_list(servers, self.servers())
     }
 }
 
@@ -1094,7 +1104,7 @@ mod tests {
             servers: vec![Arc::new(server)],
             ..Default::default()
         };
-        let listed = |rooms: &[ChatRoom]| -> Vec<(String, Option<String>, bool)> {
+        let listed = |rooms: &[Arc<ChatRoom>]| -> Vec<(String, Option<String>, bool)> {
             rooms
                 .iter()
                 .map(|room| (room.name.clone(), room.parent.clone(), room.read_only))
@@ -1175,7 +1185,7 @@ mod tests {
             index(snapshot, false)
                 .0
                 .into_iter()
-                .map(|room| room.name)
+                .map(|room| room.name.clone())
                 .collect()
         };
         assert_eq!(
@@ -1274,6 +1284,52 @@ mod tests {
             );
         }
         assert_eq!(rooms.len(), 4);
+    }
+
+    #[test]
+    fn rooms_that_stay_the_same_stay_shared() {
+        let channel = |id: &str| Channel {
+            id: id.into(),
+            name: id.into(),
+            ..Default::default()
+        };
+        let first = Snapshot {
+            servers: vec![Arc::new(Server {
+                id: "10".into(),
+                text_channels: vec![channel("11"), channel("12")],
+                ..Default::default()
+            })],
+            ..Default::default()
+        };
+        let mut kept = Index::default();
+        let (mut rooms, mut servers) = (Vec::new(), Vec::new());
+        assert!(kept.update_into(&first, false, &mut rooms, &mut servers));
+        let shared = |rooms: &[Arc<ChatRoom>], servers: &[Arc<ChatServer>], kept: &Index| {
+            rooms
+                .iter()
+                .zip(kept.rooms())
+                .all(|(a, b)| Arc::ptr_eq(a, b))
+                && servers
+                    .iter()
+                    .zip(kept.servers())
+                    .all(|(a, b)| Arc::ptr_eq(a, b))
+        };
+        assert!(shared(&rooms, &servers, &kept));
+        assert!(!kept.update_into(&first, false, &mut rooms, &mut servers));
+        // One channel turns unread: the server's rooms are made again, and
+        // only that one is new.
+        let before = rooms.clone();
+        let mut unread = (*first.servers[0]).clone();
+        unread.text_channels[0].unread = true;
+        let next = Snapshot {
+            servers: vec![Arc::new(unread)],
+            ..first.clone()
+        };
+        assert!(kept.update_into(&next, false, &mut rooms, &mut servers));
+        assert_eq!(rooms[0].unread, 1);
+        assert!(!Arc::ptr_eq(&rooms[0], &before[0]));
+        assert!(Arc::ptr_eq(&rooms[1], &before[1]));
+        assert!(shared(&rooms, &servers, &kept));
     }
 
     #[test]

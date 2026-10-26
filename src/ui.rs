@@ -2269,6 +2269,7 @@ fn ringing(
     state
         .rooms
         .iter()
+        .map(std::sync::Arc::as_ref)
         .filter(|room| room.incoming && !(voice.active() && voice.room.as_ref() == Some(&room.id)))
 }
 

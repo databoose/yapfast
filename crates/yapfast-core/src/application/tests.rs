@@ -7,6 +7,11 @@ fn discord_event(snapshot: yapfast_discord::service::Snapshot) -> Event {
 use crate::{chat::RoomIndex, sounds::Sound};
 
 /// The sounds among effects, in order.
+/// Copies of the rooms or servers a list shares, as a network sends them.
+fn owned<T: Clone>(list: &[Arc<T>]) -> Vec<T> {
+    list.iter().map(|item| (**item).clone()).collect()
+}
+
 fn sounds(effects: &[Effect]) -> Vec<Sound> {
     effects
         .iter()
@@ -77,8 +82,8 @@ fn the_requests_screen_stands_in_for_a_conversation() {
     assert_eq!(app.state.dm_screen, Some(DmScreen::Requests));
     assert_eq!(app.state.selected, None);
     // The lists changing doesn't pick a conversation over it.
-    let rooms = app.state.rooms.clone();
-    let servers = app.state.servers.clone();
+    let rooms = owned(&app.state.rooms);
+    let servers = owned(&app.state.servers);
     app.apply(Event::Rooms(RoomIndex { rooms, servers }));
     assert_eq!(app.state.dm_screen, Some(DmScreen::Requests));
     assert_eq!(app.state.selected, None);
@@ -386,18 +391,18 @@ fn forwarding_sends_a_message_to_the_conversations_chosen() {
     app.dispatch(Action::StartForward("e:$bob".into()));
     assert_eq!(app.state.forwarding.as_ref().unwrap().quote, "Hello there");
     // Up to five, within the message's network, and nothing goes until Send.
-    let general = app.state.rooms[1].clone();
+    let general = (*app.state.rooms[1]).clone();
     for id in ["c1", "c2", "c3", "c4", "c5"] {
-        app.state.rooms.push(ChatRoom {
+        app.state.rooms.push(Arc::new(ChatRoom {
             id: id.into(),
             ..general.clone()
-        });
+        }));
     }
-    app.state.rooms.push(ChatRoom {
+    app.state.rooms.push(Arc::new(ChatRoom {
         id: crate::discord::room_id("10", "11"),
         network: Network::Discord,
         ..general.clone()
-    });
+    }));
     assert!(
         !app.state
             .can_forward_to("dm", app.state.rooms.last().unwrap())
@@ -478,11 +483,13 @@ fn discord_forwards_skip_the_note_in_slowmode_and_take_silent() {
         slowed,
         ..preview_room("x", id, false, 3)
     };
-    app.state.rooms = vec![
+    app.state.rooms = [
         channel("11", false),
         channel("12", true),
         channel("13", false),
-    ];
+    ]
+    .map(Arc::new)
+    .into();
     app.state.discord_online = true;
     app.state.selected = Some(app.state.rooms[0].id.clone());
     let mut sent = message("d:5", false);
@@ -517,7 +524,7 @@ fn discord_forwards_list_places_as_discords_dialog_does() {
         direct: guild == "@me",
         ..preview_room("x", id, false, 3)
     };
-    app.state.rooms = vec![
+    app.state.rooms = [
         ChatRoom {
             person: Some("1".into()),
             ..place("@me", "20", "Bob")
@@ -527,7 +534,9 @@ fn discord_forwards_list_places_as_discords_dialog_does() {
         place("10", "12", "games"),
         place("10", "13", "game-night"),
         place("10", "14", "chat"),
-    ];
+    ]
+    .map(Arc::new)
+    .into();
     let id = |channel| crate::discord::room_id("10", channel);
     let (games, chat) = (id("12"), id("14"));
     app.state.discord_online = true;
@@ -595,12 +604,12 @@ fn room_membership_loss_moves_selection_and_server_loss_returns_to_dms() {
         .rooms
         .iter()
         .filter(|room| room.id != "games")
-        .cloned()
+        .map(|room| (**room).clone())
         .collect();
-    let servers = app.state.servers.clone();
+    let servers = owned(&app.state.servers);
     app.apply(Event::Rooms(RoomIndex { rooms, servers }));
     assert_eq!(app.state.selected.as_deref(), Some("general"));
-    let rooms = app.state.rooms.clone();
+    let rooms = owned(&app.state.rooms);
     app.apply(Event::Rooms(RoomIndex {
         rooms,
         servers: vec![],
@@ -934,6 +943,7 @@ fn files_wait_in_the_composer_until_sent() {
         .state
         .rooms
         .iter_mut()
+        .map(Arc::make_mut)
         .find(|room| room.id == "dm")
         .unwrap();
     room.capabilities = Network::Discord.capabilities();
@@ -1012,6 +1022,7 @@ fn uploads_name_their_destination_as_discord_does() {
         app.state
             .rooms
             .iter_mut()
+            .map(Arc::make_mut)
             .find(|room| room.id == id)
             .unwrap()
     }
@@ -1366,6 +1377,7 @@ fn security_gates_are_shared_by_every_ui_adapter() {
     app.state
         .rooms
         .iter_mut()
+        .map(Arc::make_mut)
         .find(|room| room.id == "dm")
         .unwrap()
         .encrypted = false;
@@ -1373,6 +1385,7 @@ fn security_gates_are_shared_by_every_ui_adapter() {
     app.state
         .rooms
         .iter_mut()
+        .map(Arc::make_mut)
         .find(|room| room.id == "lounge")
         .unwrap()
         .encrypted = false;
@@ -1437,6 +1450,7 @@ fn bob_live_in_lounge() -> Application {
         .state
         .rooms
         .iter_mut()
+        .map(Arc::make_mut)
         .find(|room| room.id == "lounge")
         .unwrap();
     lounge.people = vec![chat::VoicePerson {
@@ -1565,6 +1579,7 @@ fn clicking_someone_with_only_a_camera_shows_the_channel_without_joining() {
         .state
         .rooms
         .iter_mut()
+        .map(Arc::make_mut)
         .find(|room| room.id == "lounge")
         .unwrap();
     lounge.people = vec![chat::VoicePerson {
@@ -1618,8 +1633,10 @@ fn a_discord_voice_channels_chat_opens_without_joining_it() {
     room.voice = true;
     room.join_locked = true;
     app.state.discord_online = true;
-    app.state.rooms.push(room);
-    app.state.servers[0].channels.push(id.into());
+    app.state.rooms.push(Arc::new(room));
+    Arc::make_mut(&mut app.state.servers[0])
+        .channels
+        .push(id.into());
     let opens = |effects: &[Effect]| {
         effects.iter().any(|effect| {
             matches!(
@@ -1675,6 +1692,7 @@ fn a_discord_voice_channels_chat_opens_without_joining_it() {
     app.state
         .rooms
         .iter_mut()
+        .map(Arc::make_mut)
         .find(|room| room.id == id)
         .unwrap()
         .read_only = true;
@@ -1689,9 +1707,9 @@ fn a_folder_marks_its_servers_read() {
         name: None,
         color: None,
     };
-    let mut rooms = app.state.rooms.clone();
+    let mut rooms = owned(&app.state.rooms);
     rooms.push(preview_room("standup", "standup", false, 3));
-    let mut servers = app.state.servers.clone();
+    let mut servers = owned(&app.state.servers);
     servers[0].folder = Some(folder.clone());
     servers.push(ChatServer {
         id: "work".into(),
@@ -1732,7 +1750,7 @@ fn a_folder_marks_its_servers_read() {
 fn menus_offer_what_fits_their_conversation_or_server() {
     use MenuChoice::*;
     let mut app = connected();
-    let mut rooms = app.state.rooms.clone();
+    let mut rooms = owned(&app.state.rooms);
     rooms
         .iter_mut()
         .find(|room| room.id == "general")
@@ -1743,7 +1761,7 @@ fn menus_offer_what_fits_their_conversation_or_server() {
         .find(|room| room.id == "games")
         .unwrap()
         .mentions = 1;
-    let servers = app.state.servers.clone();
+    let servers = owned(&app.state.servers);
     app.apply(Event::Rooms(RoomIndex { rooms, servers }));
     assert_eq!(
         app.state.menu_choices("dm"),
@@ -2856,11 +2874,11 @@ fn new_dms_find_people_on_both_networks_and_open_once_listed() {
     app.apply(Event::DmStarted(Ok("!sam".into())));
     assert!(app.state.new_dm.is_none());
     assert_eq!(app.state.selected.as_deref(), Some("dm"));
-    let mut rooms = app.state.rooms.clone();
+    let mut rooms = owned(&app.state.rooms);
     rooms.push(preview_room("!sam", "Sam", true, 2));
     let effects = app.apply(Event::Rooms(RoomIndex {
         rooms,
-        servers: app.state.servers.clone(),
+        servers: owned(&app.state.servers),
     }));
     assert_eq!(app.state.selected.as_deref(), Some("!sam"));
     assert!(
