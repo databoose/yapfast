@@ -120,6 +120,9 @@ pub(super) struct Tracker {
     pub(super) servers: Vec<Arc<Server>>,
     /// Each server as the last snapshot marked it, by id.
     published: HashMap<String, Published>,
+    /// The map [`Self::published`] was before the last snapshot, emptied,
+    /// for the next to fill.
+    emptied: HashMap<String, Published>,
     /// The lists of people the last snapshot gave.
     kept: Kept,
     names: Arc<RwLock<Names>>,
@@ -190,6 +193,7 @@ impl Tracker {
             email: ready["user"]["email"].is_string(),
             servers: ready::servers(ready).into_iter().map(Arc::new).collect(),
             published: HashMap::new(),
+            emptied: HashMap::new(),
             kept: Kept::default(),
             names,
             voice: HashMap::new(),
@@ -1668,8 +1672,10 @@ impl Tracker {
             });
         }
         // Mark what this account may do in each channel, reusing the servers
-        // and marks the last snapshot published the same.
-        let mut published = HashMap::with_capacity(self.servers.len());
+        // and marks the last snapshot published the same. Each moves from
+        // the last snapshot's map to this one's with its id.
+        let mut published = std::mem::take(&mut self.emptied);
+        published.reserve(self.servers.len());
         let mut servers = Vec::with_capacity(self.servers.len());
         let now = now_ms();
         for server in &self.servers {
@@ -1677,7 +1683,11 @@ impl Tracker {
             let timeout = names
                 .timed_out_until(&server.id, &self.me)
                 .filter(|until| *until > now);
-            let last = self.published.remove(&server.id).filter(|last| {
+            let (id, last) = match self.published.remove_entry(&server.id) {
+                Some((id, last)) => (id, Some(last)),
+                None => (server.id.clone(), None),
+            };
+            let last = last.filter(|last| {
                 Arc::ptr_eq(&last.source, server)
                     && last.listed.marks.roles == roles
                     && last.timeout == timeout
@@ -1717,7 +1727,7 @@ impl Tracker {
             };
             servers.push(listed.clone());
             published.insert(
-                server.id.clone(),
+                id,
                 Published {
                     source: server.clone(),
                     timeout,
@@ -1725,7 +1735,9 @@ impl Tracker {
                 },
             );
         }
-        self.published = published;
+        // What's left is of servers this account left.
+        self.published.clear();
+        self.emptied = std::mem::replace(&mut self.published, published);
         let mut kept = std::mem::take(&mut self.kept);
         let people = self.people(&names, &mut kept);
         self.kept = kept;
