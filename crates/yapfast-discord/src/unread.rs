@@ -432,8 +432,8 @@ impl Unreads {
             .is_some_and(|settings| settings.mute.active(now()))
     }
 
-    /// A server's text channel's muted, unread and mention state, as
-    /// [`Self::mark`] sets it, for an account with `access` to it.
+    /// A server's text channel's muted, unread and mention state, for an
+    /// account with `access` to it, as a snapshot marks it.
     pub fn channel(&self, guild: &str, channel: &Channel, access: Access) -> (bool, bool, u64) {
         let settings = self.settings.get(guild);
         let now = now();

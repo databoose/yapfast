@@ -208,8 +208,6 @@ dependency in Cargo.toml:
   id changes, and reading a frame's overlong nonce without panicking.
 - `tungstenite`: tungstenite 0.26.2, giving back the read buffer a large frame
   such as Discord's READY grew.
-- `gpui-pre-windows`: a Windows build fix for the archived GPUI client. Nothing
-  uses it now.
 
 `vendor/x264-src` isn't a patched crate but x264's own C source, unchanged and
 trimmed to what an 8-bit encoder library uses, with a build script in place of
@@ -400,7 +398,6 @@ path in UTF-8 or UTF-16. A Linux build from the dev shell needs the same, and
 its linker also writes a RUNPATH of `$PWD/outputs/out/lib` and Nix store
 folders into the binary; the [AppImage](#linux-appimage) avoids both by
 building in the Nix sandbox.
-GPUI's FXC shader build is no longer used.
 
 The supported build route for this migration is the Linux MSVC cross-build.
 Native Windows development needs Rustup, Visual Studio C++ tools and SDK, CMake,
