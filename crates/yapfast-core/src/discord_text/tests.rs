@@ -1245,8 +1245,14 @@ fn changing_the_view_drops_old_previews_and_ignores_late_downloads() {
     open.picture("preview".into(), Some(picture));
     assert!(open.pictures["preview"].is_some());
     open.rendered.insert(1, Arc::default());
+    open.rendered.insert(2, Arc::default());
     assert!(open.visible(vec!["d:2".into()]));
-    assert!(open.pictures.is_empty() && open.requested.is_empty() && open.rendered.is_empty());
+    assert!(open.pictures.is_empty() && open.requested.is_empty());
+    assert_eq!(
+        open.rendered.keys().collect::<Vec<_>>(),
+        [&2],
+        "a row without a preview shows the same anywhere"
+    );
     open.picture("preview".into(), Some(Arc::new(Picture::default())));
     assert!(
         open.pictures.is_empty(),

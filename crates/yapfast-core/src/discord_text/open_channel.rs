@@ -1127,7 +1127,17 @@ impl OpenChannel {
             .collect();
         self.pictures.retain(|url, _| urls.contains(url));
         self.requested.retain(|url| urls.contains(url));
-        self.rendered.clear();
+        // Rows with a preview render again, to take theirs or let it go;
+        // the rest show the same wherever the view is. Following a busy
+        // channel moves the view at each message.
+        let shown = &self.shown.messages;
+        self.rendered.retain(|order, _| {
+            !shown.get(order).is_some_and(|message| {
+                message.attachments.iter().any(|attachment| {
+                    attachment.preview_url.is_some() || attachment.still_url.is_some()
+                })
+            })
+        });
         true
     }
 
