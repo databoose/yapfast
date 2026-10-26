@@ -1899,6 +1899,22 @@ const LISTED_PICTURES: usize = 150;
 /// decoded, and the window keeps a copy of each it shows. The rail, the DMs
 /// listed, a member list and a timeline show a few hundred at most.
 const KEPT_PICTURES: usize = 400;
+/// Timeline rows either side of those on screen whose avatars stay when
+/// pictures go.
+const PICTURED_AROUND: usize = 30;
+
+/// Where the messages on screen are in `timeline`: from the first to the
+/// last of `visible`, the items the timeline said show; none before it said,
+/// or once they've gone.
+fn visible_range(
+    timeline: &[Arc<ChatMessage>],
+    visible: &[String],
+) -> Option<std::ops::RangeInclusive<usize>> {
+    let (first, last) = visible.first().zip(visible.last())?;
+    let first = timeline.iter().position(|message| &message.item == first)?;
+    let last = timeline.iter().position(|message| &message.item == last)?;
+    (first <= last).then_some(first..=last)
+}
 
 /// The server icons and avatars on screen: the rail, the first DMs listed,
 /// the people in the listed voice channels, the call, `timeline` and the
@@ -2206,27 +2222,8 @@ impl Application {
         let timeline = if Arc::ptr_eq(&self.pictured_timeline, &state.messages) {
             &[][..]
         } else {
-            match self
-                .visible_messages
-                .first()
-                .zip(self.visible_messages.last())
-            {
-                Some((first, last)) => {
-                    let first = state
-                        .messages
-                        .iter()
-                        .position(|message| &message.item == first);
-                    let last = state
-                        .messages
-                        .iter()
-                        .position(|message| &message.item == last);
-                    match first.zip(last) {
-                        Some((first, last)) if first <= last => &state.messages[first..=last],
-                        _ => &[],
-                    }
-                }
-                None => &[],
-            }
+            visible_range(&state.messages, &self.visible_messages)
+                .map_or(&[][..], |range| &state.messages[range])
         };
         let mut wanted = Vec::new();
         // Virtualized UI rows request their own avatars; this covers profiles,
@@ -2277,7 +2274,16 @@ impl Application {
             .aside
             .as_ref()
             .map(|aside| aside.messages.as_slice());
-        let shown: HashSet<String> = pictures_on_screen(&self.state, &self.state.messages, true)
+        // Of a timeline, the rows on screen and those a short scroll away:
+        // one that follows a busy channel can hold thousands, each with
+        // someone else's avatar.
+        let messages = &self.state.messages;
+        let timeline =
+            visible_range(messages, &self.visible_messages).map_or(&messages[..], |range| {
+                let start = range.start().saturating_sub(PICTURED_AROUND);
+                &messages[start..(range.end() + 1 + PICTURED_AROUND).min(messages.len())]
+            });
+        let shown: HashSet<String> = pictures_on_screen(&self.state, timeline, true)
             .chain(
                 aside
                     .into_iter()

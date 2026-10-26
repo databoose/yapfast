@@ -4886,6 +4886,38 @@ fn pictures_off_screen_go_once_many_have_arrived() {
 }
 
 #[test]
+fn avatars_stay_only_near_the_rows_on_screen() {
+    let mut app = connected();
+    // A busy channel followed for a while: each message someone else's.
+    let messages: Vec<_> = (0..300)
+        .map(|index| ChatMessage {
+            avatar: Some(format!("{index}.png")),
+            ..message(&format!("e:${index}"), false)
+        })
+        .collect();
+    app.apply(Event::Timeline {
+        room: "dm".into(),
+        messages: timeline(messages),
+    });
+    app.dispatch(Action::VisibleMessages {
+        room: "dm".into(),
+        items: (280..290).map(|index| format!("e:${index}")).collect(),
+    });
+    for index in 0..=KEPT_PICTURES {
+        app.requested_pictures.insert(format!("{index}.png"));
+        app.apply(Event::Picture {
+            url: format!("{index}.png"),
+            picture: Arc::new(Picture::default()),
+        });
+    }
+    let kept = |index: usize| app.state.pictures.contains_key(&format!("{index}.png"));
+    assert!(kept(280) && kept(289), "those on screen stay");
+    assert!(kept(250) && kept(299), "as do those a short scroll away");
+    assert!(!kept(249) && !kept(0), "the rest of the timeline's go");
+    assert_eq!(app.state.pictures.len(), 50);
+}
+
+#[test]
 fn custom_emoji_kept_do_not_let_other_pictures_pile_up() {
     let mut app = connected();
     let mut arrive = |url: String| {
