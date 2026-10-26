@@ -37,6 +37,8 @@ const CHANNELS: usize = 2;
 /// How far ahead the decoder fills its queues.
 const QUEUED_PICTURES: usize = 8;
 const QUEUED_SOUND_MS: u64 = 2_000;
+/// How far ahead the decoder keeps sound while the pictures' queue is full.
+const SOUND_AHEAD_MS: u64 = 500;
 /// How far sound may stray from the clock before it's skipped or waited for.
 const SOUND_SLACK_MS: u64 = 80;
 
@@ -206,6 +208,33 @@ struct Shared {
 }
 
 impl Shared {
+    fn new(size: (u32, u32), volume: f32, interrupt: Arc<AtomicBool>) -> Self {
+        Self {
+            state: Mutex::new(State {
+                generation: 0,
+                pictures: VecDeque::new(),
+                sound: VecDeque::new(),
+                sound_frames: 0,
+                ended: false,
+                seek: None,
+                show_next: true,
+                size,
+                shown: None,
+                playing: true,
+                clock: Clock {
+                    at_ms: 0,
+                    since: None,
+                },
+                volume,
+                stop: false,
+                opened: None,
+                failed: None,
+            }),
+            changed: Condvar::new(),
+            interrupt,
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state
             .lock()
@@ -242,30 +271,7 @@ pub fn play(
         progress: progress.clone(),
         interrupt: interrupt.clone(),
     };
-    let shared = Arc::new(Shared {
-        state: Mutex::new(State {
-            generation: 0,
-            pictures: VecDeque::new(),
-            sound: VecDeque::new(),
-            sound_frames: 0,
-            ended: false,
-            seek: None,
-            show_next: true,
-            size: (job.width, job.height),
-            shown: None,
-            playing: true,
-            clock: Clock {
-                at_ms: 0,
-                since: None,
-            },
-            volume: job.volume,
-            stop: false,
-            opened: None,
-            failed: None,
-        }),
-        changed: Condvar::new(),
-        interrupt,
-    });
+    let shared = Arc::new(Shared::new((job.width, job.height), job.volume, interrupt));
     let speaker = job
         .sound
         .then(|| {
@@ -478,10 +484,13 @@ fn decode(download: Download, sound: bool, shared: &Shared) {
     // to show.
     let mut skipped = None;
     let mut queued = false;
+    // Reading on to sound held back all the pictures it may; it goes on
+    // once some are taken.
+    let mut held = false;
     loop {
-        let (generation, size) = {
+        let (generation, size, sound_only) = {
             let mut state = shared.lock();
-            loop {
+            let sound_only = loop {
                 if state.stop {
                     return;
                 }
@@ -500,22 +509,40 @@ fn decode(download: Download, sound: bool, shared: &Shared) {
                     skip_until = time_ms;
                     skipped = None;
                     queued = false;
+                    held = false;
                     state = shared.lock();
                     continue;
                 }
-                let full = state.pictures.len() >= QUEUED_PICTURES
-                    || state.sound_frames as u64 * 1000 / u64::from(RATE) >= QUEUED_SOUND_MS;
-                if !state.ended && !full {
-                    break;
+                let sound_ms = state.sound_frames as u64 * 1000 / u64::from(RATE);
+                if !state.ended && sound_ms < QUEUED_SOUND_MS {
+                    if state.pictures.len() < QUEUED_PICTURES {
+                        break false;
+                    }
+                    // Sound trails its pictures in the file: read on to it.
+                    if resampler.is_some() && !held && sound_ms < SOUND_AHEAD_MS {
+                        break true;
+                    }
                 }
                 state = shared
                     .changed
                     .wait(state)
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-            }
-            (state.generation, state.size)
+            };
+            (state.generation, state.size, sound_only)
         };
-        let next = video.decode();
+        let next = if sound_only {
+            match video.decode_sound() {
+                Ok(Some(time)) => Ok(Next::Sound(time)),
+                Ok(None) => {
+                    held = true;
+                    continue;
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            held = false;
+            video.decode()
+        };
         let mut state = shared.lock();
         if state.generation != generation || state.seek.is_some() {
             continue;
@@ -958,6 +985,49 @@ mod tests {
         assert!(shown() >= 1900);
         stop.store(true, Ordering::Relaxed);
         player.join().unwrap().unwrap();
+    }
+
+    /// In a file, sound trails the pictures it plays with, by up to a
+    /// second. With pictures queued and none shown yet, the decoder still
+    /// reads on to the sound that plays with them.
+    #[test]
+    fn sound_keeps_ahead_while_pictures_wait() {
+        // As a phone or a fragmented MP4 has it: a second of pictures, then
+        // the second's sound.
+        for name in ["video-fragmented.mp4", "video-aac.mp4", "video-opus.webm"] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../testing/fixtures")
+                .join(name);
+            let progress = Arc::new(Progress::new(None));
+            progress.downloaded(std::fs::metadata(&path).unwrap().len());
+            let interrupt = Arc::new(AtomicBool::new(false));
+            let download = Download {
+                file: File::open(&path).unwrap(),
+                progress,
+                interrupt: interrupt.clone(),
+            };
+            let shared = Arc::new(Shared::new((80, 80), 1.0, interrupt));
+            let decoder = {
+                let shared = shared.clone();
+                std::thread::spawn(move || decode(download, true, &shared))
+            };
+            let started = Instant::now();
+            while shared.lock().pictures.len() < QUEUED_PICTURES {
+                assert!(started.elapsed() < Duration::from_secs(5), "{name}");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            // Until it rests.
+            std::thread::sleep(Duration::from_millis(200));
+            {
+                let state = shared.lock();
+                let sound_ms = state.sound_frames as u64 * 1000 / u64::from(RATE);
+                assert!(sound_ms >= SOUND_AHEAD_MS, "{name}: {sound_ms} ms of sound");
+                assert_eq!(state.pictures.len(), QUEUED_PICTURES, "{name}");
+            }
+            shared.lock().stop = true;
+            shared.changed.notify_all();
+            decoder.join().unwrap();
+        }
     }
 
     #[test]

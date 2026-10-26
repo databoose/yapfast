@@ -24,7 +24,11 @@ enum { DECODER_AVCODEC, DECODER_VPX, DECODER_DAV1D };
 enum { MAX_SIDE = 8192 };
 
 /* What yapfast_video_next returns. */
-enum { END = 0, PICTURE = 1, SOUND = 2, FAILED = -1, UNSUPPORTED = -2 };
+enum { END = 0, PICTURE = 1, SOUND = 2, HELD = 3, FAILED = -1, UNSUPPORTED = -2 };
+
+/* The most pictures' packets, and bytes of them, held back while reading on
+ * to the sound: in a file, sound can trail its pictures by a second or so. */
+enum { HELD_PACKETS = 256, HELD_BYTES = 4 << 20 };
 
 /* Reads up to `size` bytes: how many, 0 at the end of the file, or a
  * negative number to give up. */
@@ -87,7 +91,14 @@ struct yapfast_video {
   float *samples;
   size_t samples_size;
   int sample_frames;
-  /* The demuxer reached the end and the decoders were told. */
+  /* Pictures' packets read ahead of the sound, oldest at `held_first`. */
+  AVPacket *held[HELD_PACKETS];
+  int held_first;
+  int held_count;
+  size_t held_bytes;
+  /* The demuxer reached the end, and the sound's decoder was told. */
+  int read_all;
+  /* The picture decoder was told too. */
   int sent_all;
   /* Planes scaled to the size asked for. */
   uint8_t *scaled;
@@ -106,8 +117,19 @@ static int64_t seek(void *opaque, int64_t offset, int whence) {
   return video->seek(video->source, offset, whence & ~AVSEEK_FORCE);
 }
 
+/* Lets go of the pictures' packets held back. */
+static void drop_held(struct yapfast_video *video) {
+  for (int index = 0; index < video->held_count; index++) {
+    av_packet_free(&video->held[(video->held_first + index) % HELD_PACKETS]);
+  }
+  video->held_first = 0;
+  video->held_count = 0;
+  video->held_bytes = 0;
+}
+
 void yapfast_video_free(struct yapfast_video *video) {
   if (!video) return;
+  drop_held(video);
   avformat_close_input(&video->format);
   if (video->io) av_freep(&video->io->buffer);
   avio_context_free(&video->io);
@@ -403,22 +425,19 @@ static int receive_sound(struct yapfast_video *video, int64_t *time_ms) {
   return 1;
 }
 
-/* Hands a decoder the file's next packet, or tells them both it ended. */
-static int feed(struct yapfast_video *video) {
-  /* dav1d refused data yet had no picture to give back. */
-  if (video->decoder == DECODER_DAV1D && video->dav1d_pending.sz > 0) return FAILED;
-  AVPacket *packet = video->packet;
+/* Reads the file's next packet into `packet`: 1 with the pictures', 0 after
+ * handing the sound's to its decoder or at the end, or FAILED. */
+static int demux(struct yapfast_video *video, AVPacket *packet) {
   for (;;) {
     int read = av_read_frame(video->format, packet);
     if (read == AVERROR_EXIT) return FAILED;
     /* A damaged file shows what came before the damage. */
     if (read < 0) {
-      video->sent_all = 1;
-      if (video->decoder == DECODER_AVCODEC) avcodec_send_packet(video->context, NULL);
+      video->read_all = 1;
       if (video->sound_context) avcodec_send_packet(video->sound_context, NULL);
       return 0;
     }
-    if (packet->stream_index == video->stream) break;
+    if (packet->stream_index == video->stream) return 1;
     if (packet->stream_index == video->sound_stream) {
       /* Damaged sound is left out. */
       avcodec_send_packet(video->sound_context, packet);
@@ -426,6 +445,29 @@ static int feed(struct yapfast_video *video) {
       return 0;
     }
     av_packet_unref(packet);
+  }
+}
+
+/* Hands the picture decoder its next packet, held back or read from the
+ * file, or tells it the file ended. */
+static int feed(struct yapfast_video *video) {
+  /* dav1d refused data yet had no picture to give back. */
+  if (video->decoder == DECODER_DAV1D && video->dav1d_pending.sz > 0) return FAILED;
+  AVPacket *packet = video->packet;
+  if (video->held_count > 0) {
+    AVPacket **held = &video->held[video->held_first];
+    video->held_bytes -= (size_t)(*held)->size;
+    av_packet_move_ref(packet, *held);
+    av_packet_free(held);
+    video->held_first = (video->held_first + 1) % HELD_PACKETS;
+    video->held_count--;
+  } else if (video->read_all) {
+    video->sent_all = 1;
+    if (video->decoder == DECODER_AVCODEC) avcodec_send_packet(video->context, NULL);
+    return 0;
+  } else {
+    int read = demux(video, packet);
+    if (read <= 0) return read;
   }
   int result = 0;
   switch (video->decoder) {
@@ -457,24 +499,54 @@ static int feed(struct yapfast_video *video) {
   return result;
 }
 
+/* Reads on towards the sound, holding back the pictures' packets: 0 after a
+ * packet, HELD when no more can be held or the sound ended, or FAILED. */
+static int feed_sound(struct yapfast_video *video) {
+  if (!video->sound_context || video->read_all || video->held_count == HELD_PACKETS ||
+      video->held_bytes >= HELD_BYTES) {
+    return HELD;
+  }
+  AVPacket *packet = video->packet;
+  int read = demux(video, packet);
+  if (read <= 0) return read;
+  AVPacket *held = av_packet_alloc();
+  if (!held) {
+    av_packet_unref(packet);
+    return FAILED;
+  }
+  av_packet_move_ref(held, packet);
+  video->held[(video->held_first + video->held_count) % HELD_PACKETS] = held;
+  video->held_count++;
+  video->held_bytes += (size_t)held->size;
+  return 0;
+}
+
 /* Decodes up to the next picture or sound, in the order the file has them,
  * with when it plays in milliseconds from the start, or -1 when the file
  * doesn't say. Returns PICTURE or SOUND, which stay until the next call; END;
- * or a negative number when the video can't play. */
-int yapfast_video_next(struct yapfast_video *video, int64_t *time_ms) {
+ * or a negative number when the video can't play. Without `pictures`, only
+ * sound comes, the pictures' packets held back for later calls, or HELD. */
+int yapfast_video_next(struct yapfast_video *video, int64_t *time_ms, int pictures) {
   for (;;) {
-    int got = receive_picture(video, time_ms);
-    if (got < 0) return got;
-    if (got) {
-      if (video->planes.width <= 0 || video->planes.height <= 0 ||
-          video->planes.width > MAX_SIDE || video->planes.height > MAX_SIDE) {
-        return FAILED;
+    if (pictures) {
+      int got = receive_picture(video, time_ms);
+      if (got < 0) return got;
+      if (got) {
+        if (video->planes.width <= 0 || video->planes.height <= 0 ||
+            video->planes.width > MAX_SIDE || video->planes.height > MAX_SIDE) {
+          return FAILED;
+        }
+        return PICTURE;
       }
-      return PICTURE;
     }
-    got = receive_sound(video, time_ms);
+    int got = receive_sound(video, time_ms);
     if (got < 0) return got;
     if (got) return SOUND;
+    if (!pictures) {
+      int fed = feed_sound(video);
+      if (fed != 0) return fed;
+      continue;
+    }
     if (video->sent_all) return END;
     int fed = feed(video);
     if (fed < 0) return fed;
@@ -544,6 +616,8 @@ int yapfast_video_seek(struct yapfast_video *video, int64_t time_ms) {
     dav1d_flush(video->dav1d);
   }
   video->planes = (struct planes){0};
+  drop_held(video);
+  video->read_all = 0;
   video->sent_all = 0;
   return 0;
 }

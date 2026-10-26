@@ -40,7 +40,7 @@ unsafe extern "C" {
         sound: c_int,
         info: *mut Info,
     ) -> *mut Raw;
-    fn yapfast_video_next(video: *mut Raw, time_ms: *mut i64) -> c_int;
+    fn yapfast_video_next(video: *mut Raw, time_ms: *mut i64, pictures: c_int) -> c_int;
     fn yapfast_video_picture(
         video: *mut Raw,
         rgba: *mut c_uchar,
@@ -202,14 +202,30 @@ impl<'a> Video<'a> {
 
     /// Decodes up to the next picture or sound, in the order the file has them.
     pub fn decode(&mut self) -> Result<Next> {
+        self.next(true).map(|next| next.expect("pictures come"))
+    }
+
+    /// Decodes up to the next sound, reading past pictures and keeping them
+    /// for [`Self::decode`]: in a file, sound can trail the pictures it plays
+    /// with by a second. None at the end of the sound, or when no more
+    /// pictures can be kept.
+    pub fn decode_sound(&mut self) -> Result<Option<Option<u64>>> {
+        Ok(self.next(false)?.map(|next| match next {
+            Next::Sound(time) => time,
+            _ => unreachable!("only sound comes"),
+        }))
+    }
+
+    fn next(&mut self, pictures: bool) -> Result<Option<Next>> {
         let mut time_ms = -1;
         // SAFETY: raw is a live video.
-        let got = unsafe { yapfast_video_next(self.raw, &mut time_ms) };
+        let got = unsafe { yapfast_video_next(self.raw, &mut time_ms, c_int::from(pictures)) };
         let time = u64::try_from(time_ms).ok();
         match got {
-            1 => Ok(Next::Picture(time)),
-            2 => Ok(Next::Sound(time)),
-            0 => Ok(Next::End),
+            1 => Ok(Some(Next::Picture(time))),
+            2 => Ok(Some(Next::Sound(time))),
+            0 => Ok(Some(Next::End)),
+            3 => Ok(None),
             -2 => bail!("the video's pictures aren't 8-bit 4:2:0"),
             _ => bail!("could not decode the video ({got})"),
         }
@@ -489,5 +505,37 @@ mod tests {
         let mut silent = Video::open(std::io::Cursor::new(&data[..]), false).unwrap();
         assert_eq!(silent.sound, None);
         assert_eq!(timeline(&mut silent).1, Vec::<u64>::new());
+    }
+
+    #[test]
+    fn reads_on_to_sound_keeping_the_pictures() {
+        // A second of pictures, then the second's sound.
+        let data = fixture("video-fragmented.mp4");
+        let mut video = Video::open(std::io::Cursor::new(&data[..]), true).unwrap();
+        let (mut sounds, mut samples) = (vec![], 0);
+        while let Some(time) = video.decode_sound().unwrap() {
+            sounds.push(time.unwrap());
+            samples += video.sound().samples.len() / 2;
+        }
+        assert!(sounds.windows(2).all(|pair| pair[0] < pair[1]));
+        let seconds = samples as f64 / 44_100.0;
+        assert!((1.9..2.2).contains(&seconds), "{seconds} s of sound");
+        // The pictures kept come after, every one, in order.
+        let (pictures, later, _) = timeline(&mut video);
+        assert_eq!(pictures.len(), 50);
+        assert!(pictures.windows(2).all(|pair| pair[1] - pair[0] == 40));
+        assert_eq!(later, Vec::<u64>::new());
+        // A move lets go of what was kept.
+        video.seek(0).unwrap();
+        for _ in 0..5 {
+            video.decode_sound().unwrap().unwrap();
+        }
+        video.seek(0).unwrap();
+        let (again, _, _) = timeline(&mut video);
+        assert_eq!(again, pictures);
+        // Without sound, there's none to read on to.
+        let mut silent = Video::open(std::io::Cursor::new(&data[..]), false).unwrap();
+        assert_eq!(silent.decode_sound().unwrap(), None);
+        assert_eq!(timeline(&mut silent).0, pictures);
     }
 }
