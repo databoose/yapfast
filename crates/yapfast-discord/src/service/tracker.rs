@@ -266,6 +266,20 @@ impl Tracker {
                 {
                     self.presence(presence["user_id"].as_str(), presence);
                 }
+                // Servers' presences, for the people of DMs who aren't
+                // friends but share a server, as Discord's DM list shows them.
+                for presence in data["merged_presences"]["guilds"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_array)
+                    .flatten()
+                {
+                    let user = presence["user_id"].as_str();
+                    if user.is_some_and(|user| self.in_private(user)) {
+                        self.presence(user, presence);
+                    }
+                }
                 for guild in data["guilds"].as_array().into_iter().flatten() {
                     let Some(id) = guild["id"].as_str() else {
                         continue;
@@ -506,19 +520,36 @@ impl Tracker {
                 let channel = data["channel_id"].as_str().unwrap_or_default();
                 self.private.iter().any(|private| private.id == channel)
             }
-            // Friends' presences; those in servers go to the member list.
-            Event::PresenceUpdate if data["guild_id"].is_null() => {
+            // Friends' presences, and a server's for the people of DMs; the
+            // member list takes servers' presences too.
+            Event::PresenceUpdate => {
                 let user = data["user"]["id"].as_str();
-                // The DM list shows the person of each one-to-one DM, and the
-                // friends list each friend.
-                self.presence(user, data)
-                    && (self
-                        .friends
+                if !data["guild_id"].is_null() && !user.is_some_and(|user| self.in_private(user)) {
+                    return false;
+                }
+                self.presence(user, data) && self.shows_presence(user)
+            }
+            // A member list's rows carry presences, which the DMs of those
+            // people show too.
+            Event::GuildMemberListUpdate => {
+                let mut changed = false;
+                for op in data["ops"].as_array().into_iter().flatten() {
+                    let items = op["items"].as_array().map_or(&[][..], Vec::as_slice);
+                    for member in items
                         .iter()
-                        .any(|friend| Some(friend.as_str()) == user)
-                        || self.private.iter().any(|private| {
-                            !private.group && private.recipients.first().map(String::as_str) == user
-                        }))
+                        .chain([&op["item"]])
+                        .map(|item| &item["member"])
+                    {
+                        let user = member["user"]["id"].as_str();
+                        if member["presence"].is_object()
+                            && user.is_some_and(|user| self.in_private(user))
+                        {
+                            changed |= self.presence(user, &member["presence"])
+                                && self.shows_presence(user);
+                        }
+                    }
+                }
+                changed
             }
             Event::ChannelCreate | Event::ChannelUpdate | Event::ChannelDelete => {
                 let (Some(guild), Some(id)) = (data["guild_id"].as_str(), data["id"].as_str())
@@ -881,6 +912,24 @@ impl Tracker {
         self.private.push(private);
     }
 
+    /// Whether the snapshot shows `user`'s presence: the DM list shows the
+    /// person of each one-to-one DM, and the friends list each friend.
+    fn shows_presence(&self, user: Option<&str>) -> bool {
+        self.friends
+            .iter()
+            .any(|friend| Some(friend.as_str()) == user)
+            || self.private.iter().any(|private| {
+                !private.group && private.recipients.first().map(String::as_str) == user
+            })
+    }
+
+    /// Whether `user` is in a DM or group DM with this account.
+    fn in_private(&self, user: &str) -> bool {
+        self.private
+            .iter()
+            .any(|private| private.recipients.iter().any(|known| known == user))
+    }
+
     /// Message requests whose latest message is neither known nor asked
     /// for, which count as asked for now. Previews of what's no longer a
     /// request go.
@@ -958,7 +1007,7 @@ impl Tracker {
         true
     }
 
-    /// Learns a friend's presence; returns whether it changed.
+    /// Learns someone's presence; returns whether it changed.
     fn presence(&mut self, user: Option<&str>, data: &Value) -> bool {
         let Some(user) = user else {
             return false;
@@ -1803,6 +1852,59 @@ mod tests {
             &Event::PresenceUpdate,
             &json!({"user": {"id": "3"}, "status": "online"})
         ));
+    }
+
+    #[test]
+    fn a_dm_shows_the_presence_of_a_shared_server() {
+        let ready = json!({
+            "user": {"id": "1", "username": "me"},
+            "users": [{"id": "2", "username": "ann"}, {"id": "3", "username": "cy"}],
+            "private_channels": [{"id": "20", "type": 1, "recipient_ids": ["2"]}],
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        let presence = |tracker: &mut Tracker| tracker.snapshot().conversations[0].presence;
+        tracker.apply(
+            &Event::ReadySupplemental,
+            &json!({"merged_presences": {"friends": [], "guilds": [[
+                {"user_id": "2", "status": "idle"},
+                {"user_id": "3", "status": "online"},
+            ]]}}),
+        );
+        assert_eq!(presence(&mut tracker), Some(Presence::Idle));
+        assert!(
+            !tracker.presences.contains_key("3"),
+            "nobody keeps the presence of a member with no DM"
+        );
+        assert!(tracker.apply(
+            &Event::PresenceUpdate,
+            &json!({"guild_id": "10", "user": {"id": "2"}, "status": "dnd"})
+        ));
+        assert_eq!(presence(&mut tracker), Some(Presence::DoNotDisturb));
+        assert!(
+            !tracker.apply(
+                &Event::PresenceUpdate,
+                &json!({"guild_id": "11", "user": {"id": "2"}, "status": "dnd"})
+            ),
+            "another server's copy changes nothing"
+        );
+        assert!(!tracker.apply(
+            &Event::PresenceUpdate,
+            &json!({"guild_id": "10", "user": {"id": "3"}, "status": "idle"})
+        ));
+        assert!(!tracker.presences.contains_key("3"));
+        let row = |user: &str, status: &str| json!({"member": {"user": {"id": user}, "presence": {"status": status}}});
+        assert!(
+            tracker.apply(
+                &Event::GuildMemberListUpdate,
+                &json!({"guild_id": "10", "id": "everyone", "ops": [
+                    {"op": "SYNC", "range": [0, 99], "items": [{"group": {"id": "online"}}, row("3", "online")]},
+                    {"op": "UPDATE", "index": 4, "item": row("2", "online")},
+                ]}),
+            ),
+            "a member list's row shows in the DM"
+        );
+        assert_eq!(presence(&mut tracker), Some(Presence::Online));
+        assert!(!tracker.presences.contains_key("3"));
     }
 
     #[test]

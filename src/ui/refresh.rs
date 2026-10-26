@@ -681,8 +681,9 @@ impl Adapter {
                         ModelRc::new(VecModel::from(people))
                     },
                     call: room.direct && !room.people.is_empty(),
-                    // Discord sends only friends' presence; anyone else in a
-                    // one-to-one DM shows offline, as in Discord's DM list.
+                    // Discord sends the presence of friends and of those
+                    // sharing a server; anyone else in a one-to-one DM shows
+                    // offline, as in Discord's DM list.
                     presence: if room.person.is_some() && room.network == Network::Discord {
                         presence_name(room.presence.or(Some(Presence::Offline)))
                     } else {

@@ -2419,7 +2419,12 @@ function readySupplemental() {
       }),
     ],
     merged_presences: {
-      guilds: [[]],
+      // Who in the server is around, Alice aside.
+      guilds: [
+        Object.values(users)
+          .filter((user) => user.id !== ALICE && !removed.has(user.id) && presences[user.id]!.status !== "offline")
+          .map((user) => ({ user_id: user.id, ...presences[user.id] })),
+      ],
       friends: [users.bob, users.carol, users.dave].map((user) => ({ user_id: user.id, ...presences[user.id] })),
     },
     lazy_private_channels: [],
