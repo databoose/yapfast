@@ -5,6 +5,7 @@
 //! The ids are known in every build; listing needs the `discord` feature.
 #[cfg(feature = "discord")]
 use std::{
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -18,7 +19,7 @@ use tokio::{
 use yapfast_discord::{
     marked::{ChannelMarks, MarkedChannel, MarkedServer},
     ready::{Access, PRIVATE},
-    service::{Discord, Snapshot},
+    service::{Conversation, Discord, Snapshot, VoiceMember},
 };
 
 #[cfg(feature = "discord")]
@@ -225,9 +226,25 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<Arc<ChatRoom>>, Vec
 #[cfg(feature = "discord")]
 #[derive(Default)]
 pub struct Index {
-    /// The DMs, made again for each snapshot.
+    /// The DMs, the latest first.
     dms: Vec<Arc<ChatRoom>>,
+    /// Each DM's room and what it was made from, by DM id.
+    dm_sources: HashMap<String, IndexedDm>,
+    /// Who the DMs were listed for: those a call rings leave this account out.
+    me: String,
     servers: Vec<Indexed>,
+}
+
+/// One DM's room, and what it was made from.
+#[cfg(feature = "discord")]
+struct IndexedDm {
+    /// Compared by address: the tracker shares a DM between snapshots while
+    /// it doesn't change.
+    source: Arc<Conversation>,
+    premium: u8,
+    /// Who was in its call.
+    voice: Vec<VoiceMember>,
+    room: Arc<ChatRoom>,
 }
 
 /// One server's rooms, and what they were made from.
@@ -378,7 +395,59 @@ impl Index {
             }
             self.servers.push(indexed);
         }
-        chat::share_list(&mut self.dms, dm_rooms(snapshot, premium, me));
+        self.update_dms(snapshot, premium, me);
+    }
+
+    /// Lists the DMs of `snapshot`, making again only those that changed.
+    fn update_dms(&mut self, snapshot: &Snapshot, premium: u8, me: &str) {
+        if self.me != me {
+            self.dm_sources.clear();
+            me.clone_into(&mut self.me);
+        }
+        self.dms.clear();
+        for dm in &snapshot.conversations {
+            let voice = snapshot.voice.get(&dm.id).map_or(&[][..], Vec::as_slice);
+            let current = |indexed: &IndexedDm| {
+                Arc::ptr_eq(&indexed.source, dm)
+                    && indexed.premium == premium
+                    && indexed.voice == voice
+            };
+            let room = match self.dm_sources.get_mut(dm.id.as_str()) {
+                Some(indexed) if current(indexed) => indexed.room.clone(),
+                Some(indexed) => {
+                    // A call starting changes the DM but not its room.
+                    let room = dm_room(snapshot, dm, premium, me);
+                    if *indexed.room != room {
+                        indexed.room = Arc::new(room);
+                    }
+                    indexed.source = dm.clone();
+                    indexed.premium = premium;
+                    voice.clone_into(&mut indexed.voice);
+                    indexed.room.clone()
+                }
+                None => {
+                    let room = Arc::new(dm_room(snapshot, dm, premium, me));
+                    let indexed = IndexedDm {
+                        source: dm.clone(),
+                        premium,
+                        voice: voice.to_vec(),
+                        room: room.clone(),
+                    };
+                    self.dm_sources.insert(dm.id.clone(), indexed);
+                    room
+                }
+            };
+            self.dms.push(room);
+        }
+        // Each DM closed leaves one more indexed than listed.
+        if self.dm_sources.len() > self.dms.len() {
+            let open: HashSet<&str> = snapshot
+                .conversations
+                .iter()
+                .map(|dm| dm.id.as_str())
+                .collect();
+            self.dm_sources.retain(|id, _| open.contains(id.as_str()));
+        }
     }
 
     /// [`Self::update`], into lists that change only where they differ.
@@ -535,69 +604,65 @@ pub fn item_order(item: &str) -> Option<u64> {
     item.strip_prefix("d:")?.parse().ok()
 }
 
-/// The DMs and group DMs to list, the latest first.
+/// A DM or group DM as the DM list shows it.
 #[cfg(feature = "discord")]
-fn dm_rooms(snapshot: &Snapshot, premium: u8, me: &str) -> Vec<ChatRoom> {
-    snapshot
-        .conversations
-        .iter()
-        .map(|dm| ChatRoom {
-            id: room_id(PRIVATE, &dm.id),
-            network: Network::Discord,
-            capabilities: Network::Discord.capabilities(),
-            name: dm.name.clone(),
-            direct: true,
-            voice: false,
-            encrypted: false,
-            members: dm.people as u64,
-            unread: u64::from(dm.unread),
-            mentions: dm.mentions,
-            muted: dm.muted,
-            last_read: read_item(dm.last_read),
-            locked: false,
-            join_locked: false,
-            // Replying waits until the request is accepted.
-            read_only: dm.request,
-            slowed: false,
-            timed_out_until: None,
-            category: match (dm.request, dm.spam) {
-                (_, true) => SPAM,
-                (true, false) => REQUESTS,
-                _ => "",
-            }
-            .into(),
-            category_id: None,
-            request: dm.request,
-            person: dm.person.clone(),
-            people: in_voice(snapshot, &dm.id),
-            ringing: dm
-                .ringing
-                .iter()
-                .filter(|person| person.user_id != me)
-                .map(voice_person)
-                .collect(),
-            incoming: dm.ringing.iter().any(|person| person.user_id == me),
-            avatar: dm.avatar.clone(),
-            upload_limit: yapfast_discord::api::upload_limit(premium, None),
-            presence: dm.presence.map(presence),
-            activity: dm.activity.clone(),
-            activities: dm.activities.clone(),
-            parent: None,
-            forum: false,
-            unlisted: false,
-            preview: dm.preview.as_ref().map(|preview| {
-                Box::new(chat::RequestPreview {
-                    text: match (preview.text.trim(), preview.files) {
-                        ("", 0) => String::new(),
-                        ("", 1) => "Sent a file".into(),
-                        ("", files) => format!("Sent {files} files"),
-                        (text, _) => one_line(&chat::notification_text(text)),
-                    },
-                    at: yapfast_discord::message::snowflake_ms(&preview.id),
-                })
-            }),
-        })
-        .collect()
+fn dm_room(snapshot: &Snapshot, dm: &Conversation, premium: u8, me: &str) -> ChatRoom {
+    ChatRoom {
+        id: room_id(PRIVATE, &dm.id),
+        network: Network::Discord,
+        capabilities: Network::Discord.capabilities(),
+        name: dm.name.clone(),
+        direct: true,
+        voice: false,
+        encrypted: false,
+        members: dm.people as u64,
+        unread: u64::from(dm.unread),
+        mentions: dm.mentions,
+        muted: dm.muted,
+        last_read: read_item(dm.last_read),
+        locked: false,
+        join_locked: false,
+        // Replying waits until the request is accepted.
+        read_only: dm.request,
+        slowed: false,
+        timed_out_until: None,
+        category: match (dm.request, dm.spam) {
+            (_, true) => SPAM,
+            (true, false) => REQUESTS,
+            _ => "",
+        }
+        .into(),
+        category_id: None,
+        request: dm.request,
+        person: dm.person.clone(),
+        people: in_voice(snapshot, &dm.id),
+        ringing: dm
+            .ringing
+            .iter()
+            .filter(|person| person.user_id != me)
+            .map(voice_person)
+            .collect(),
+        incoming: dm.ringing.iter().any(|person| person.user_id == me),
+        avatar: dm.avatar.clone(),
+        upload_limit: yapfast_discord::api::upload_limit(premium, None),
+        presence: dm.presence.map(presence),
+        activity: dm.activity.clone(),
+        activities: dm.activities.clone(),
+        parent: None,
+        forum: false,
+        unlisted: false,
+        preview: dm.preview.as_ref().map(|preview| {
+            Box::new(chat::RequestPreview {
+                text: match (preview.text.trim(), preview.files) {
+                    ("", 0) => String::new(),
+                    ("", 1) => "Sent a file".into(),
+                    ("", files) => format!("Sent {files} files"),
+                    (text, _) => one_line(&chat::notification_text(text)),
+                },
+                at: yapfast_discord::message::snowflake_ms(&preview.id),
+            })
+        }),
+    }
 }
 
 /// A server's channels to list, in Discord's order, and the server.
@@ -1396,6 +1461,69 @@ mod tests {
         assert!(!Arc::ptr_eq(&rooms[0], &before[0]));
         assert!(Arc::ptr_eq(&rooms[1], &before[1]));
         assert!(shared(&rooms, &servers, &kept));
+    }
+
+    #[test]
+    fn dms_that_stay_the_same_stay_shared() {
+        let dm = |id: &str| {
+            Arc::new(Conversation {
+                id: id.into(),
+                name: id.into(),
+                people: 2,
+                ..Default::default()
+            })
+        };
+        let first = Snapshot {
+            conversations: vec![dm("20"), dm("30")],
+            ..Default::default()
+        };
+        let mut kept = Index::default();
+        let (mut rooms, mut servers) = (Vec::new(), Vec::new());
+        assert!(kept.update_into(&first, false, &mut rooms, &mut servers));
+        let before = rooms.clone();
+        assert!(!kept.update_into(&first, false, &mut rooms, &mut servers));
+
+        // A message comes to one: only its room is new, and it goes first.
+        let unread = Arc::new(Conversation {
+            unread: true,
+            ..(*first.conversations[1]).clone()
+        });
+        let next = Snapshot {
+            conversations: vec![unread, first.conversations[0].clone()],
+            ..Default::default()
+        };
+        assert!(kept.update_into(&next, false, &mut rooms, &mut servers));
+        assert_eq!(
+            (rooms[0].id.as_str(), rooms[0].unread),
+            ("discord:@me:30", 1)
+        );
+        assert!(Arc::ptr_eq(&rooms[1], &before[0]));
+
+        // Someone joining one's call makes its room again; a DM closed is
+        // forgotten.
+        let mut call = Snapshot {
+            conversations: vec![next.conversations[1].clone()],
+            ..Default::default()
+        };
+        call.voice.insert(
+            "20".into(),
+            vec![VoiceMember {
+                user_id: "2".into(),
+                name: "Ann".into(),
+                avatar: String::new(),
+                muted: false,
+                deafened: false,
+                server_muted: false,
+                server_deafened: false,
+                streaming: false,
+                video: false,
+                elsewhere: false,
+            }],
+        );
+        assert!(kept.update_into(&call, false, &mut rooms, &mut servers));
+        assert_eq!(rooms.len(), 1);
+        assert_eq!(rooms[0].people.len(), 1);
+        assert_eq!(kept.dm_sources.len(), 1);
     }
 
     #[test]

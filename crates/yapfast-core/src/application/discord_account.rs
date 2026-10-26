@@ -424,30 +424,41 @@ impl Application {
         self.state.discord_presence =
             Some(snapshot.presence.clone()).filter(|presence| !presence.is_empty());
         self.state.discord_friends = snapshot.friends.clone();
-        self.state.discord_blocked = snapshot
-            .blocked_list
-            .iter()
-            .map(|blocked| chat::Blocked {
-                id: blocked.user_id.clone(),
-                name: blocked.name.clone(),
-                username: blocked.username.clone(),
-                avatar: Some(blocked.avatar.clone()),
-            })
-            .collect();
+        use yapfast_discord::service::Snapshot;
+        // The tracker shares each list of people between snapshots while it
+        // stays the same, so one the last snapshot shared shows already.
+        let earlier = self.discord.as_deref();
+        let changed = |same: fn(&Snapshot, &Snapshot) -> bool| {
+            earlier.is_none_or(|earlier| !same(earlier, &snapshot))
+        };
+        if changed(|a, b| Arc::ptr_eq(&a.blocked_list, &b.blocked_list)) {
+            self.state.discord_blocked = snapshot
+                .blocked_list
+                .iter()
+                .map(|blocked| chat::Blocked {
+                    id: blocked.user_id.clone(),
+                    name: blocked.name.clone(),
+                    username: blocked.username.clone(),
+                    avatar: Some(blocked.avatar.clone()),
+                })
+                .collect();
+        }
         self.state.discord_ignored = snapshot.ignored.clone();
-        self.state.friends = snapshot
-            .friend_list
-            .iter()
-            .map(|friend| chat::Friend {
-                id: friend.user_id.clone(),
-                name: friend.name.clone(),
-                nickname: friend.nickname.clone(),
-                avatar: Some(friend.avatar.clone()),
-                presence: friend.presence.map(discord::presence),
-                activity: friend.activity.clone(),
-                activities: friend.activities.clone(),
-            })
-            .collect();
+        if changed(|a, b| Arc::ptr_eq(&a.friend_list, &b.friend_list)) {
+            self.state.friends = snapshot
+                .friend_list
+                .iter()
+                .map(|friend| chat::Friend {
+                    id: friend.user_id.clone(),
+                    name: friend.name.clone(),
+                    nickname: friend.nickname.clone(),
+                    avatar: Some(friend.avatar.clone()),
+                    presence: friend.presence.map(discord::presence),
+                    activity: friend.activity.clone(),
+                    activities: friend.activities.clone(),
+                })
+                .collect();
+        }
         self.state.custom_status =
             snapshot
                 .custom_status
@@ -470,17 +481,19 @@ impl Application {
                 started_ms: playing.started_ms,
             });
         }
-        self.state.friend_requests = snapshot
-            .friend_requests
-            .iter()
-            .map(|request| chat::FriendRequest {
-                id: request.user_id.clone(),
-                name: request.name.clone(),
-                avatar: Some(request.avatar.clone()),
-                incoming: request.incoming,
-                spam: request.spam,
-            })
-            .collect();
+        if changed(|a, b| Arc::ptr_eq(&a.friend_requests, &b.friend_requests)) {
+            self.state.friend_requests = snapshot
+                .friend_requests
+                .iter()
+                .map(|request| chat::FriendRequest {
+                    id: request.user_id.clone(),
+                    name: request.name.clone(),
+                    avatar: Some(request.avatar.clone()),
+                    incoming: request.incoming,
+                    spam: request.spam,
+                })
+                .collect();
+        }
         // The earlier snapshot still holds its servers' categories and roles,
         // so sharing them means nothing about them changed.
         let changed = self.discord.as_ref().is_none_or(|earlier| {
