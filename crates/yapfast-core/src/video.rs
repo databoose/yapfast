@@ -226,7 +226,7 @@ impl<'a> Video<'a> {
             2 => Ok(Some(Next::Sound(time))),
             0 => Ok(Some(Next::End)),
             3 => Ok(None),
-            -2 => bail!("the video's pictures aren't 8-bit 4:2:0"),
+            -2 => bail!("the video's pictures aren't 4:2:0 in 8, 10 or 12 bits"),
             _ => bail!("could not decode the video ({got})"),
         }
     }
@@ -445,6 +445,58 @@ mod tests {
             assert!(picture.rgba.chunks_exact(4).all(|pixel| pixel[3] == 255));
         }
         assert!(decode_animation(b"\0\0\0\x20ftypisom not really", 32, 32).is_none());
+    }
+
+    #[test]
+    fn shows_10_and_12_bit_pictures() {
+        // Each made from gif-h264.mp4, so its pictures should look the same.
+        let frames = |name: &str| -> Vec<Vec<u8>> {
+            let data = fixture(name);
+            let picture =
+                crate::chat::decode_picture(&data, 32, 32).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!((picture.width, picture.height), (32, 18), "{name}");
+            picture.frames().collect()
+        };
+        // At its own size, a picture isn't scaled first.
+        let first = |name: &str| -> Vec<u8> {
+            let data = fixture(name);
+            let mut video = Video::open(std::io::Cursor::new(&data[..]), false).unwrap();
+            assert!(
+                matches!(video.decode().unwrap(), Next::Picture(_)),
+                "{name}"
+            );
+            let mut rgba = vec![0; 64 * 36 * 4];
+            video.picture(&mut rgba, 64, 36).unwrap();
+            rgba
+        };
+        let mean_difference = |a: &[u8], b: &[u8]| -> f64 {
+            let sum: u64 = a
+                .iter()
+                .zip(b)
+                .map(|(a, b)| u64::from(a.abs_diff(*b)))
+                .sum();
+            sum as f64 / a.len() as f64
+        };
+        let original = frames("gif-h264.mp4");
+        let original_first = first("gif-h264.mp4");
+        for name in [
+            "gif-av1-10bit.mp4",
+            "gif-av1-12bit.mp4",
+            "gif-vp9-10bit.webm",
+            "gif-h264-10bit.mp4",
+        ] {
+            let deep = frames(name);
+            assert_eq!(deep.len(), original.len(), "{name}");
+            for (deep, original) in deep.iter().zip(&original) {
+                let mean = mean_difference(deep, original);
+                assert!(mean < 4.0, "{name}: off by {mean} a channel");
+            }
+            let mean = mean_difference(&first(name), &original_first);
+            assert!(
+                mean < 4.0,
+                "{name} at its own size: off by {mean} a channel"
+            );
+        }
     }
 
     /// Each picture's and sound's time, to the end, and how many samples

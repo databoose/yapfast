@@ -3,7 +3,7 @@
  * converted to RGBA by libyuv; sound decoded by libavcodec (AAC, Opus, MP3,
  * Vorbis, FLAC, PCM). All of it is inside Yapfast's libwebrtc archive. The
  * caller supplies the file through two functions, so it can arrive while it
- * plays. Only 8-bit 4:2:0 pictures show. */
+ * plays. Only 4:2:0 pictures show, in 8, 10 or 12 bits. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,10 +47,12 @@ struct yapfast_video_info {
   int channels;
 };
 
-/* A decoded picture as I420 planes, and how to read its colours. */
+/* A decoded picture as I420 planes, and how to read its colours. Deeper
+ * than 8 bits, a sample takes two bytes. */
 struct planes {
   int width;
   int height;
+  int depth;
   const uint8_t *data[3];
   int stride[3];
   int bt709;
@@ -299,12 +301,15 @@ static int receive_picture(struct yapfast_video *video, int64_t *time_ms) {
       int received = avcodec_receive_frame(video->context, frame);
       if (received == AVERROR(EAGAIN) || received == AVERROR_EOF) return 0;
       if (received < 0) return FAILED;
-      if (frame->format != AV_PIX_FMT_YUV420P && frame->format != AV_PIX_FMT_YUVJ420P) {
-        return UNSUPPORTED;
-      }
+      int depth = 0;
+      if (frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_YUVJ420P) depth = 8;
+      if (frame->format == AV_PIX_FMT_YUV420P10) depth = 10;
+      if (frame->format == AV_PIX_FMT_YUV420P12) depth = 12;
+      if (!depth) return UNSUPPORTED;
       *planes = (struct planes){
           .width = frame->width,
           .height = frame->height,
+          .depth = depth,
           .bt709 = bt709(frame->colorspace == AVCOL_SPC_UNSPECIFIED
                              ? -1
                              : frame->colorspace == AVCOL_SPC_BT709,
@@ -322,10 +327,15 @@ static int receive_picture(struct yapfast_video *video, int64_t *time_ms) {
     case DECODER_VPX: {
       vpx_image_t *image = vpx_codec_get_frame(&video->vpx, &video->vpx_iter);
       if (!image) return 0;
-      if (image->fmt != VPX_IMG_FMT_I420) return UNSUPPORTED;
+      int depth = image->fmt == VPX_IMG_FMT_I420 ? 8 : (int)image->bit_depth;
+      if (image->fmt != VPX_IMG_FMT_I420 &&
+          (image->fmt != VPX_IMG_FMT_I42016 || (depth != 10 && depth != 12))) {
+        return UNSUPPORTED;
+      }
       *planes = (struct planes){
           .width = (int)image->d_w,
           .height = (int)image->d_h,
+          .depth = depth,
           .bt709 = bt709(image->cs == VPX_CS_UNKNOWN ? -1 : image->cs == VPX_CS_BT_709,
                          (int)image->d_h),
           .full_range = image->range == VPX_CR_FULL_RANGE,
@@ -351,13 +361,15 @@ static int receive_picture(struct yapfast_video *video, int64_t *time_ms) {
       if (got == DAV1D_ERR(EAGAIN)) return 0;
       if (got < 0) return FAILED;
       video->dav1d_holds = 1;
-      if (picture->p.layout != DAV1D_PIXEL_LAYOUT_I420 || picture->p.bpc != 8) {
+      if (picture->p.layout != DAV1D_PIXEL_LAYOUT_I420 ||
+          (picture->p.bpc != 8 && picture->p.bpc != 10 && picture->p.bpc != 12)) {
         return UNSUPPORTED;
       }
       const Dav1dSequenceHeader *sequence = picture->seq_hdr;
       *planes = (struct planes){
           .width = picture->p.w,
           .height = picture->p.h,
+          .depth = picture->p.bpc,
           .bt709 = bt709(sequence->mtrx == DAV1D_MC_UNKNOWN ? -1 : sequence->mtrx == DAV1D_MC_BT709,
                          picture->p.h),
           .full_range = sequence->color_range,
@@ -560,10 +572,12 @@ int yapfast_video_picture(struct yapfast_video *video, unsigned char *rgba, int 
   const uint8_t *y = planes->data[0], *u = planes->data[1], *v = planes->data[2];
   int y_stride = planes->stride[0], u_stride = planes->stride[1], v_stride = planes->stride[2];
   if (!y) return FAILED;
+  /* A sample's bytes. libyuv counts a deeper picture's strides in samples. */
+  int bytes = planes->depth > 8 ? 2 : 1;
   if (width != planes->width || height != planes->height) {
     int chroma_width = (width + 1) / 2, chroma_height = (height + 1) / 2;
-    size_t luma = (size_t)width * (size_t)height;
-    size_t chroma = (size_t)chroma_width * (size_t)chroma_height;
+    size_t luma = (size_t)width * (size_t)height * (size_t)bytes;
+    size_t chroma = (size_t)chroma_width * (size_t)chroma_height * (size_t)bytes;
     if (video->scaled_size < luma + 2 * chroma) {
       uint8_t *grown = realloc(video->scaled, luma + 2 * chroma);
       if (!grown) return FAILED;
@@ -571,20 +585,34 @@ int yapfast_video_picture(struct yapfast_video *video, unsigned char *rgba, int 
       video->scaled_size = luma + 2 * chroma;
     }
     uint8_t *scaled_y = video->scaled, *scaled_u = scaled_y + luma, *scaled_v = scaled_u + chroma;
-    if (I420Scale(y, y_stride, u, u_stride, v, v_stride, planes->width, planes->height, scaled_y,
-                  width, scaled_u, chroma_width, scaled_v, chroma_width, width, height,
-                  kFilterBox)) {
-      return FAILED;
-    }
+    int failed =
+        bytes == 1
+            ? I420Scale(y, y_stride, u, u_stride, v, v_stride, planes->width, planes->height,
+                        scaled_y, width, scaled_u, chroma_width, scaled_v, chroma_width, width,
+                        height, kFilterBox)
+            : I420Scale_16((const uint16_t *)y, y_stride / 2, (const uint16_t *)u, u_stride / 2,
+                           (const uint16_t *)v, v_stride / 2, planes->width, planes->height,
+                           (uint16_t *)scaled_y, width, (uint16_t *)scaled_u, chroma_width,
+                           (uint16_t *)scaled_v, chroma_width, width, height, kFilterBox);
+    if (failed) return FAILED;
     y = scaled_y, u = scaled_u, v = scaled_v;
-    y_stride = width, u_stride = chroma_width, v_stride = chroma_width;
+    y_stride = width * bytes, u_stride = chroma_width * bytes, v_stride = chroma_width * bytes;
   }
   const struct YuvConstants *matrix =
       planes->bt709 ? (planes->full_range ? &kYvuF709Constants : &kYvuH709Constants)
                     : (planes->full_range ? &kYvuJPEGConstants : &kYvuI601Constants);
   /* libyuv's ABGR is R, G, B, A in memory: its ARGB with U and V swapped. */
-  return I420ToARGBMatrix(y, y_stride, v, v_stride, u, u_stride, rgba, width * 4, matrix, width,
-                          height)
+  if (bytes == 1) {
+    return I420ToARGBMatrix(y, y_stride, v, v_stride, u, u_stride, rgba, width * 4, matrix, width,
+                            height)
+               ? FAILED
+               : 0;
+  }
+  int (*to_argb)(const uint16_t *, int, const uint16_t *, int, const uint16_t *, int, uint8_t *,
+                 int, const struct YuvConstants *, int, int) =
+      planes->depth == 10 ? I010ToARGBMatrix : I012ToARGBMatrix;
+  return to_argb((const uint16_t *)y, y_stride / 2, (const uint16_t *)v, v_stride / 2,
+                 (const uint16_t *)u, u_stride / 2, rgba, width * 4, matrix, width, height)
              ? FAILED
              : 0;
 }
