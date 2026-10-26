@@ -42,7 +42,9 @@ pub struct ListedMember {
 }
 
 /// Whether someone is around, as their status dot shows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum Presence {
     Online,
     /// Online, and only on a phone.

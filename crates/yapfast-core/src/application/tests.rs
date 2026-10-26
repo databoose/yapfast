@@ -1824,7 +1824,11 @@ fn a_discord_dms_menu_manages_its_person_and_notifications() {
     let snapshot = |friends: bool, muted: bool, blocked: bool, ignored: bool| Snapshot {
         status: Status::Online,
         user_id: Some("1".into()),
-        friends: if friends { vec!["2".into()] } else { vec![] },
+        friends: if friends {
+            vec!["2".into()].into()
+        } else {
+            vec![].into()
+        },
         friend_list: if friends {
             vec![Friend {
                 user_id: "2".into(),
@@ -1835,10 +1839,15 @@ fn a_discord_dms_menu_manages_its_person_and_notifications() {
                 activity: None,
                 activities: Default::default(),
             }]
+            .into()
         } else {
-            vec![]
+            vec![].into()
         },
-        blocked: if blocked { vec!["2".into()] } else { vec![] },
+        blocked: if blocked {
+            vec!["2".into()].into()
+        } else {
+            vec![].into()
+        },
         blocked_list: if blocked {
             vec![BlockedUser {
                 user_id: "2".into(),
@@ -1846,26 +1855,31 @@ fn a_discord_dms_menu_manages_its_person_and_notifications() {
                 username: None,
                 avatar: String::new(),
             }]
+            .into()
         } else {
-            vec![]
+            vec![].into()
         },
-        ignored: if ignored { vec!["2".into()] } else { vec![] },
+        ignored: if ignored {
+            vec!["2".into()].into()
+        } else {
+            vec![].into()
+        },
         conversations: vec![
-            Conversation {
+            Arc::new(Conversation {
                 id: "30".into(),
                 name: "Annie".into(),
                 person: Some("2".into()),
                 people: 2,
                 muted,
                 ..Default::default()
-            },
-            Conversation {
+            }),
+            Arc::new(Conversation {
                 id: "31".into(),
                 name: "Group".into(),
                 group: true,
                 people: 3,
                 ..Default::default()
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -3556,7 +3570,7 @@ fn discord_dms_list_with_their_pictures_and_read_once_read() {
     let effects = app.apply(discord_event(Snapshot {
         status: Status::Online,
         conversations: vec![
-            Conversation {
+            Arc::new(Conversation {
                 id: "30".into(),
                 name: "Ann".into(),
                 avatar: Some("ann.png".into()),
@@ -3564,14 +3578,14 @@ fn discord_dms_list_with_their_pictures_and_read_once_read() {
                 unread: true,
                 mentions: 2,
                 ..Default::default()
-            },
-            Conversation {
+            }),
+            Arc::new(Conversation {
                 id: "31".into(),
                 name: "Weekend".into(),
                 group: true,
                 people: 3,
                 ..Default::default()
-            },
+            }),
         ],
         ..Default::default()
     }));
@@ -3680,14 +3694,14 @@ fn discord_profiles_load_the_rest_from_discord() {
     let mut app = Application::default();
     app.apply(discord_event(Snapshot {
         status: Status::Online,
-        conversations: vec![Conversation {
+        conversations: vec![Arc::new(Conversation {
             id: "30".into(),
             name: "Ann".into(),
             avatar: Some("ann.png".into()),
             person: Some("7".into()),
             people: 2,
             ..Default::default()
-        }],
+        })],
         ..Default::default()
     }));
     let effects = app.dispatch(Action::ShowDmProfile("discord:@me:30".into()));
@@ -3751,13 +3765,13 @@ fn discord_profiles_show_the_kept_one_until_discord_answers() {
     let mut app = Application::default();
     app.apply(discord_event(Snapshot {
         status: Status::Online,
-        conversations: vec![Conversation {
+        conversations: vec![Arc::new(Conversation {
             id: "30".into(),
             name: "Ann".into(),
             person: Some("7".into()),
             people: 2,
             ..Default::default()
-        }],
+        })],
         ..Default::default()
     }));
     let ann = |bio: &str| Profile {
@@ -3817,7 +3831,7 @@ fn discord_friends_are_listed_and_messaged() {
     let snapshot = |dms: &[(&str, &str)]| Snapshot {
         status: Status::Online,
         user_id: Some("1".into()),
-        friends: vec!["2".into(), "3".into()],
+        friends: vec!["2".into(), "3".into()].into(),
         friend_list: vec![
             Friend {
                 activity: Some("making tea".into()),
@@ -3825,7 +3839,8 @@ fn discord_friends_are_listed_and_messaged() {
                 ..friend("2", "Ann", Some(Discord::Idle))
             },
             friend("3", "Bob", None),
-        ],
+        ]
+        .into(),
         conversations: dms
             .iter()
             .map(|(id, person)| Conversation {
@@ -3835,6 +3850,7 @@ fn discord_friends_are_listed_and_messaged() {
                 people: 2,
                 ..Default::default()
             })
+            .map(Arc::new)
             .collect(),
         ..Default::default()
     };
@@ -3908,7 +3924,7 @@ fn a_profile_card_messages_its_person_in_their_dm() {
     let snapshot = |dms: &[(&str, &str)]| Snapshot {
         status: Status::Online,
         user_id: Some("1".into()),
-        friends: vec!["2".into(), "3".into()],
+        friends: vec!["2".into(), "3".into()].into(),
         conversations: dms
             .iter()
             .map(|(id, person)| Conversation {
@@ -3918,6 +3934,7 @@ fn a_profile_card_messages_its_person_in_their_dm() {
                 people: 2,
                 ..Default::default()
             })
+            .map(Arc::new)
             .collect(),
         ..Default::default()
     };
@@ -4021,7 +4038,11 @@ fn a_one_to_one_dm_shows_its_persons_profile_beside_it() {
     let mut app = Application::default();
     app.apply(discord_event(Snapshot {
         status: Status::Online,
-        conversations: vec![dm("30", "7", 2), dm("31", "8", 2), dm("32", "9", 3)],
+        conversations: vec![
+            Arc::new(dm("30", "7", 2)),
+            Arc::new(dm("31", "8", 2)),
+            Arc::new(dm("32", "9", 3)),
+        ],
         ..Default::default()
     }));
     assert_eq!(app.state.selected.as_deref(), Some("discord:@me:30"));
@@ -4111,14 +4132,14 @@ fn discord_message_requests_are_answered_not_written_to() {
     use yapfast_discord::service::{Conversation, Snapshot, Status};
     let snapshot = |request: bool| Snapshot {
         status: Status::Online,
-        conversations: vec![Conversation {
+        conversations: vec![Arc::new(Conversation {
             id: "40".into(),
             name: "Erin".into(),
             people: 2,
             request,
             unread: true,
             ..Default::default()
-        }],
+        })],
         ..Default::default()
     };
     let mut app = Application::default();
@@ -4165,21 +4186,21 @@ fn discord_dm_calls_start_ring_and_are_answered() {
         status: Status::Online,
         user_id: Some("1".into()),
         conversations: vec![
-            Conversation {
+            Arc::new(Conversation {
                 id: "30".into(),
                 name: "Ann".into(),
                 people: 2,
                 person: Some("2".into()),
                 ringing,
                 ..Default::default()
-            },
-            Conversation {
+            }),
+            Arc::new(Conversation {
                 id: "40".into(),
                 name: "Erin".into(),
                 people: 2,
                 request: true,
                 ..Default::default()
-            },
+            }),
         ],
         voice: [("30".to_owned(), in_call)].into(),
         ..Default::default()
@@ -4255,7 +4276,7 @@ fn do_not_disturb_shows_a_call_without_notifying() {
         status: Status::Online,
         user_id: Some("1".into()),
         presence: DO_NOT_DISTURB.into(),
-        conversations: vec![Conversation {
+        conversations: vec![Arc::new(Conversation {
             id: "30".into(),
             name: "Ann".into(),
             people: 2,
@@ -4266,7 +4287,7 @@ fn do_not_disturb_shows_a_call_without_notifying() {
                 ..ann.clone()
             }],
             ..Default::default()
-        }],
+        })],
         voice: [("30".to_owned(), vec![ann])].into(),
         ..Default::default()
     }));
@@ -4353,7 +4374,7 @@ fn links_discord_by_qr_code_and_unlinks_it() {
     app.apply(discord_event(Snapshot {
         status: Status::Online,
         user_id: Some("1".into()),
-        friends: vec!["2".into()],
+        friends: vec!["2".into()].into(),
         ..Default::default()
     }));
     assert!(matches!(
@@ -4660,8 +4681,8 @@ fn discord_friend_requests_are_sent_answered_and_cancelled() {
     let effects = app.apply(discord_event(Snapshot {
         status: Status::Online,
         user_id: Some("1".into()),
-        friends: vec!["2".into()],
-        friend_requests: vec![request("3", "Erin", true), request("4", "Dave", false)],
+        friends: vec!["2".into()].into(),
+        friend_requests: vec![request("3", "Erin", true), request("4", "Dave", false)].into(),
         ..Default::default()
     }));
     assert!(
@@ -5336,13 +5357,14 @@ fn discord_dms(extra: Vec<yapfast_discord::service::Conversation>) -> Applicatio
     app.apply(discord_event(Snapshot {
         status: Status::Online,
         user_id: Some("1".into()),
-        friends: vec!["2".into(), "3".into(), "4".into()],
+        friends: vec!["2".into(), "3".into(), "4".into()].into(),
         friend_list: vec![
             friend("2", "Annie"),
             friend("3", "Ben"),
             friend("4", "Cara"),
-        ],
-        conversations,
+        ]
+        .into(),
+        conversations: conversations.into_iter().map(Arc::new).collect(),
         ..Default::default()
     }));
     app

@@ -3,6 +3,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    hash::{DefaultHasher, Hash, Hasher},
     sync::{Arc, RwLock},
 };
 
@@ -31,8 +32,57 @@ const BLOCKED: u64 = 2;
 const INCOMING_REQUEST: u64 = 3;
 const OUTGOING_REQUEST: u64 = 4;
 
+/// The lists of people the last snapshot gave, each kept with a fingerprint
+/// of what made it.
+#[derive(Default)]
+struct Kept {
+    /// By DM id.
+    conversations: HashMap<String, (u64, Arc<Conversation>)>,
+    friends: Option<(u64, Arc<[String]>)>,
+    friend_list: Option<(u64, Arc<[Friend]>)>,
+    blocked: Option<(u64, Arc<[String]>)>,
+    blocked_list: Option<(u64, Arc<[BlockedUser]>)>,
+    ignored: Option<(u64, Arc<[String]>)>,
+    friend_requests: Option<(u64, Arc<[FriendRequest]>)>,
+}
+
+/// The lists of people in a snapshot.
+struct People {
+    conversations: Vec<Arc<Conversation>>,
+    friends: Arc<[String]>,
+    friend_list: Arc<[Friend]>,
+    blocked: Arc<[String]>,
+    blocked_list: Arc<[BlockedUser]>,
+    ignored: Arc<[String]>,
+    friend_requests: Arc<[FriendRequest]>,
+}
+
+/// Whether a DM is muted and unread, its mentions and the last message
+/// read, as [`Unreads::private_marks`] gives them.
+type Marks = (bool, bool, u64, u64);
+
+/// The list `kept` holds when `inputs`, the fingerprint of what makes it,
+/// is the same as when it was made; otherwise a new one.
+fn shared<T: ?Sized>(
+    kept: &mut Option<(u64, Arc<T>)>,
+    inputs: u64,
+    make: impl FnOnce() -> Arc<T>,
+) -> Arc<T> {
+    match kept {
+        Some((last, list)) if *last == inputs => list.clone(),
+        _ => kept.insert((inputs, make())).1.clone(),
+    }
+}
+
+/// A hash of what makes a list, to tell whether it changed.
+fn fingerprint(value: &impl Hash) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// What Discord says of a friend or a DM's person.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq, Hash)]
 struct Known {
     presence: Presence,
     /// Their custom status, else what they're doing, on one line.
@@ -70,6 +120,8 @@ pub(super) struct Tracker {
     pub(super) servers: Vec<Arc<Server>>,
     /// Each server as the last snapshot marked it, by id.
     published: HashMap<String, Published>,
+    /// The lists of people the last snapshot gave.
+    kept: Kept,
     names: Arc<RwLock<Names>>,
     /// Where each user is in voice, by server and user id; DM and group DM
     /// calls go under [`PRIVATE`].
@@ -138,6 +190,7 @@ impl Tracker {
             email: ready["user"]["email"].is_string(),
             servers: ready::servers(ready).into_iter().map(Arc::new).collect(),
             published: HashMap::new(),
+            kept: Kept::default(),
             names,
             voice: HashMap::new(),
             calls: HashMap::new(),
@@ -1250,6 +1303,58 @@ impl Tracker {
         }
     }
 
+    /// The lists of people a snapshot gives: those that stayed the same
+    /// since the last are shared with it.
+    fn people(&self, names: &Names, kept: &mut Kept) -> People {
+        let friends = shared(&mut kept.friends, fingerprint(&self.friends), || {
+            self.friends.as_slice().into()
+        });
+        let blocked = shared(&mut kept.blocked, fingerprint(&self.blocked), || {
+            self.blocked.as_slice().into()
+        });
+        let ignored = shared(&mut kept.ignored, fingerprint(&self.ignored), || {
+            self.ignored.as_slice().into()
+        });
+        // What each list shows of a person, found as building it would, so
+        // the names it uses stay remembered.
+        let shown = |hasher: &mut DefaultHasher, user: &String| {
+            (user, names.user_name(user), names.avatar_hash(user)).hash(hasher);
+        };
+        let mut hasher = DefaultHasher::new();
+        for user in &self.friends {
+            shown(&mut hasher, user);
+            (self.nicknames.get(user), self.presences.get(user)).hash(&mut hasher);
+        }
+        let friend_list = shared(&mut kept.friend_list, hasher.finish(), || {
+            self.friend_list(names).into()
+        });
+        let mut hasher = DefaultHasher::new();
+        for user in &self.blocked {
+            shown(&mut hasher, user);
+            names.username(user).hash(&mut hasher);
+        }
+        let blocked_list = shared(&mut kept.blocked_list, hasher.finish(), || {
+            self.blocked_list(names).into()
+        });
+        let mut hasher = DefaultHasher::new();
+        for (user, request) in &self.requests {
+            shown(&mut hasher, user);
+            request.hash(&mut hasher);
+        }
+        let friend_requests = shared(&mut kept.friend_requests, hasher.finish(), || {
+            self.friend_requests(names).into()
+        });
+        People {
+            conversations: self.conversations(names, &mut kept.conversations),
+            friends,
+            friend_list,
+            blocked,
+            blocked_list,
+            ignored,
+            friend_requests,
+        }
+    }
+
     /// Friend requests waiting for an answer, incoming then outgoing, the
     /// newest first.
     fn friend_requests(&self, names: &Names) -> Vec<FriendRequest> {
@@ -1317,91 +1422,148 @@ impl Tracker {
         blocked
     }
 
-    /// DMs and group DMs, the latest conversation first.
-    fn conversations(&self, names: &Names) -> Vec<Conversation> {
-        let mut private = self.private.clone();
+    /// DMs and group DMs, the latest conversation first. Each one the
+    /// last snapshot gave the same is shared with it.
+    fn conversations(
+        &self,
+        names: &Names,
+        kept: &mut HashMap<String, (u64, Arc<Conversation>)>,
+    ) -> Vec<Arc<Conversation>> {
+        let mut private: Vec<&Private> = self.private.iter().collect();
         // Discord orders by the newest message, or when the DM opened.
         private.sort_by_cached_key(|private| {
             let opened = private.id.parse().unwrap_or_default();
             std::cmp::Reverse(self.unreads.last_message(&private.id).max(opened))
         });
-        private
+        let conversations: Vec<_> = private
             .into_iter()
-            .map(|mut private| {
-                self.unreads.mark_private(&mut private);
-                let name = |user: &String| names.user_name(user).unwrap_or("Discord user");
-                // A friend's DM goes by the nickname this account gave them.
-                let nickname = |user: &String| self.nicknames.get(user).map(String::as_str);
-                let title = match (&private.name, private.recipients.as_slice()) {
-                    (Some(name), _) => name.clone(),
-                    (None, []) if private.group => "Unnamed group".into(),
-                    (None, recipients) if private.group => {
-                        recipients.iter().map(name).collect::<Vec<_>>().join(", ")
+            .map(|private| {
+                let marks = self.unreads.private_marks(&private.id);
+                let inputs = self.conversation_inputs(private, marks, names);
+                let made = || Arc::new(self.conversation(private, marks, names));
+                match kept.get_mut(private.id.as_str()) {
+                    Some((last, conversation)) if *last == inputs => conversation.clone(),
+                    Some(slot) => {
+                        *slot = (inputs, made());
+                        slot.1.clone()
                     }
-                    (None, [user, ..]) => nickname(user).unwrap_or_else(|| name(user)).to_owned(),
-                    (None, []) => "Discord user".into(),
-                };
-                let avatar = if private.group {
-                    private.icon.clone()
-                } else {
-                    private
-                        .recipients
-                        .first()
-                        .map(|user| names.avatar(None, user))
-                };
-                let call = self.calls.contains_key(&private.id);
-                let known = (!private.group)
-                    .then(|| private.recipients.first())
-                    .flatten()
-                    .and_then(|user| self.presences.get(user));
-                let ringing = self
-                    .calls
-                    .get(&private.id)
-                    .into_iter()
-                    .flatten()
-                    .map(|user| VoiceMember {
-                        user_id: user.clone(),
-                        name: name(user).to_owned(),
-                        avatar: names.avatar(None, user),
-                        muted: false,
-                        deafened: false,
-                        server_muted: false,
-                        server_deafened: false,
-                        streaming: false,
-                        video: false,
-                        elsewhere: false,
-                    })
-                    .collect();
-                let preview = private
-                    .request
-                    .then(|| self.previews.get(&private.id).cloned())
-                    .flatten();
-                Conversation {
-                    id: private.id,
-                    name: title,
-                    avatar,
-                    group: private.group,
-                    people: private.recipients.len() + 1,
-                    request: private.request,
-                    spam: private.spam,
-                    person: (!private.group)
-                        .then(|| private.recipients.first().cloned())
-                        .flatten(),
-                    unread: private.unread && !private.spam,
-                    mentions: if private.request { 0 } else { private.mentions },
-                    last_read: private.last_read,
-                    muted: private.muted,
-                    call,
-                    ringing,
-                    presence: known.map(|known| known.presence),
-                    activity: known.and_then(|known| known.activity.clone()),
-                    activities: known
-                        .map(|known| known.activities.clone())
-                        .unwrap_or_default(),
-                    preview,
+                    None => {
+                        let conversation = made();
+                        kept.insert(private.id.clone(), (inputs, conversation.clone()));
+                        conversation
+                    }
                 }
             })
-            .collect()
+            .collect();
+        // Each DM closed leaves one more kept than listed.
+        if kept.len() > conversations.len() {
+            let open: HashSet<&str> = self.private.iter().map(|private| &*private.id).collect();
+            kept.retain(|id, _| open.contains(id.as_str()));
+        }
+        conversations
+    }
+
+    /// A fingerprint of all [`Self::conversation`] reads, found as it
+    /// finds them, so the names it uses stay remembered.
+    fn conversation_inputs(&self, private: &Private, marks: Marks, names: &Names) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        (private, marks).hash(&mut hasher);
+        for user in &private.recipients {
+            names.user_name(user).hash(&mut hasher);
+        }
+        if let Some(user) = private.recipients.first() {
+            (
+                names.avatar_hash(user),
+                self.nicknames.get(user),
+                self.presences.get(user),
+            )
+                .hash(&mut hasher);
+        }
+        let ringing = self.calls.get(&private.id);
+        ringing.is_some().hash(&mut hasher);
+        for user in ringing.into_iter().flatten() {
+            (user, names.user_name(user), names.avatar_hash(user)).hash(&mut hasher);
+        }
+        if private.request {
+            self.previews.get(&private.id).hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
+    /// A DM or group DM as the DM list shows it.
+    fn conversation(&self, private: &Private, marks: Marks, names: &Names) -> Conversation {
+        let (muted, unread, mentions, last_read) = marks;
+        let name = |user: &String| names.user_name(user).unwrap_or("Discord user");
+        // A friend's DM goes by the nickname this account gave them.
+        let nickname = |user: &String| self.nicknames.get(user).map(String::as_str);
+        let title = match (&private.name, private.recipients.as_slice()) {
+            (Some(name), _) => name.clone(),
+            (None, []) if private.group => "Unnamed group".into(),
+            (None, recipients) if private.group => {
+                recipients.iter().map(name).collect::<Vec<_>>().join(", ")
+            }
+            (None, [user, ..]) => nickname(user).unwrap_or_else(|| name(user)).to_owned(),
+            (None, []) => "Discord user".into(),
+        };
+        let avatar = if private.group {
+            private.icon.clone()
+        } else {
+            private
+                .recipients
+                .first()
+                .map(|user| names.avatar(None, user))
+        };
+        let call = self.calls.contains_key(&private.id);
+        let known = (!private.group)
+            .then(|| private.recipients.first())
+            .flatten()
+            .and_then(|user| self.presences.get(user));
+        let ringing = self
+            .calls
+            .get(&private.id)
+            .into_iter()
+            .flatten()
+            .map(|user| VoiceMember {
+                user_id: user.clone(),
+                name: name(user).to_owned(),
+                avatar: names.avatar(None, user),
+                muted: false,
+                deafened: false,
+                server_muted: false,
+                server_deafened: false,
+                streaming: false,
+                video: false,
+                elsewhere: false,
+            })
+            .collect();
+        let preview = private
+            .request
+            .then(|| self.previews.get(&private.id).cloned())
+            .flatten();
+        Conversation {
+            id: private.id.clone(),
+            name: title,
+            avatar,
+            group: private.group,
+            people: private.recipients.len() + 1,
+            request: private.request,
+            spam: private.spam,
+            person: (!private.group)
+                .then(|| private.recipients.first().cloned())
+                .flatten(),
+            unread: unread && !private.spam,
+            mentions: if private.request { 0 } else { mentions },
+            last_read,
+            muted,
+            call,
+            ringing,
+            presence: known.map(|known| known.presence),
+            activity: known.and_then(|known| known.activity.clone()),
+            activities: known
+                .map(|known| known.activities.clone())
+                .unwrap_or_default(),
+            preview,
+        }
     }
 
     fn learn_member(&mut self, guild: &str, member: &Value) {
@@ -1564,6 +1726,9 @@ impl Tracker {
             );
         }
         self.published = published;
+        let mut kept = std::mem::take(&mut self.kept);
+        let people = self.people(&names, &mut kept);
+        self.kept = kept;
         Snapshot {
             status: Status::Online,
             user_id: Some(self.me.clone()),
@@ -1576,12 +1741,12 @@ impl Tracker {
             }),
             servers,
             folders: self.folders.clone(),
-            conversations: self.conversations(&names),
-            friends: self.friends.clone(),
-            friend_list: self.friend_list(&names),
-            blocked: self.blocked.clone(),
-            blocked_list: self.blocked_list(&names),
-            ignored: self.ignored.clone(),
+            conversations: people.conversations,
+            friends: people.friends,
+            friend_list: people.friend_list,
+            blocked: people.blocked,
+            blocked_list: people.blocked_list,
+            ignored: people.ignored,
             presence: self.status.clone(),
             custom_status: self
                 .custom_status
@@ -1589,7 +1754,7 @@ impl Tracker {
                 .filter(|custom| !custom.expired(now_ms())),
             show_game: self.show_game,
             playing: self.playing.clone(),
-            friend_requests: self.friend_requests(&names),
+            friend_requests: people.friend_requests,
             voice,
             listed: None,
             viewing: self.viewing.iter().chain(&self.beside).cloned().collect(),
@@ -2077,8 +2242,8 @@ mod tests {
             tracker
                 .snapshot()
                 .friend_requests
-                .into_iter()
-                .map(|request| (request.name, request.incoming, request.spam))
+                .iter()
+                .map(|request| (request.name.clone(), request.incoming, request.spam))
                 .collect()
         };
         assert_eq!(
@@ -2102,12 +2267,12 @@ mod tests {
             &json!({"id": "5", "nickname": "x"}),
         );
         assert_eq!(listed(&mut tracker), [("spam".to_owned(), true, true)]);
-        assert_eq!(tracker.snapshot().friends, ["2", "3"]);
+        assert_eq!(*tracker.snapshot().friends, ["2", "3"]);
         let friends: Vec<_> = tracker
             .snapshot()
             .friend_list
-            .into_iter()
-            .map(|friend| (friend.name, friend.presence))
+            .iter()
+            .map(|friend| (friend.name.clone(), friend.presence))
             .collect();
         assert_eq!(
             friends,
@@ -2126,8 +2291,8 @@ mod tests {
 
         // Blocking Ann ends the friendship, and her messages stop notifying.
         tracker.apply(&Event::RelationshipAdd, &json!({"id": "2", "type": 2}));
-        assert_eq!(tracker.snapshot().friends, ["3"]);
-        assert_eq!(tracker.snapshot().blocked, ["2"]);
+        assert_eq!(*tracker.snapshot().friends, ["3"]);
+        assert_eq!(*tracker.snapshot().blocked, ["2"]);
         let blocked = &tracker.snapshot().blocked_list[0];
         assert_eq!(
             (blocked.name.as_str(), blocked.username.as_deref()),
@@ -2253,7 +2418,7 @@ mod tests {
                 .conversations
                 .into_iter()
                 .filter(|dm| !dm.request)
-                .map(|dm| (dm.name, dm.unread, dm.mentions))
+                .map(|dm| (dm.name.clone(), dm.unread, dm.mentions))
                 .collect()
         };
         assert_eq!(
@@ -2374,7 +2539,7 @@ mod tests {
             .snapshot()
             .conversations
             .into_iter()
-            .map(|dm| (dm.name, dm.request, dm.spam, dm.unread, dm.mentions))
+            .map(|dm| (dm.name.clone(), dm.request, dm.spam, dm.unread, dm.mentions))
             .collect();
         assert_eq!(
             listed,
@@ -2851,6 +3016,62 @@ mod tests {
             shared(&unread.servers[1], &renamed.servers[1]),
             (true, true)
         );
+    }
+
+    #[test]
+    fn snapshots_share_the_dms_and_lists_that_stay_the_same() {
+        let ready = json!({
+            "user": {"id": "1"},
+            "users": [{"id": "2", "username": "ann"}, {"id": "3", "username": "bob"}],
+            "relationships": [{"id": "2", "type": 1}, {"id": "3", "type": 1}],
+            "private_channels": [
+                {"id": "20", "type": 1, "recipient_ids": ["2"]},
+                {"id": "30", "type": 1, "recipient_ids": ["3"]},
+            ],
+        });
+        let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        let dm = |snapshot: &Snapshot, id: &str| {
+            let found = snapshot.conversations.iter().find(|dm| dm.id == id);
+            found.unwrap().clone()
+        };
+        let first = tracker.snapshot();
+        let same = tracker.snapshot();
+        assert!(Arc::ptr_eq(&dm(&first, "20"), &dm(&same, "20")));
+        assert!(Arc::ptr_eq(&dm(&first, "30"), &dm(&same, "30")));
+        assert!(Arc::ptr_eq(&first.friends, &same.friends));
+        assert!(Arc::ptr_eq(&first.friend_list, &same.friend_list));
+        assert!(Arc::ptr_eq(&first.friend_requests, &same.friend_requests));
+
+        // Bob going idle changes his DM and the friends list, nothing else.
+        tracker.apply(
+            &Event::PresenceUpdate,
+            &json!({"user": {"id": "3"}, "status": "idle", "activities": []}),
+        );
+        let idle = tracker.snapshot();
+        assert_eq!(dm(&idle, "30").presence, Some(Presence::Idle));
+        assert!(!Arc::ptr_eq(&dm(&first, "30"), &dm(&idle, "30")));
+        assert!(!Arc::ptr_eq(&first.friend_list, &idle.friend_list));
+        assert!(Arc::ptr_eq(&dm(&first, "20"), &dm(&idle, "20")));
+        assert!(Arc::ptr_eq(&first.friends, &idle.friends));
+
+        // A message from Ann marks her DM unread, and only hers.
+        tracker.apply(
+            &Event::MessageCreate,
+            &json!({"id": "900", "channel_id": "20", "author": {"id": "2"}}),
+        );
+        let unread = tracker.snapshot();
+        assert!(dm(&unread, "20").unread);
+        assert!(!dm(&idle, "20").unread, "published ones don't change");
+        assert!(Arc::ptr_eq(&dm(&idle, "30"), &dm(&unread, "30")));
+        assert!(Arc::ptr_eq(&idle.friend_list, &unread.friend_list));
+
+        // A DM closed is forgotten.
+        tracker.apply(
+            &Event::ChannelDelete,
+            &json!({"id": "30", "type": 1, "recipient_ids": ["3"]}),
+        );
+        assert_eq!(tracker.snapshot().conversations.len(), 1);
+        assert_eq!(tracker.kept.conversations.len(), 1);
     }
 
     #[test]

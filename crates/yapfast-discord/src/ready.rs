@@ -479,7 +479,7 @@ impl Deletes {
 pub const PRIVATE: &str = "@me";
 
 /// A DM or group DM.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Private {
     pub id: String,
     pub group: bool,
@@ -494,11 +494,6 @@ pub struct Private {
     pub request: bool,
     /// A request Discord thinks is spam.
     pub spam: bool,
-    /// The rest are set when the service publishes it.
-    pub unread: bool,
-    pub mentions: u64,
-    pub muted: bool,
-    pub last_read: u64,
 }
 
 /// A DM or group DM, or a message request, from a channel object.
@@ -540,7 +535,6 @@ pub fn private_channel(channel: &Value) -> Option<Private> {
         request: spam || channel["is_message_request"] == true,
         spam,
         id,
-        ..Default::default()
     })
 }
 

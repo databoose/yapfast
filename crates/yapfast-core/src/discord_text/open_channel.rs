@@ -1634,7 +1634,7 @@ impl OpenChannel {
 pub(super) struct Rendering {
     pub(super) names: u64,
     pub(super) me: String,
-    pub(super) blocked: Vec<String>,
+    pub(super) blocked: Arc<[String]>,
     pub(super) server: Option<MarkedServer>,
     /// This account may pin messages here: anyone may in a DM.
     pub(super) may_pin: bool,

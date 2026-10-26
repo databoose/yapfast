@@ -397,10 +397,10 @@ pub struct AppState {
     /// `invisible`.
     pub discord_presence: Option<String>,
     /// Its friends, by user id, and friend requests waiting for an answer.
-    pub discord_friends: Vec<String>,
+    pub discord_friends: Arc<[String]>,
     /// Those it blocked, by name, and those it ignores, by user id.
     pub discord_blocked: Vec<chat::Blocked>,
-    pub discord_ignored: Vec<String>,
+    pub discord_ignored: Arc<[String]>,
     /// DMs pinned to the top of the DM list on this device, by room id, the
     /// first pinned first.
     pub pinned: Vec<String>,

@@ -140,7 +140,7 @@ pub struct Conversation {
 }
 
 /// A message request's latest message, in short.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Preview {
     /// Its snowflake, which says when it came.
     pub id: String,
@@ -273,22 +273,24 @@ pub struct Snapshot {
     /// in [`Self::servers`], in the folder's order.
     #[serde(default)]
     pub folders: Vec<settings::Folder>,
-    /// DMs and group DMs, the latest conversation first.
-    pub conversations: Vec<Conversation>,
+    /// DMs and group DMs, the latest conversation first. Each DM, and each
+    /// list of people below, is shared between snapshots while it stays the
+    /// same.
+    pub conversations: Vec<Arc<Conversation>>,
     /// The account's friends, by user id.
-    pub friends: Vec<String>,
+    pub friends: Arc<[String]>,
     /// The same friends by name, as the friends list shows them.
     #[serde(default)]
-    pub friend_list: Vec<Friend>,
+    pub friend_list: Arc<[Friend]>,
     /// Those this account blocked, by user id. Their messages show collapsed,
     /// and they don't notify.
-    pub blocked: Vec<String>,
+    pub blocked: Arc<[String]>,
     /// The same people by name, as the blocked list shows them.
     #[serde(default)]
-    pub blocked_list: Vec<BlockedUser>,
+    pub blocked_list: Arc<[BlockedUser]>,
     /// Those this account ignores, by user id.
     #[serde(default)]
-    pub ignored: Vec<String>,
+    pub ignored: Arc<[String]>,
     /// This account's status: `online`, `idle`, `dnd` or `invisible`.
     pub presence: String,
     /// This account's custom status, until it ends.
@@ -302,7 +304,7 @@ pub struct Snapshot {
     pub playing: Option<Arc<crate::own_activity::Playing>>,
     /// Friend requests waiting for an answer: those sent to this account
     /// first, then those it sent, the newest first in each.
-    pub friend_requests: Vec<FriendRequest>,
+    pub friend_requests: Arc<[FriendRequest]>,
     /// Who is in each voice channel, by channel id and then by name.
     #[serde(skip)]
     pub voice: HashMap<String, Vec<VoiceMember>>,

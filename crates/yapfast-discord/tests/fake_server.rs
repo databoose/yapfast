@@ -2506,7 +2506,7 @@ async fn talks_to_the_fake_server() {
     .find(|found| found.name == "Dave")
     .cloned()
     .unwrap();
-    let (dave, dave_user) = (dave.id, dave.person.unwrap());
+    let (dave, dave_user) = (dave.id.clone(), dave.person.clone().unwrap());
     let assigned = discord.join(PRIVATE, &dave).await.unwrap();
     let mut call = timeout(
         WAIT,
@@ -2651,7 +2651,10 @@ async fn talks_to_the_fake_server() {
         .unwrap();
     assert_eq!(discord.note(&dave_user).await.unwrap(), "Met at the jam");
     discord.ignore(&dave_user, true).await.unwrap();
-    snapshot_where(&discord, |snapshot| snapshot.ignored == [dave_user.clone()]).await;
+    snapshot_where(&discord, |snapshot| {
+        *snapshot.ignored == [dave_user.clone()]
+    })
+    .await;
     discord.ignore(&dave_user, false).await.unwrap();
     snapshot_where(&discord, |snapshot| snapshot.ignored.is_empty()).await;
     discord

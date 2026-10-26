@@ -11,7 +11,7 @@ use crate::{
     event::Event,
     message::{iso_ms, snowflake_at},
     notifications::{Level, Notifications},
-    ready::{Access, Channel, PRIVATE, Private, Thread},
+    ready::{Access, Channel, PRIVATE, Thread},
 };
 
 #[derive(Clone, Copy, Default)]
@@ -455,17 +455,20 @@ impl Unreads {
         )
     }
 
-    /// Sets the unread, mention and muted state of a DM. A muted DM shows
-    /// neither, as in Discord.
-    pub fn mark_private(&self, private: &mut Private) {
-        private.muted = self
+    /// Whether a DM is muted and unread, its mentions and the last message
+    /// read. A muted DM shows neither unread nor mentions, as in Discord.
+    pub fn private_marks(&self, id: &str) -> (bool, bool, u64, u64) {
+        let muted = self
             .settings
             .get(PRIVATE)
-            .is_some_and(|settings| settings.channel_muted(&private.id, now()));
-        let (unread, mentions) = self.state(PRIVATE, &private.id);
-        private.unread = unread && !private.muted;
-        private.mentions = if private.muted { 0 } else { mentions };
-        private.last_read = self.last_read(PRIVATE, &private.id);
+            .is_some_and(|settings| settings.channel_muted(id, now()));
+        let (unread, mentions) = self.state(PRIVATE, id);
+        (
+            muted,
+            unread && !muted,
+            if muted { 0 } else { mentions },
+            self.last_read(PRIVATE, id),
+        )
     }
 }
 

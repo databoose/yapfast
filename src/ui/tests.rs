@@ -4365,13 +4365,13 @@ fn leaving_a_group_dm_asks_first_and_offers_to_tell_no_one() {
         .apply(Event::Discord(Arc::new(Snapshot {
             status: Status::Online,
             user_id: Some("1".into()),
-            conversations: vec![Conversation {
+            conversations: vec![Arc::new(Conversation {
                 id: "31".into(),
                 name: "Hikers".into(),
                 group: true,
                 people: 3,
                 ..Default::default()
-            }],
+            })],
             ..Default::default()
         })));
     let group = "discord:@me:31";

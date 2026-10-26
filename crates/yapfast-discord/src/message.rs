@@ -1456,6 +1456,14 @@ impl Names {
         ready::avatar(user, hash.map(String::as_str))
     }
 
+    /// The avatar hash [`Self::avatar`] makes a user's address from outside
+    /// servers; none for one who set none.
+    pub fn avatar_hash(&self, user: &str) -> Option<&str> {
+        let user = id(user)?;
+        self.touch(user);
+        self.avatars.get(&user).map(String::as_str)
+    }
+
     /// Discord Markdown for Yapfast: mentions, custom emoji and timestamps
     /// become text.
     pub fn render(&self, server: Option<&Server>, content: &str) -> String {

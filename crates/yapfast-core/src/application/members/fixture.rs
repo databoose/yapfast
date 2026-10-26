@@ -88,7 +88,7 @@ pub fn member_server(alice: &[&str]) -> Application {
             server: Arc::new(server),
             marks: Arc::new(marks),
         }],
-        friends: vec!["4".into()],
+        friends: vec!["4".into()].into(),
         friend_list: vec![yapfast_discord::service::Friend {
             user_id: "4".into(),
             name: "Dave".into(),
@@ -97,7 +97,8 @@ pub fn member_server(alice: &[&str]) -> Application {
             presence: None,
             activity: None,
             activities: Default::default(),
-        }],
+        }]
+        .into(),
         names: SharedNames::new(Arc::new(RwLock::new(names))),
         voice: [(
             "12".to_owned(),

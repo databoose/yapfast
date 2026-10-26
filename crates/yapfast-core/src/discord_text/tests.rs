@@ -409,7 +409,7 @@ fn messages_render_again_once_what_they_show_changes() {
     let rendering = |names: u64, server| Rendering {
         names,
         me: "1".into(),
-        blocked: vec![],
+        blocked: vec![].into(),
         server,
         may_pin: false,
         may_forward: false,
@@ -433,7 +433,7 @@ fn messages_render_again_once_what_they_show_changes() {
         "names"
     );
     assert!(!shown.alike(&Rendering {
-        blocked: vec!["2".into()],
+        blocked: vec!["2".into()].into(),
         ..rendering(1, server("general", false))
     }));
     assert!(

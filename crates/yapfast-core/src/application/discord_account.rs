@@ -520,9 +520,9 @@ impl Application {
         self.state.discord_linked = false;
         self.state.discord_online = false;
         self.state.discord_user = None;
-        self.state.discord_friends.clear();
+        self.state.discord_friends = Arc::default();
         self.state.discord_blocked.clear();
-        self.state.discord_ignored.clear();
+        self.state.discord_ignored = Arc::default();
         self.state.person_dialog = None;
         self.state.server_settings = None;
         self.state.channel_settings = None;

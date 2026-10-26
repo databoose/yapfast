@@ -331,7 +331,7 @@ pub(crate) fn load(token: &str, key: Option<Key>) -> Loaded {
     let mut snapshot = Arc::unwrap_or_clone(saved.snapshot);
     snapshot.status = Status::Connecting;
     for conversation in &mut snapshot.conversations {
-        conversation.call = false;
+        Arc::make_mut(conversation).call = false;
     }
     Loaded {
         snapshot,
@@ -869,11 +869,11 @@ mod tests {
                     ..Default::default()
                 },
             )],
-            conversations: vec![Conversation {
+            conversations: vec![Arc::new(Conversation {
                 id: "20".into(),
                 call: true,
                 ..Default::default()
-            }],
+            })],
             ..Default::default()
         };
         let mut names = Names::default();
