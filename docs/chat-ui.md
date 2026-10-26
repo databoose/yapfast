@@ -1,17 +1,18 @@
 # Chat UI
 
-The first chat UI was implemented on 2026-10-02 and moved to Slint on
-2026-10-03. The Milestone 2 conversation features followed on 2026-10-03; they
-add the SDK's Markdown feature, `image` for bounded decoding, `mime`,
-`pulldown-cmark` for plain reply snippets, and `rfd` for native file dialogs.
-The same day the window was redesigned after Discord's layout, set in Satoshi.
+The chat window for Matrix and Discord, laid out after Discord's client.
+Matrix messages are sent through the SDK's Markdown feature, and Slint's
+Markdown draws formatted text. `pulldown-cmark` in `yapfast-core` reads
+Markdown for links, spoilers, reply snippets and notification text
+(`links.rs`, `spoiler.rs`, `chat.rs`). `image` decodes pictures within bounds,
+and `rfd` opens native file dialogs.
 
 ## Try it
 
 From the repository folder:
 
 ```sh
-nix develop path:./nix --command cargo run --locked -- --preview
+nix develop path:./nix --command cargo run --locked --profile fast -- --preview
 ```
 
 The preview has two sample servers, DMs and a group DM. The upper-left button
@@ -23,7 +24,8 @@ the preview. They never connect to Matrix.
 
 Launch without `--preview` for password sign-in and automatic restoration.
 `--data-dir PATH` selects an isolated session directory. Passwords and recovery
-keys are masked and cleared after submission. SSO and OAuth are still pending.
+keys are masked and cleared after submission. The sign-in form scrolls when
+errors make it taller than the minimum window. SSO and OAuth are still pending.
 
 ## Implemented behavior
 
@@ -72,9 +74,14 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
 - Recover encryption keys or recheck verification performed in another client.
 - Send only from a cross-signed device into a joined encrypted room. Existing
   plaintext rooms are read-only.
-- Write Markdown. Messages with formatting render bold, italic, code and links;
-  Slint's subset has no headings, so those show as typed. Formatted text isn't
-  selectable, so every message has a Copy action.
+- Write Markdown. Messages with formatting render bold, italic, strikethrough,
+  inline code, lists and links through Slint's Markdown, and headings, subtext,
+  quotes and fenced code as blocks that `crates/yapfast-core/src/blocks.rs`
+  splits out by Discord's rules (`TextBlocks` in `ui/messages.slint`); see
+  [Discord](discord/README.md) for the details. Message text, authors and times are
+  selectable across messages through Yapfast's patched Slint
+  ([building](building.md#dependencies)); Ctrl+C or the menu's Copy selection
+  copies it, and Copy text copies a whole message.
 - Start a DM from the pen in the DM list's header: type a name to search the
   homeserver's user directory, or a full Matrix id. Yapfast opens the DM you
   already have with them, or starts an encrypted one and opens it once sync
@@ -90,23 +97,27 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   shows just above the composer, gently pulsing, after three dots under the
   avatars that rise in turn, and Yapfast tells the room while you type unless a
   setting turns it off.
-- Hover or click a message for its toolbar: your three most used reactions,
-  Add reaction, Edit on your own message or Reply on someone else's, and More.
+- Hover or click a message for its toolbar: your three most used reactions, Add
+  reaction, Edit on your own message or Reply on someone else's, and More.
   More, or a right click on the message, opens a menu with your four most used
-  reactions, Add reaction, View Reactions, Edit, Reply, Forward, Copy text and
-  Delete; View Reactions appears once a message has reactions, and Edit and
-  Delete appear on your own messages only. Until you have reacted, the most used
-  reactions are 👍, ❤️, 😂 and 🎉. Yapfast counts the reactions you add, not the
-  ones you remove, in `layout.json` on this computer. The icons have tooltips and
-  accessible names. Add reaction opens a picker with a search field, frequently
-  used emoji and every category of the `emojis` crate up to Unicode 15.0, which
-  Noto Color Emoji and Windows 11 draw; Enter picks the first match. Clicking an
-  existing reaction adds or removes yours.
+  reactions, Add reaction, View Reactions, Edit, Reply, Forward, Create Thread
+  or View Thread, Copy text, Copy selection, Pin or Unpin, and Delete, with
+  Copy Image, Save Image, Copy Link and Open Link on a picture or link
+  (`ui/messages.slint`). View Reactions appears once a message has reactions,
+  Copy selection while text is selected, and Edit on your own messages only.
+  Delete appears on your own messages, and on anyone's for a Discord moderator
+  with Manage Messages. Until you have reacted, the most used reactions are 👍,
+  ❤️, 😂 and 🎉. Yapfast counts the reactions you add, not the ones you remove,
+  in `layout.json` on this computer. The icons have tooltips and accessible
+  names. Add reaction opens a picker with a search field, frequently used emoji
+  and every category of the `emojis` crate up to Unicode 15.0, which Noto Color
+  Emoji and Windows 11 draw; Enter picks the first match. Clicking an existing
+  reaction adds or removes yours.
 - A GIF picker next to the emoji button, on Discord: a search over Klipy,
   trending terms and favourites, as in Discord's client. A click sends a GIF,
   Shift and a click puts it in the message, and a star keeps it among the
   favourites; GIFs and moving pictures in messages have the star too. See
-  [Discord](discord.md#gifs).
+  [Discord](discord/messages.md#gifs).
 - GIFs, animated emoji, stickers and the picker's tiles play only while
   Yapfast's window has the focus, as in Discord: on another screen they hold
   still on the frame they were showing, and go on from there when the
@@ -129,7 +140,7 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   encrypted conversations and sends the message's current content as a new
   message, without its reply quote. An encrypted attachment keeps its uploaded
   file, and its key travels in the new encrypted event. On Discord it forwards
-  as Discord's client does ([Forwarding](discord.md#forwarding)). The message
+  as Discord's client does ([Forwarding](discord/messages.md#forwarding)). The message
   added goes after the forward as a message of its own. If a forward fails
   somewhere, the dialog opens again with those conversations chosen and why.
   Delete asks for confirmation, then
@@ -178,7 +189,7 @@ keys are masked and cleared after submission. SSO and OAuth are still pending.
   too.
 - Send through the SDK's persistent send queue. A message appears at once with
   "Sending...". After a connection problem it shows "Not sent yet" and goes out
-  by itself when sync recovers. Sync now uses the SDK's offline mode, which keeps
+  by itself when sync recovers. Sync uses the SDK's offline mode, which keeps
   probing the homeserver. A refused message shows "Not sent" with Retry. Queued
   messages can be cancelled, and they survive closing Yapfast.
 - Save each room's draft in the encrypted session store, so drafts survive
@@ -365,7 +376,7 @@ The window follows Discord's arrangement:
   ticks a box when it's chosen.
 - A dock across the rail and sidebar: the voice panel, whose signal icon
   and status show a Discord call's ping on hover and its connection details
-  on a click (see [Connection details](discord.md#connection-details)), then the account panel
+  on a click (see [Connection details](discord/voice.md#connection-details)), then the account panel
   with avatar, status, mute and deafen during a call, and settings (account,
   theme, audio devices, message text size, clock and link previews, notifications,
   sounds, reconnect, sign out). A caret beside mute and deafen opens a
@@ -402,11 +413,11 @@ The window follows Discord's arrangement:
   their menu as a member, as Discord's: Mention, Call, a note and nickname,
   their roles in a submenu of checkboxes, and Time out, Kick and Ban last, in
   red, as this account's permissions and its rank against theirs allow, then
-  Copy ID; see [Discord](discord.md#a-server-members-menu). In a Discord
+  Copy ID; see [Discord](discord/servers.md#a-server-members-menu). In a Discord
   server's call, or under a voice channel, their volume sits above that
   menu, which adds a Mute just for you, Move to and, in red, Server mute,
   Server deafen and Disconnect; see
-  [Discord](discord.md#someones-menu-in-a-voice-channel). Time out and Ban ask how long
+  [Discord](discord/servers.md#someones-menu-in-a-voice-channel). Time out and Ban ask how long
   or how much in their dialog, and each asks a reason. In a one-to-one DM, the
   other person's menu is the DM's own, less Mark as read and Copy link, and
   Copy ID copies theirs. Clicking an author's avatar or name, which underlines while
@@ -421,92 +432,49 @@ marigold accent for selection and primary actions, red only for mentions and
 destructive actions, and green only for live voice. Avatars get one of eight
 tints from the person's name.
 
-Network operations run on the existing two-worker Tokio runtime. The UI receives
-SDK events, and the message list virtualizes its rows. Rows keep their place by
-message id: a change rebuilds only the rows of the messages it changed, and
-older messages go in above the rows shown, which stay where they are on screen.
-There is no UI polling loop.
-Only joined Spaces and their joined channels appear. DMs stay in the DM list even
-if linked to a Space. Standalone rooms outside Spaces, channel discovery, room
-creation, mentions with autocomplete,
-threads, a full emoji picker, Matrix video and audio playback, drag and drop, and deleting
-other people's messages remain later work. Message actions need a pointer;
-keyboard access to them is still missing. Closing the last window exits Yapfast.
+Network operations run on the existing two-worker Tokio runtime. The UI
+receives SDK events, and the message list virtualizes its rows. Rows keep their
+place by message id: a change rebuilds only the rows of the messages it
+changed, and older messages go in above the rows shown, which stay where they
+are on screen. There is no UI polling loop. On Matrix, only joined Spaces and
+their joined channels appear. DMs stay in the DM list even if linked to a
+Space. Matrix standalone rooms outside Spaces, channel discovery, room
+creation, threads, video and audio playback, and deleting other people's
+messages remain later work. Closing the last window exits Yapfast.
 
 ## Validation
 
-The local chat integration tests create disposable accounts:
-
-- `encrypted_chat_restore_send_retry_and_security_gates` checks restoration,
-  live delivery, wire encryption and decryption, plaintext-room and
-  unverified-device refusal, logout cleanup, server channel lists, nested and
-  cyclic Spaces, and live channel removal.
-- `markdown_replies_reactions_edits_attachments_and_drafts` sends Markdown, a
-  reply, a reaction and its removal, an edit and a deletion. It uploads an image
-  and checks the server only stores an encrypted event with an encrypted file,
-  that the preview decodes, and that Save writes the original bytes. It also
-  sends a text file and checks that a draft survives a restart.
-- `offline_messages_wait_survive_restart_and_send_once` cuts the network with a
-  local relay, sends and cancels messages offline, closes and restarts Yapfast,
-  then restores the network. The queued message went out 0.6 s later, once; the
-  cancelled one never reached the server.
-- `opening_a_room_shows_messages_missed_while_it_was_closed` checks that eight
-  messages from another account appear in order after reopening the room, and
-  that the room then reads as read.
-
-Run them after `scripts/test-stack up`:
+The Matrix chat integration tests in `crates/yapfast-core/src/matrix_chat.rs`
+create disposable accounts and cover restoration, encryption and its gates,
+Spaces, Markdown, replies, reactions, edits, deletion, attachments, drafts,
+offline sending across a restart, and messages missed while a room was
+closed. Run them after `scripts/test-stack up`:
 
 ```sh
-cargo test --locked -p yapfast-core matrix_chat::tests -- --ignored --test-threads=1
+nix develop path:./nix --command cargo test --locked --profile fast -p
+yapfast-core matrix_chat::tests -- --ignored --test-threads=1
 ```
 
-On 2026-10-03 the conversation features were also driven through the real
-window on the private desktop with two fixture accounts. Hover actions, the
-reaction picker, a reaction chip, a reply, an edit, delete confirmation, the
-Markdown and link rendering, an image preview, file cards, and the unread dot
-clearing on open all worked. The native file dialogs need an XDG portal, which
-the private desktop doesn't run, so Attach and Save were checked only through
-the integration test. Slint's Skia renderer drew nothing for the COLRv1 build
-of Noto Color Emoji; the CBDT build, which most distributions ship, rendered in
-color. Fontconfig can prefer the COLRv1 build when both are installed, which
-left reactions blank. On Linux Yapfast now finds an installed emoji font with CBDT
-or sbix bitmaps and no COLR table, maps it and registers it with Slint as "Yapfast
-Color Emoji". That font also leads the sans-serif and UI fallback lists, ahead
-of display fonts that carry a few monochrome emoji, so emoji in message text
-draw in color too; symbols the UI typeface lacks that have an emoji form, such as ♥,
-then show as emoji. Windows uses "Segoe UI Emoji".
+To check the window by hand, see [Seeing the app](building.md#seeing-the-app).
+The native file dialogs need an XDG portal, which `scripts/ui-session` doesn't
+run, so Attach and Save are checked only through the integration test.
 
-The prebuilt Skia that drew nothing for COLRv1 was built for a FreeType
-without COLRv1. Fedora installs only the COLRv1 build, so reactions and emoji
-in text were blank there (issue #32). Since 2026-10-22 Linux uses the prebuilt
-Skia with Skia's own FreeType, which draws it, as `skia_draws_colrv1_glyphs_in_colour`
-checks. Yapfast still takes a bitmap emoji font if one is installed, and a COLR
-one otherwise.
+On Linux Yapfast finds an installed emoji font with CBDT or sbix bitmaps and
+no COLR table, or failing that a COLR one, maps it and registers it with Slint
+as "Yapfast Color Emoji" (`src/emoji.rs`); fontconfig alone can prefer the
+COLRv1 build of Noto Color Emoji when both are installed. That font also leads
+the sans-serif and UI fallback lists, ahead of display fonts that carry a few
+monochrome emoji, so emoji in message text draw in color too; symbols the UI
+typeface lacks that have an emoji form, such as ♥, then show as emoji. Linux
+uses the prebuilt Skia with Skia's own FreeType, which draws COLRv1, the only
+build Fedora installs (issue #32), as `skia_draws_colrv1_glyphs_in_colour`
+checks. Windows uses "Segoe UI Emoji".
 
 On Windows, fontique falls back by script, with a sample of each script, and
 its sans-serif and UI lists are only Arial and Segoe UI. Emoji, most symbols
 and the styled letters of Unicode's mathematical alphabets that Discord names
-use, such as 𝓯𝓪𝓷𝓬𝔂, are all of the Common script, so they showed as boxes.
+use, such as 𝓯𝓪𝓷𝓬𝔂, are all of the Common script, so they would show as boxes.
 Yapfast puts Segoe UI Emoji, Segoe UI, Segoe UI Symbol, Cambria Math and Segoe
-UI Historic at the front of both lists (`emoji::WINDOWS_FALLBACK`). Under Wine
-10.0 on 2026-10-16, with free fonts renamed to those names standing in for
-them, the styled letters, small capitals, ✗ and text faces such as
-( ͡° ͜ʖ ͡°) drew where they had been boxes. Wine draws no emoji from the
-bitmap font standing in for Segoe UI Emoji, so color emoji in message text
-need a check on real Windows.
-
-Linux native checks cover sign-in, restoration, device trust, encrypted sending,
-local preview input, Enter submission, room switching, draft retention, DM and
-name filtering, sign-out, and resize. The navigation refinement checks switching
-between two servers and DMs, scoped channels, resetting filters, and restoring the
-last channel and its draft. Captures use 1120 by 760 and 800 by 560.
-The sign-in form scrolls when errors make it taller than the minimum window.
-Windows build and rendering still require the tester's machine. The previous
-empty-window resource baseline does not measure this chat UI.
-
-The navigation refinement was checked on Linux with two preview servers. Switching
-to DMs hid server channels; switching servers replaced the channel list. Returning
-to Friends restored `games` and its draft, and returning to Co-op crew restored
-`looking-for-group` and a separate draft. A `games` search cleared on leaving
-Friends. The composer and both navigation columns stayed usable at 800 by 560.
-Review captures are in `.impeccable/review/nav-*.png`.
+UI Historic at the front of both lists (`emoji::WINDOWS_FALLBACK`). Wine draws
+no emoji from a bitmap font standing in for Segoe UI Emoji, so color emoji in
+message text need a check on real Windows.

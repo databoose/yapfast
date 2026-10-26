@@ -1,7 +1,7 @@
 //! A Discord text channel in Yapfast's conversation view. Yapfast keeps the open
 //! channel's loaded messages in memory, and those of channels open lately,
 //! so going back to one shows it at once; history loads from Discord and
-//! live changes arrive through the gateway. See docs/discord.md.
+//! live changes arrive through the gateway. See docs/discord/README.md.
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,

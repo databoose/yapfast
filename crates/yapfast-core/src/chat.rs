@@ -3923,7 +3923,7 @@ pub async fn run(
             return;
         }
     };
-    // Discord connects when this device has a linked account; see docs/discord.md.
+    // Discord connects when this device has a linked account; see docs/discord/README.md.
     // Why a linked account isn't running answers the commands that need it.
     #[cfg(feature = "discord")]
     let (mut discord, mut discord_error) = match crate::discord_text::Chat::start() {

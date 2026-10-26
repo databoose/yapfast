@@ -8,7 +8,7 @@ Quit.
 
 Settings → Advanced has "Close to tray", on unless turned off
 (`close_to_tray` in `layout.json`). Off, or with no tray to show the icon,
-closing the window quits Yapfast, as it did before; the setting's description
+closing the window quits Yapfast; the setting's description
 says when there's no tray. A tray that starts after Yapfast, or comes back,
 still gets the icon.
 
@@ -74,13 +74,9 @@ Task Manager's Memory column is the private working set, which the window's
 pages would otherwise stay in; they come back from the standby list if
 touched.
 
-With Skia Software, closing saves 2.3 MiB of anonymous memory in a channel
-(18.6 to 16.3 MiB) and 0.9 MiB in a call; with the GPU, 24 MiB on the first
-close ([measurements](measurements/README.md#2026-10-14-closing-the-window-to-the-tray)).
 The models stay with the adapter, so a new window shows them without building
 them again. Releasing the timeline's rows, the window's copies of pictures and
-Skia's caches as well saved 0.25 MiB of heap and no anonymous memory, so they
-stay.
+Skia's caches as well saved almost nothing, so they stay.
 
 Opening makes the window again with the size, place and maximized state of
 the last one (Wayland ignores the place), the same conversation scrolled to
@@ -130,7 +126,7 @@ The bar is a cross-build and Wine (`scripts/build-windows`, see
 - Task Manager's Memory column drops when the window closes, and stays down
   for a minute;
 - after restarting Explorer, the icon comes back;
-- the icon goes when Yapfast quits, and doesn't linger until hovered.
+- the icon goes when Yapfast quits, and doesn't linger until hovered;
 - with "Start when you sign in" on, signing out and in starts Yapfast in the
   tray with no window, and Task Manager's Startup apps lists it; turning it
   off there shows as off in Settings;

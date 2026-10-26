@@ -136,8 +136,8 @@ with details, elapsed time, images and buttons.
 
 **Settings → Game activity** turns sharing on and off as Discord's own setting
 does, and names games Yapfast doesn't know. See
-[game detection](docs/discord.md#game-detection) and
-[Rich Presence](docs/discord.md#linux-rich-presence).
+[game detection](docs/discord/people.md#game-detection) and
+[Rich Presence](docs/discord/people.md#linux-rich-presence).
 
 <p align="center">
   <img src="docs/images/features/playing.webp" width="260" alt="A profile card saying Playing Deadlock, with the game's icon.">
@@ -189,7 +189,7 @@ they do in Discord.
   Discord yet, so who knows..
 
 Use Discord in a browser for these until then; it has all of it, and you have a
-browser open anyway. [The Discord plan](docs/discord.md) has the rest, in the
+browser open anyway. [The Discord plan](docs/discord/README.md) has the rest, in the
 order I'm working on it.
 
 It's a beta, and it's what I use for Discord every day, so it had better
@@ -414,7 +414,7 @@ scripts/check --fast
 | [Development](docs/development.md) | Day-to-day work: the preview, local Matrix and LiveKit servers, voice tests |
 | [Architecture](docs/architecture.md) | How `yapfast-core` and the Slint client fit together |
 | [Building](docs/building.md) | Toolchain, Cargo features, checks, releases |
-| [Discord](docs/discord.md) | What's done, what's next, and the fake server the tests use |
+| [Discord](docs/discord/README.md) | What's done, what's next, and the fake server the tests use |
 | [Voice](docs/voice.md) | Calls, devices and audio processing |
 | [Windows](docs/windows-beta.md) | Packaging, the installer and Windows checks |
 | [Measurements](docs/measurements/README.md) | How memory and CPU are measured |

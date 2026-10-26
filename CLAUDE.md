@@ -24,12 +24,15 @@
   the Slint interface unoptimized.
 - Discord's API, as its own apps use it: https://docs.discord.food. Look up
   an endpoint, payload or gateway event there before adding or changing one,
-  and give the fake the same shape.
+  and give the fake the same shape. How Yapfast does each Discord feature,
+  one doc per area: `docs/discord/`.
 - Discord service tests: `scripts/test-fake-discord`. Matrix and LiveKit:
   `scripts/test-stack up`.
-- How a UI change flows from `ui/*.slint` to `application/`:
-  `docs/architecture.md`. Shells, logging (`YAPFAST_LOG`, not `RUST_LOG`) and
-  dependency sources: `docs/building.md`.
+- Where code lives, and how a UI change flows from `ui/*.slint` to
+  `application/`: `docs/architecture.md`. Shells, logging (`YAPFAST_LOG`, not
+  `RUST_LOG`), dependency sources and media libraries: `docs/building.md`.
+- Docs describe how things work now; history and measurements go in the
+  commit message. A change in behaviour updates its doc in the same commit.
 - Memory is a product goal. Keep every change lean without being asked, and
   check the code it runs through as well: share data held in two places
   (`Arc`, a borrow), make work that runs on every event or frame touch only
