@@ -5,34 +5,27 @@
 <h1 align="center">Yapfast</h1>
 
 <p align="center">
-  <b>A Discord client without the web browser.</b><br>
-  About 30 MB of RAM idle, where Discord's own app takes 720 (<a href="#measured-against-vesktop">measured</a>).
-</p>
-
-<p align="center">
-  Native app written in Rust · Windows and Linux · Voice, video and screen sharing · Drawn on the CPU by default
-</p>
-
-<p align="center">
   <a href="https://github.com/yapfast/yapfast/releases/latest"><img src="https://img.shields.io/github/v/release/yapfast/yapfast?label=beta&color=f0b232" alt="The latest release, a beta"></a>
+  <a href="#get-started"><img src="https://img.shields.io/badge/Windows%20%7C%20Linux-0078D4" alt="Windows and Linux"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/yapfast/yapfast?color=blue" alt="License: GPL 3.0"></a>
+  <a href="https://yapfast.com/discord-invite"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Join the Yapfast Discord server"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/yapfast/yapfast/releases/latest"><b>Download for Windows</b></a>
+  <b>A Discord client without the web browser.</b><br>
+  About 30 MB of RAM idle, where Discord's app takes 720 (<a href="#measured-against-discord">measured as Vesktop</a>).
+</p>
+
+<p align="center">
+  Native app written in Rust · Voice, video and screen sharing
+</p>
+
+<p align="center">
+  <a href="#windows-10-and-11"><b>Download for Windows</b></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/yapfast/yapfast/releases/latest"><b>Download for Linux</b></a>
+  <a href="#linux"><b>Download for Linux</b></a>
   &nbsp;·&nbsp;
   <a href="https://yapfast.com">yapfast.com</a>
-  &nbsp;·&nbsp;
-  <a href="https://yapfast.com/discord-invite">Discord server</a>
-  &nbsp;·&nbsp;
-  <a href="#features">Features</a>
-  &nbsp;·&nbsp;
-  <a href="#build-it-yourself">Build it yourself</a>
-</p>
-
-<p align="center">
-  <sub>Windows 10 and 11: an installer or a portable ZIP. Linux: an AppImage or an Arch package. Both on the <a href="https://github.com/yapfast/yapfast/releases/latest">latest release</a>.</sub>
 </p>
 
 <p align="center">
@@ -53,32 +46,25 @@ servers, DMs, friends, voice and GIFs are all there, and if you know Discord,
 you already know where everything is.
 
 It opens fast af, too. I timed both, from clicking the icon to reading my
-messages: Discord took 8 seconds on my PC, Yapfast took 0.22, because it shows
-the messages it saved last time and catches up while you read.
+messages: Discord took 8 seconds on my Windows PC, Yapfast took 0.22 seconds,
+because it shows the messages it saved last time and catches up while you read.
 
-Sitting in a call with the window open, it's about 45 MB. There's a GPU
-renderer too, behind **Render with the GPU** in Settings, but it takes more
-memory, and drawing on the processor already keeps a 180 Hz monitor fed, so the
-processor is the default. Next to Vesktop (Discord's own app with Vencord on
-top) on the same PC, Yapfast took 88 to 96% less memory in everything I tried;
-[the table's below](#measured-against-vesktop). Your numbers will depend on how
-many servers and DMs you have.
+## Measured against Discord
 
-It's a beta, and it's what I use for Discord every day, so it had better
-be usable. Still, there are rough edges; when you hit one,
-[open an issue](https://github.com/yapfast/yapfast/issues) and I'll fix it, or
-come hang out on the [Yapfast Discord server](https://yapfast.com/discord-invite)
-and tell me there. The noise suppression could be better, too. Know an open
-source one that does a better job? PLEASE tell me.
+<table>
+  <tr><th></th><th>Vesktop memory</th><th>Yapfast memory</th><th>Vesktop CPU</th><th>Yapfast CPU</th></tr>
+  <tr><td>Idle</td><td>724 MB</td><td>30 MB (−96%)</td><td>0.11%</td><td>0.015% (−86%)</td></tr>
+  <tr><td>Image-heavy channel</td><td>706 MB</td><td>41 MB (−94%)</td><td>0.17%</td><td>0.008% (−95%)</td></tr>
+  <tr><td>In a call</td><td>888 MB</td><td>44 MB (−95%)</td><td>0.46%</td><td>0.33% (−28%)</td></tr>
+  <tr><td>Sharing your screen¹</td><td>1,013 MB</td><td>126 MB (−88%)</td><td>2.15%</td><td>2.5% (+14%)</td></tr>
+  <tr><th></th><th colspan="2">Discord</th><th colspan="2">Yapfast</th></tr>
+  <tr><td>Opening the app²</td><td colspan="2" align="center">8 s</td><td colspan="2" align="center">0.22 s (36× faster)</td></tr>
+</table>
 
-## Measured against Vesktop
+<details>
+<summary><b>About these numbers</b></summary>
 
-| | Vesktop memory | Yapfast memory | Vesktop CPU | Yapfast CPU |
-| --- | --- | --- | --- | --- |
-| Idle | 724 MB | 30 MB (−96%) | 0.11% | 0.015% (−86%) |
-| Image-heavy channel | 706 MB | 41 MB (−94%) | 0.17% | 0.008% (−95%) |
-| In a call | 888 MB | 44 MB (−95%) | 0.46% | 0.33% (−28%) |
-| Sharing your screen¹ | 1,013 MB | 126 MB (−88%) | 2.15% | 2.5% (+14%) |
+<br>
 
 Vesktop is basically Discord's own app: the same Discord web app, in the same
 Electron, with Vencord on top. So its numbers stand in for Discord's. CPU counts
@@ -88,9 +74,16 @@ the whole processor as 100%.
 Yapfast uses more CPU here than Vesktop, as it converts and encodes each frame
 on the processor.
 
-Measured on 25 October 2026, both on the same PC. The machine, what "memory"
-counts and how each scenario ran are in
-[the measurements](docs/measurements/README.md).
+² From clicking the icon to reading your messages, against Discord's own app
+rather than Vesktop, timed on my Windows PC. Yapfast shows the messages it saved
+last time and catches up while you read.
+
+Memory and CPU measured on 25 October 2026, both on the same PC. The machine,
+what "memory" counts and how each scenario ran are in
+[the measurements](docs/measurements/README.md). Your numbers will depend on how
+many servers and DMs you have.
+
+</details>
 
 ## Features
 
@@ -110,6 +103,9 @@ push-to-talk on any key you like, held in any app. Go Live, watch other
 people's streams and turn on your camera. The call stays up while you read
 other channels.
 
+The noise suppression could be better, though. Know an open source one that
+does a better job? PLEASE tell me.
+
 <img src="docs/images/features/voice.webp" alt="A voice channel of seven people, two with their cameras on. One person's stream opens large, then the grid comes back.">
 
 ### Forums and polls
@@ -120,7 +116,9 @@ in polls, watch the votes come in, make your own and end them early.
 
 <img src="docs/images/features/forum.webp" alt="A help forum's posts as cards; one opens beside the list with its replies, then closes.">
 
-<img src="docs/images/features/poll.webp" width="640" alt="A movie night poll: an answer is picked and voted for, and the results fill in.">
+<p align="center">
+  <img src="docs/images/features/poll.webp" width="640" alt="A movie night poll: an answer is picked and voted for, and the results fill in.">
+</p>
 
 ### Themes
 
@@ -134,12 +132,16 @@ change as you type each color.
 
 The game you play, found among your running programs on Linux, Windows and
 macOS, Steam's and Wine's included, and on Linux the Rich Presence games send,
-with details, elapsed time, images and buttons. Settings → Game activity turns
-sharing on and off as Discord's own setting does, and names games Yapfast
-doesn't know. See [game detection](docs/discord.md#game-detection) and
+with details, elapsed time, images and buttons.
+
+**Settings → Game activity** turns sharing on and off as Discord's own setting
+does, and names games Yapfast doesn't know. See
+[game detection](docs/discord.md#game-detection) and
 [Rich Presence](docs/discord.md#linux-rich-presence).
 
-<img src="docs/images/features/playing.webp" width="260" alt="A profile card saying Playing Deadlock, with the game's icon.">
+<p align="center">
+  <img src="docs/images/features/playing.webp" width="260" alt="A profile card saying Playing Deadlock, with the game's icon.">
+</p>
 
 ### Running a server
 
@@ -151,24 +153,27 @@ people to another channel. Edit your server profile, and leave. Join a server
 by invite, from the + under your servers or a link in chat. Folders show up as
 they do in Discord.
 
-<img src="docs/images/features/server-settings.webp" width="640" alt="Server Settings on a role's Display page: its name, a gold color picked, and its icon.">
+<p align="center">
+  <img src="docs/images/features/server-settings.webp" width="640" alt="Server Settings on a role's Display page: its name, a gold color picked, and its icon.">
+</p>
 
 ### Everything else
 
-- Servers, channels, DMs and group DMs, all live. Pin, mute or close a DM from
-  its menu, leave a group DM, and accept or ignore message requests.
-- Messages you can send, reply to, edit, react to, pin, forward and attach
+- **Servers, channels, DMs and group DMs**, all live, with member lists. Pin,
+  mute or close a DM from its menu, leave a group DM, and accept or ignore
+  message requests.
+- **Messages** you can send, reply to, edit, react to, pin, forward and attach
   files to, with Markdown, embeds, custom emoji, stickers and spoilers.
-- Threads: start one from a message, browse a channel's threads, join or leave
-  one, and read it beside its channel.
-- Search a whole server with Discord's filters, and browse a channel's pins.
-- Friends: requests, adding by username, nicknames, notes, profile cards, your
-  status and custom status (custom emoji included). Block and ignore people
-  from their menu, hide what blocked people write, and unblock them from a
-  list in Settings.
-- Notifications that follow your Discord settings, muting for channels,
-  categories and servers, unread markers and member lists.
-- Soft sounds for joining, leaving, muting and messages, in six sets.
+- **Threads**: start one from a message, browse a channel's threads, join or
+  leave one, and read it beside its channel.
+- **Search** a whole server with Discord's filters, and browse a channel's pins.
+- **Friends**: requests, adding by username, nicknames, notes, profile cards,
+  your status and custom status (custom emoji included). Block and ignore
+  people from their menu, hide what blocked people write, and unblock them from
+  a list in Settings.
+- **Notifications** that follow your Discord settings, muting for channels,
+  categories and servers, and unread markers.
+- **Soft sounds** for joining, leaving, muting and messages, in six sets.
 
 ### Not there yet
 
@@ -186,6 +191,12 @@ they do in Discord.
 Use Discord in a browser for these until then; it has all of it, and you have a
 browser open anyway. [The Discord plan](docs/discord.md) has the rest, in the
 order I'm working on it.
+
+It's a beta, and it's what I use for Discord every day, so it had better
+be usable. Still, there are rough edges; when you hit one,
+[open an issue](https://github.com/yapfast/yapfast/issues) and I'll fix it, or
+come hang out on the [Yapfast Discord server](https://yapfast.com/discord-invite)
+and tell me there.
 
 ### Not for you?
 
@@ -259,8 +270,13 @@ Every release has two packages, on the
 
 Then link your account with the QR code, as on Windows.
 
-With [Nix](https://nixos.org), it's one command (pretty sure, anyway :D), and
-you get the same Discord-only app the releases ship, in your launcher:
+<details>
+<summary><b>With Nix</b></summary>
+
+<br>
+
+It's one command (pretty sure, anyway :D), and you get the same Discord-only
+app the releases ship, in your launcher:
 
 ```sh
 nix profile add github:yapfast/yapfast#yapfast
@@ -269,12 +285,17 @@ nix profile add github:yapfast/yapfast#yapfast
 It compiles from source, so give it a few minutes. An older glibc and no Nix?
 Then [build it yourself](#build-it-yourself).
 
+</details>
+
 ### macOS
 
 Not yet, sorry :( I'd love to make one, but I don't own an Apple machine to
 test it on.
 
-### Nightly builds
+<details>
+<summary><b>Nightly builds</b></summary>
+
+<br>
 
 Want what's on `main` right now, without waiting for a release or building it
 yourself? Every now and then I put out a nightly build of the Discord-only app.
@@ -288,7 +309,14 @@ marked **Pre-release**, newest first, each with a list of what changed:
 
 They're untested between releases, so expect the odd rough edge.
 
-## What about Matrix?
+</details>
+
+## Other questions
+
+<details>
+<summary><b>What about Matrix?</b></summary>
+
+<br>
 
 Yapfast started as a [Matrix](https://matrix.org) client, and Matrix still
 works: encrypted rooms, Spaces as servers, and voice channels over MatrixRTC, in
@@ -298,29 +326,66 @@ the same window as Discord. The release is Discord-only for now, so
 After that I'd like Telegram, Signal, WhatsApp, Instagram and Messenger in there
 too. No clue when, but hopefully at some point :p
 
-## Other questions
+</details>
 
-**Why not Tauri?** Tauri apps run a website too; they just borrow your
-system's web view instead of shipping their own Chromium. The browser is the
-exact thing I wanted gone, so hell no.
+<details>
+<summary><b>Why not Tauri?</b></summary>
 
-**Can I use my Vencord plugins?** Nope. They need a JavaScript runtime, and
-Yapfast's insides look nothing like what they expect. Yapfast will get plugins
-of its own, though, and open source Vencord ones could be ported once it does.
+<br>
 
-**How is it different from Serein?** Serein draws with wgpu, which costs more
-memory before you've opened a single channel. Yapfast draws with Slint, on the
-processor by default (WAY lighter) or the GPU if you ask. It also does Matrix
-(from source, for now), DeepFilterNet noise suppression on top of RNNoise,
-voice gates, and the cached GIF picker. It's still missing a few things, like
-media channels and the soundboard.
+Tauri apps run a website too; they just borrow your system's web view instead
+of shipping their own Chromium. The browser is the exact thing I wanted gone, so
+hell no.
 
-**Did you use AI to write it?** Yep. Opus 5.5 wrote most of the code, and 6.1
-Sol and 6 Astra did adversarial review and helped with the nastiest bugs
-(networking protocols mixed with VP8 is a bit much for a side project :D). It
-wasn't one prompt and done, though. I've used it every day for weeks, profiled
-it with perf, read the code, and bent the UX to my muscle memory, so switching
-over hurts as little as it can.
+</details>
+
+<details>
+<summary><b>Why draw on the processor?</b></summary>
+
+<br>
+
+It already keeps a 180 Hz monitor fed, and it takes less memory. There's a GPU
+renderer too, behind **Render with the GPU** in Settings, if you'd rather use
+that.
+
+</details>
+
+<details>
+<summary><b>Can I use my Vencord plugins?</b></summary>
+
+<br>
+
+Nope. They need a JavaScript runtime, and Yapfast's insides look nothing like
+what they expect. Yapfast will get plugins of its own, though, and open source
+Vencord ones could be ported once it does.
+
+</details>
+
+<details>
+<summary><b>How is it different from Serein?</b></summary>
+
+<br>
+
+Serein draws with wgpu, which costs more memory before you've opened a single
+channel. Yapfast draws with Slint, on the processor by default (WAY lighter) or
+the GPU if you ask. It also does Matrix (from source, for now), DeepFilterNet
+noise suppression on top of RNNoise, voice gates, and the cached GIF picker.
+It's still missing a few things, like media channels and the soundboard.
+
+</details>
+
+<details>
+<summary><b>Did you use AI to write it?</b></summary>
+
+<br>
+
+Yep. Opus 5.5 wrote most of the code, and 6.1 Sol and 6 Astra did adversarial
+review and helped with the nastiest bugs (networking protocols mixed with VP8 is
+a bit much for a side project :D). It wasn't one prompt and done, though. I've
+used it every day for weeks, profiled it with perf, read the code, and bent the
+UX to my muscle memory, so switching over hurts as little as it can.
+
+</details>
 
 ## Build it yourself
 
@@ -353,9 +418,6 @@ scripts/check --fast
 | [Voice](docs/voice.md) | Calls, devices and audio processing |
 | [Windows](docs/windows-beta.md) | Packaging, the installer and Windows checks |
 | [Measurements](docs/measurements/README.md) | How memory and CPU are measured |
-
-Memory is a product goal. Keep every change lean, and give the numbers you
-measured in any commit that saves memory.
 
 ## License
 
