@@ -9,8 +9,8 @@ use std::{
 use serde_json::Value;
 
 use super::{
-    Account, Conversation, DO_NOT_DISTURB, Friend, FriendRequest, Live, Preview, Snapshot, Status,
-    VoiceMember, VoiceServer,
+    Account, BlockedUser, Conversation, DO_NOT_DISTURB, Friend, FriendRequest, Live, Preview,
+    Snapshot, Status, VoiceMember, VoiceServer,
     marks::{Marks, Published},
     now_ms, server,
 };
@@ -1293,6 +1293,29 @@ impl Tracker {
         friends
     }
 
+    /// Those this account blocked, by name.
+    fn blocked_list(&self, names: &Names) -> Vec<BlockedUser> {
+        let mut blocked: Vec<BlockedUser> = self
+            .blocked
+            .iter()
+            .map(|user| {
+                let name = names.user_name(user).unwrap_or("Discord user");
+                BlockedUser {
+                    user_id: user.clone(),
+                    name: name.to_owned(),
+                    // Under their name only when it's a display name.
+                    username: names
+                        .username(user)
+                        .filter(|username| *username != name)
+                        .map(str::to_owned),
+                    avatar: names.avatar(None, user),
+                }
+            })
+            .collect();
+        blocked.sort_by_cached_key(|user| (user.name.to_lowercase(), user.user_id.clone()));
+        blocked
+    }
+
     /// DMs and group DMs, the latest conversation first.
     fn conversations(&self, names: &Names) -> Vec<Conversation> {
         let mut private = self.private.clone();
@@ -1544,6 +1567,7 @@ impl Tracker {
             friends: self.friends.clone(),
             friend_list: self.friend_list(&names),
             blocked: self.blocked.clone(),
+            blocked_list: self.blocked_list(&names),
             ignored: self.ignored.clone(),
             presence: self.status.clone(),
             custom_status: self
@@ -2091,6 +2115,12 @@ mod tests {
         tracker.apply(&Event::RelationshipAdd, &json!({"id": "2", "type": 2}));
         assert_eq!(tracker.snapshot().friends, ["3"]);
         assert_eq!(tracker.snapshot().blocked, ["2"]);
+        let blocked = &tracker.snapshot().blocked_list[0];
+        assert_eq!(
+            (blocked.name.as_str(), blocked.username.as_deref()),
+            ("ann", None),
+            "the blocked list names her, her username once"
+        );
         let from =
             |author: &str| json!({"channel_id": "9", "author": {"id": author}, "content": "hi"});
         assert!(!tracker.notifies(&from("2")));

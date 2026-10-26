@@ -2842,9 +2842,19 @@ async fn talks_to_the_fake_server() {
     })
     .await;
     discord.block(&dave_user, true).await.unwrap();
-    snapshot_where(&discord, |snapshot| snapshot.blocked.contains(&dave_user)).await;
+    snapshot_where(&discord, |snapshot| {
+        snapshot.blocked.contains(&dave_user)
+            && snapshot
+                .blocked_list
+                .iter()
+                .any(|blocked| blocked.user_id == dave_user && blocked.name == "Dave")
+    })
+    .await;
     discord.block(&dave_user, false).await.unwrap();
-    snapshot_where(&discord, |snapshot| !snapshot.blocked.contains(&dave_user)).await;
+    snapshot_where(&discord, |snapshot| {
+        !snapshot.blocked.contains(&dave_user) && snapshot.blocked_list.is_empty()
+    })
+    .await;
     discord.close_dm(&dave).await.unwrap();
     snapshot_where(&discord, |snapshot| dave_dm(snapshot).is_none()).await;
 

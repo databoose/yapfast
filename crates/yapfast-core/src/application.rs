@@ -398,8 +398,8 @@ pub struct AppState {
     pub discord_presence: Option<String>,
     /// Its friends, by user id, and friend requests waiting for an answer.
     pub discord_friends: Vec<String>,
-    /// Those it blocked and those it ignores, by user id.
-    pub discord_blocked: Vec<String>,
+    /// Those it blocked, by name, and those it ignores, by user id.
+    pub discord_blocked: Vec<chat::Blocked>,
     pub discord_ignored: Vec<String>,
     /// DMs pinned to the top of the DM list on this device, by room id, the
     /// first pinned first.
@@ -1011,6 +1011,13 @@ impl AppState {
                 None => Relation::Stranger,
             }
         }
+    }
+
+    /// Whether this Discord account blocked a Discord user.
+    pub fn is_blocked(&self, user: &str) -> bool {
+        self.discord_blocked
+            .iter()
+            .any(|blocked| blocked.id == user)
     }
 
     /// The selected conversation, when it's a DM or group DM whose network

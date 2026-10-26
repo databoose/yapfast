@@ -424,7 +424,16 @@ impl Application {
         self.state.discord_presence =
             Some(snapshot.presence.clone()).filter(|presence| !presence.is_empty());
         self.state.discord_friends = snapshot.friends.clone();
-        self.state.discord_blocked = snapshot.blocked.clone();
+        self.state.discord_blocked = snapshot
+            .blocked_list
+            .iter()
+            .map(|blocked| chat::Blocked {
+                id: blocked.user_id.clone(),
+                name: blocked.name.clone(),
+                username: blocked.username.clone(),
+                avatar: Some(blocked.avatar.clone()),
+            })
+            .collect();
         self.state.discord_ignored = snapshot.ignored.clone();
         self.state.friends = snapshot
             .friend_list

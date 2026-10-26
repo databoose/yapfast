@@ -179,6 +179,18 @@ pub struct FriendRequest {
     pub spam: bool,
 }
 
+/// Someone the Discord account blocked, as the blocked list shows them.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Blocked {
+    /// Their Discord user id.
+    pub id: String,
+    pub name: String,
+    /// Their username, such as `ann`, when their name is a display name.
+    pub username: Option<String>,
+    /// The address of their avatar; see [`DiscordCommand::Pictures`].
+    pub avatar: Option<String>,
+}
+
 /// A Discord friend, as the friends list shows them.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Friend {

@@ -12,7 +12,7 @@ recorded on 2026-10-06.
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
 | [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, [following channels](#following-channels), invites, [joining by invite](#joining-by-invite), making and changing channels, [server settings](#server-settings)' Server Profile, Engagement, Boost Perks, [Roles](#roles), [Safety Setup](#safety-setup), [Audit Log](#audit-log) and [Bans](#bans), [channel settings](#channel-settings) and their permissions, [two-factor authentication](#two-factor-authentication), threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, most of a server's settings and its privacy, membership forms when joining |
 | [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting, closing and leaving a group | |
-| [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, [editing one's profile](#editing-ones-main-profile) and [server profiles](#editing-ones-server-profile), notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored; changing the username |
+| [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, [editing one's profile](#editing-ones-main-profile) and [server profiles](#editing-ones-server-profile), notes, friend nicknames, removing friends, ignoring and blocking, [the blocked list](#friends-and-requests) | A list of the ignored; changing the username |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
 
 The [later list](#later) has the rest.
@@ -2380,6 +2380,13 @@ from a profile, `{"location":"Friends"}` otherwise, as base64. Discord
 doesn't let a client send many requests quickly, and Yapfast only sends one when
 the person clicks. Requests Discord took for spam are listed too, marked
 "Maybe spam".
+
+Those this account blocked are listed at the end of Settings, Discord, as
+Discord's client lists them under Ignore & Block: "Blocked accounts" with
+the count, then each by avatar, name and, under a display name, username,
+five at first and five more with each "See N more". It comes from READY's
+relationships of type 2, kept current as above, and shows only while
+someone is blocked. Unblock on a row is the menu's `DELETE`.
 
 ### A DM's menu
 

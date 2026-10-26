@@ -1219,6 +1219,9 @@ export component GameActivitySettings inherits VerticalLayout {
     }
 }
 
+/// Someone the Discord account blocked, in Settings.
+export struct BlockedRow { id: string, name: string, username: string, avatar-url: string, initial: string }
+
 // Settings: Discord account and channel behavior.
 export component DiscordSettings inherits VerticalLayout {
     in property <bool> matrix-build;
@@ -1226,7 +1229,13 @@ export component DiscordSettings inherits VerticalLayout {
     in property <bool> sync-discord-reads;
     in property <bool> show-idle;
     in property <bool> hide-blocked;
+    /// Those the account blocked, by name.
+    in property <[BlockedRow]> blocked;
     callback unlink-discord;
+    /// Unblock someone, by user id.
+    callback unblock(string);
+    /// How many of them show; Discord's list shows five more at a time.
+    private property <int> blocked-shown: 5;
     callback hide-blocked-toggled(bool);
     callback show-hidden-channels-toggled(bool);
     callback sync-discord-reads-toggled(bool);
@@ -1264,5 +1273,52 @@ export component DiscordSettings inherits VerticalLayout {
         description: "Leaves them out entirely, rather than showing a line you can open.";
         checked: root.hide-blocked;
         toggled(hide) => { root.hide-blocked-toggled(hide); }
+    }
+    // As Discord's Ignore & Block lists them, only while there are any.
+    if root.blocked.length > 0: VerticalLayout {
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 12px; padding-top: 8px;
+            Middle {
+                Rectangle {
+                    width: 40px; height: 40px; border-radius: 20px; background: Theme.raised;
+                    Image { source: @image-url("icons/ban.svg"); width: 20px; height: 20px; colorize: Theme.secondary; }
+                }
+            }
+            VerticalLayout {
+                alignment: center; spacing: 2px;
+                Text { text: "Blocked accounts"; color: Theme.text; font-size: 16px; font-weight: 600; }
+                Text { text: root.blocked.length + (root.blocked.length == 1 ? " account" : " accounts"); color: Theme.secondary; font-size: 14px; }
+            }
+        }
+        VerticalLayout {
+            for person[index] in root.blocked: VerticalLayout {
+                if index < root.blocked-shown: HorizontalLayout {
+                    padding-top: 6px; padding-bottom: 6px; spacing: 12px;
+                    Middle { Avatar { size: 40px; initial: person.initial; picture-url: person.avatar-url; } }
+                    Middle {
+                        horizontal-stretch: 1;
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text { text: person.name; color: Theme.text; font-size: 16px; font-weight: 600; overflow: elide; }
+                            if person.username != "": Text { text: person.username; color: Theme.secondary; font-size: 14px; overflow: elide; }
+                        }
+                    }
+                    Middle {
+                        ActionButton {
+                            text: "Unblock"; small: true; label: "Unblock " + person.name;
+                            clicked => { root.unblock(person.id); }
+                        }
+                    }
+                }
+            }
+        }
+        if root.blocked.length > root.blocked-shown: HorizontalLayout {
+            alignment: start;
+            ActionButton {
+                text: "See " + (root.blocked.length - root.blocked-shown) + " more"; ghost: true; small: true;
+                clicked => { root.blocked-shown += 5; }
+            }
+        }
     }
 }

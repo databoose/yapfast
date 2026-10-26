@@ -318,10 +318,11 @@ impl AppState {
     /// account stands with someone: friendship, ignoring and blocking.
     pub(super) fn relationship_choices(&self, person: &str) -> Vec<MenuChoice> {
         let has = |list: &[String]| list.iter().any(|listed| listed == person);
+        let blocked = self.is_blocked(person);
         let friendship = match self.relation(person) {
             Relation::Friend => Some(MenuChoice::Unfriend),
             // Discord takes no request to someone blocked.
-            Relation::Stranger if !has(&self.discord_blocked) => Some(MenuChoice::AddFriend),
+            Relation::Stranger if !blocked => Some(MenuChoice::AddFriend),
             Relation::Incoming => Some(MenuChoice::AcceptFriend),
             Relation::Outgoing => Some(MenuChoice::CancelFriendRequest),
             Relation::Stranger | Relation::Me => None,
@@ -331,7 +332,7 @@ impl AppState {
         } else {
             MenuChoice::Ignore
         };
-        let block = if has(&self.discord_blocked) {
+        let block = if blocked {
             MenuChoice::Unblock
         } else {
             MenuChoice::Block

@@ -1800,7 +1800,7 @@ fn menus_offer_what_fits_their_conversation_or_server() {
 fn a_discord_dms_menu_manages_its_person_and_notifications() {
     use MenuChoice::*;
     use chat::{Muting, RelationshipChange};
-    use yapfast_discord::service::{Conversation, Friend, Snapshot, Status};
+    use yapfast_discord::service::{BlockedUser, Conversation, Friend, Snapshot, Status};
     let snapshot = |friends: bool, muted: bool, blocked: bool, ignored: bool| Snapshot {
         status: Status::Online,
         user_id: Some("1".into()),
@@ -1819,6 +1819,16 @@ fn a_discord_dms_menu_manages_its_person_and_notifications() {
             vec![]
         },
         blocked: if blocked { vec!["2".into()] } else { vec![] },
+        blocked_list: if blocked {
+            vec![BlockedUser {
+                user_id: "2".into(),
+                name: "Annie".into(),
+                username: None,
+                avatar: String::new(),
+            }]
+        } else {
+            vec![]
+        },
         ignored: if ignored { vec!["2".into()] } else { vec![] },
         conversations: vec![
             Conversation {

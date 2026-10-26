@@ -161,6 +161,16 @@ pub struct FriendRequest {
     pub spam: bool,
 }
 
+/// Someone this account blocked, as the blocked list shows them.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BlockedUser {
+    pub user_id: String,
+    pub name: String,
+    /// Their username, such as `ann`, when their name is a display name.
+    pub username: Option<String>,
+    pub avatar: String,
+}
+
 /// A friend as the friends list shows them.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Friend {
@@ -271,6 +281,9 @@ pub struct Snapshot {
     /// Those this account blocked, by user id. Their messages show collapsed,
     /// and they don't notify.
     pub blocked: Vec<String>,
+    /// The same people by name, as the blocked list shows them.
+    #[serde(default)]
+    pub blocked_list: Vec<BlockedUser>,
     /// Those this account ignores, by user id.
     #[serde(default)]
     pub ignored: Vec<String>,

@@ -705,7 +705,7 @@ impl Application {
                 && !user.starts_with('@')
                 && state.relation(user) != Relation::Me
                 && !bot
-                && !listed(&state.discord_blocked)
+                && !state.is_blocked(user)
                 && !listed(&state.discord_ignored);
             if !person {
                 return vec![];

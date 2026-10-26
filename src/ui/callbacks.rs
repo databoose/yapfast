@@ -208,6 +208,19 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     });
     let state = adapter.clone();
     let weak = window.as_weak();
+    window.on_unblock(move |user| {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().action(
+                &window,
+                Action::ChangeRelationship {
+                    user: user.to_string(),
+                    change: yapfast_core::chat::RelationshipChange::Unblock,
+                },
+            );
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
     window.on_remove_friend_request(move |user| {
         if let Some(window) = weak.upgrade() {
             state

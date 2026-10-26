@@ -169,6 +169,7 @@ impl SidebarShown {
             &state.servers,
             &state.friends,
             &state.friend_requests,
+            &state.discord_blocked,
             &state.pinned,
             &state.browse,
         )
@@ -516,6 +517,21 @@ impl Adapter {
         update_model(&self.models.friends_online, around);
         update_model(&self.models.friends, friend_rows);
         window.set_friend_count(i32::try_from(state.friends.len()).unwrap_or(i32::MAX));
+        // Those blocked, for Settings.
+        update_model(
+            &self.models.blocked,
+            state
+                .discord_blocked
+                .iter()
+                .map(|blocked| BlockedRow {
+                    id: blocked.id.as_str().into(),
+                    name: blocked.name.as_str().into(),
+                    username: blocked.username.as_deref().unwrap_or_default().into(),
+                    avatar_url: blocked.avatar.as_deref().unwrap_or_default().into(),
+                    initial: initial(&blocked.name),
+                })
+                .collect(),
+        );
         window.set_friends_open(direct && state.dm_screen == Some(DmScreen::Friends));
         // Browse Channels, at the top of a Community server's channel list;
         // its rows only while it shows, filtered by its search.

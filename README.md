@@ -164,7 +164,8 @@ they do in Discord.
 - Search a whole server with Discord's filters, and browse a channel's pins.
 - Friends: requests, adding by username, nicknames, notes, profile cards, your
   status and custom status (custom emoji included). Block and ignore people
-  from their menu, and hide what blocked people write.
+  from their menu, hide what blocked people write, and unblock them from a
+  list in Settings.
 - Notifications that follow your Discord settings, muting for channels,
   categories and servers, unread markers and member lists.
 - Soft sounds for joining, leaving, muting and messages, in six sets.
@@ -177,7 +178,6 @@ they do in Discord.
 - Making and changing server folders.
 - A server's form for new members, such as its rules, when you join. Yapfast
   sends you to Discord in your browser to fill it in.
-- A list of the people you blocked.
 - Animated custom emoji in messages, which show their first frame.
 - Captchas, sort of. If Discord asks for one while you link or join a server,
   Yapfast opens it in your browser, but I haven't hit one against real
