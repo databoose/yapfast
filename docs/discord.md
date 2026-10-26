@@ -1229,16 +1229,17 @@ an error.
   its cell. The worker draws its pictures at the size they show: playing,
   the next ones come at a new size; paused, the one showing is redrawn,
   which moving back to it would hold up while playing. MP4, MOV and WebM
-  play, with H264, VP8, VP9 or AV1 pictures in 4:2:0, 8, 10 or 12 bits
-  deep, and AAC, Opus, MP3, Vorbis or FLAC sound; HEVC, which iPhones
-  record, doesn't, as libwebrtc's FFmpeg lacks it. The file downloads into
-  `discord-videos/` beside the account file, and plays as it arrives: the
-  worker's reads wait for the download. It goes when the video stops, as
-  when the channel closes. Sound plays on the call's speakers through
-  `audio_io.rs`, on Linux and Windows. Over the mute button a slider sets
-  how loud, as does the wheel; its travel is squared, so its middle sounds
-  about half as loud. Turning it to nothing mutes, and unmuting brings back
-  the level it had. The next video plays as loud, until Yapfast closes.
+  play, with H264, VP8, VP9 or AV1 pictures in 4:2:0, 4:2:2 or 4:4:4 at
+  8 or 10 bits, or 4:2:0 at 12, and AAC, Opus, MP3, Vorbis or FLAC sound;
+  HEVC, which iPhones record, doesn't, as libwebrtc's FFmpeg lacks it.
+  The file downloads into `discord-videos/` beside the account file, and
+  plays as it arrives: the worker's reads wait for the download. It goes
+  when the video stops, as when the channel closes. Sound plays on the
+  call's speakers through `audio_io.rs`, on Linux and Windows. Over the
+  mute button a slider sets how loud, as does the wheel; its travel is
+  squared, so its middle sounds about half as loud. Turning it to nothing
+  mutes, and unmuting brings back the level it had. The next video plays as
+  loud, until Yapfast closes.
 - Markdown shows as Discord's client shows it. Bold, italics, strikethrough,
   inline code, lists and links are Slint's Markdown. Headings (`#` to `###`),
   subtext (`-# `), quotes (`> ` lines, or `>>> ` and the rest) and code fenced

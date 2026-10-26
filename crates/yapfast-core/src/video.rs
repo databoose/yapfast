@@ -226,7 +226,7 @@ impl<'a> Video<'a> {
             2 => Ok(Some(Next::Sound(time))),
             0 => Ok(Some(Next::End)),
             3 => Ok(None),
-            -2 => bail!("the video's pictures aren't 4:2:0 in 8, 10 or 12 bits"),
+            -2 => bail!("the video's pictures are in a format Yapfast doesn't show"),
             _ => bail!("could not decode the video ({got})"),
         }
     }
@@ -448,8 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn shows_10_and_12_bit_pictures() {
-        // Each made from gif-h264.mp4, so its pictures should look the same.
+    fn shows_deeper_and_less_subsampled_pictures() {
         let frames = |name: &str| -> Vec<Vec<u8>> {
             let data = fixture(name);
             let picture =
@@ -477,23 +476,31 @@ mod tests {
                 .sum();
             sum as f64 / a.len() as f64
         };
-        let original = frames("gif-h264.mp4");
-        let original_first = first("gif-h264.mp4");
-        for name in [
-            "gif-av1-10bit.mp4",
-            "gif-av1-12bit.mp4",
-            "gif-vp9-10bit.webm",
-            "gif-h264-10bit.mp4",
+        // Each made from gif-h264.mp4, so it should look the same as the
+        // first file named with it, within the difference named. Made 4:2:2
+        // or 4:4:4, its colours spread a little, so it's checked against the
+        // H264 of its layout, which is checked loosely against the original.
+        for (name, like, within) in [
+            ("gif-av1-10bit.mp4", "gif-h264.mp4", 3.0),
+            ("gif-av1-12bit.mp4", "gif-h264.mp4", 3.0),
+            ("gif-vp9-10bit.webm", "gif-h264.mp4", 3.0),
+            ("gif-h264-10bit.mp4", "gif-h264.mp4", 3.0),
+            ("gif-h264-422.mp4", "gif-h264.mp4", 8.0),
+            ("gif-h264-444.mp4", "gif-h264.mp4", 12.0),
+            ("gif-vp9-422.webm", "gif-h264-422.mp4", 3.0),
+            ("gif-av1-422-10bit.mp4", "gif-h264-422.mp4", 3.0),
+            ("gif-vp9-444-10bit.webm", "gif-h264-444.mp4", 3.0),
+            ("gif-av1-444.mp4", "gif-h264-444.mp4", 3.0),
         ] {
-            let deep = frames(name);
-            assert_eq!(deep.len(), original.len(), "{name}");
-            for (deep, original) in deep.iter().zip(&original) {
-                let mean = mean_difference(deep, original);
-                assert!(mean < 4.0, "{name}: off by {mean} a channel");
+            let (pictures, expected) = (frames(name), frames(like));
+            assert_eq!(pictures.len(), expected.len(), "{name}");
+            for (picture, expected) in pictures.iter().zip(&expected) {
+                let mean = mean_difference(picture, expected);
+                assert!(mean < within, "{name}: off by {mean} a channel");
             }
-            let mean = mean_difference(&first(name), &original_first);
+            let mean = mean_difference(&first(name), &first(like));
             assert!(
-                mean < 4.0,
+                mean < within,
                 "{name} at its own size: off by {mean} a channel"
             );
         }
