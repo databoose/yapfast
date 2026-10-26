@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Regenerates ffmpeg/, include/ and gen/ from pinned sources: FFmpeg's
 # release, nv-codec-headers, AMD's AMF headers, and libva's headers from the
-# development shell's nixpkgs. It configures and builds FFmpeg once for each target, the
-# way build.rs will, and keeps only the files that build read, the files
-# configure generated, and the list of symbols to rename; then it applies
-# patches/ to the kept files. Windows is built with clang-cl against the
+# development shell's nixpkgs. It configures and builds FFmpeg once for each
+# target, with its assembly, the way build.rs will, and keeps only the files
+# that build read, the files configure generated, and the list of symbols to
+# rename; then it applies patches/ to the kept files. Windows is built with clang-cl against the
 # MSVC runtime and Windows SDK cargo-xwin downloads, which a Windows build
 # (scripts/build-windows) fetches the first time.
 # Usage: vendor/ffmpeg-src/update.sh (needs the network and Nix).
@@ -26,13 +26,13 @@ LINUX_ENCODERS=h264_nvenc,hevc_nvenc,av1_nvenc,h264_vaapi,hevc_vaapi,av1_vaapi
 WINDOWS_ENCODERS=h264_nvenc,hevc_nvenc,av1_nvenc,h264_amf,hevc_amf,av1_amf
 COMMON=(--disable-everything --disable-programs --disable-doc --disable-network
   --disable-autodetect --disable-avformat --disable-avdevice --disable-swscale
-  --disable-swresample --disable-avfilter --disable-iconv --disable-asm
+  --disable-swresample --disable-avfilter --disable-iconv
   --disable-debug --enable-pic --enable-static --disable-shared)
 
 if [[ -z "${YAPFAST_FFMPEG_UPDATE:-}" ]]; then
   export YAPFAST_FFMPEG_UPDATE=1
   exec nix shell --inputs-from "path:$root/nix" nixpkgs#gnumake nixpkgs#clang \
-    nixpkgs#pkg-config nixpkgs#binutils nixpkgs#curl nixpkgs#gnutar nixpkgs#xz nixpkgs#patch \
+    nixpkgs#pkg-config nixpkgs#binutils nixpkgs#nasm nixpkgs#curl nixpkgs#gnutar nixpkgs#xz nixpkgs#patch \
     --command "$0" "$@"
 fi
 xwin=${XWIN_CACHE_DIR:-$HOME/.cache/cargo-xwin}/xwin
@@ -74,25 +74,34 @@ build() {  # target, nm, then configure's arguments
   make -s -C "$out" -j"$(nproc)" >/dev/null
   local gen=$work/gen/$target
   mkdir -p "$gen/libavutil" "$gen/libavcodec"
-  cp "$out/config.h" "$out/config_components.h" "$gen/"
+  cp "$out/config.h" "$out/config_components.h" "$out/config.asm" "$gen/"
   cp "$out/libavutil/avconfig.h" "$out/libavutil/ffversion.h" "$gen/libavutil/"
   cp "$out"/libavcodec/{codec,parser,bsf}_list.c "$gen/libavcodec/"
+  # Each object came from C or from NASM's assembly.
+  (cd "$out" && find libavcodec libavutil -name '*.o' | sed 's/\.o$//') > "$work/objects.txt"
+  local object
+  while read -r object; do
+    if [[ -f "$src/$object.asm" ]]; then echo "$object.asm"; fi
+  done < "$work/objects.txt" | sort > "$gen/asm.txt"
   # intmath.c only gives av_log2 and av_log2_16bit out-of-line bodies for
   # FFmpeg's shared libraries, under #undef, which would drop their prefix;
   # FFmpeg's own code reaches them through intmath.h's macros.
-  (cd "$out" && find libavcodec libavutil -name '*.o' | sed 's/\.o$/.c/' | sort) |
-    grep -vx libavutil/intmath.c > "$gen/sources.txt"
+  while read -r object; do
+    if [[ ! -f "$src/$object.asm" ]]; then echo "$object.c"; fi
+  done < "$work/objects.txt" | grep -vx libavutil/intmath.c | sort > "$gen/sources.txt"
   # Every file the compiler read, as the .d files name them, and the files
   # it compiled, which clang-cl's leave out; clang-cl's give the full path
   # of a header found beside the file including it.
   find "$out/libavcodec" "$out/libavutil" -name '*.d' -exec cat {} + | tr ' \\' '\n\n' |
     grep -v ':$' | grep . | sed "s|^$src/|src/|" >> "$work/read.txt"
-  sed 's|^|src/|' "$gen/sources.txt" >> "$work/read.txt"
+  sed 's|^|src/|' "$gen/sources.txt" "$gen/asm.txt" >> "$work/read.txt"
   # What build.rs adds to compile and link as configure would: its defines,
   # its include folders inside FFmpeg, and the system libraries it links.
   sed -n 's/^CPPFLAGS=//p' "$out/ffbuild/config.mak" | tr ' ' '\n' | sed -n 's/^-D//p' > "$gen/defines.txt"
   sed -n 's/^CPPFLAGS=//p' "$out/ffbuild/config.mak" | tr ' ' '\n' |
     sed -n 's|^-I\$(SRC_PATH)/||p' > "$gen/includes.txt"
+  # NASM's: the object format.
+  sed -n 's/^X86ASMFLAGS=//p' "$out/ffbuild/config.mak" | tr ' ' '\n' | grep . > "$gen/asmflags.txt"
   # Not libva, which src/va.c loads when it's used, nor libatomic, which
   # x86-64 doesn't need and which would be one more library to install.
   sed -n 's/^EXTRALIBS\(-avcodec\|-avutil\)\{0,1\}=//p' "$out/ffbuild/config.mak" | tr ' ' '\n' |
@@ -132,8 +141,8 @@ chmod +x "$work/bin/lib"
     --enable-decoder=hevc
 )
 
-if grep -En '/(tmp|nix|home)/' "$work"/gen/*/config.h; then
-  echo "update.sh: config.h names a path on this machine" >&2
+if grep -En '/(tmp|nix|home)/' "$work"/gen/*/config.{h,asm}; then
+  echo "update.sh: configure's output names a path on this machine" >&2
   exit 1
 fi
 

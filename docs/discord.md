@@ -867,10 +867,11 @@ and resends what's asked for. The worker decodes with
 libvpx or with the FFmpeg H264 decoder in libwebrtc's archive
 (`native/decode.c`), or H265 with the HEVC decoder of `vendor/ffmpeg-src`'s
 FFmpeg (`native/hevc.c`), which libwebrtc's lacks, and writes RGBA at up to
-1080p into the shared frames. That FFmpeg is built without its assembly, so
-H265 costs more CPU to watch than H264: on FFmpeg's command line, one
-thread decoding the action clip's minute at 1080p30 and 4 Mbit/s took about
-0.23 of a core without assembly, 0.12 with it, and 0.07 for H264.
+1080p into the shared frames. That FFmpeg is built with its x86-64
+assembly: one thread of Yapfast's H265 decoder took 0.10 of a core for a
+minute of an action clip at 1080p30 and 3.6 Mbit/s, and 0.34 with the
+assembly turned off, decoding the same pictures. On FFmpeg's command line,
+H264 at 4 Mbit/s took 0.07.
 Watching is possible only in the call you're in, so clicking someone sharing
 in another channel joins it first, once asked, and watches once the call is
 connected; Discord drops a watch sent before. The stream's sound, Opus on

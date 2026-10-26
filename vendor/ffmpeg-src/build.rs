@@ -1,12 +1,18 @@
 //! Builds FFmpeg's libavcodec and libavutil from ffmpeg/, as update.sh
 //! configured them for the target: its hardware encoders and HEVC decoder
-//! and what they use, without assembly. gen/<target>/ holds configure's
-//! output: the files to compile, its defines, include folders and system
-//! libraries. Every FFmpeg file is compiled with gen/rename.h included
+//! and what they use, with the x86-64 assembly, which NASM assembles ($NASM,
+//! or nasm on the PATH). gen/<target>/ holds configure's output: the files
+//! to compile and assemble, its defines, include folders and system
+//! libraries. Every FFmpeg C file is compiled with gen/rename.h included
 //! first, which prefixes FFmpeg's symbols so they can't meet the FFmpeg
-//! inside libwebrtc. On Linux, src/va.c loads libva when it's first used.
+//! inside libwebrtc, and NASM gives the assembly's the same prefix. On
+//! Linux, src/va.c loads libva when it's first used.
 
-use std::{env, path::PathBuf};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn main() {
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
@@ -15,6 +21,7 @@ fn main() {
     for path in ["ffmpeg", "gen", "include", "src/va.c"] {
         println!("cargo:rerun-if-changed={path}");
     }
+    println!("cargo:rerun-if-env-changed=NASM");
     let generated = manifest.join("gen").join(format!("{os}-{arch}"));
     let Ok(sources) = std::fs::read_to_string(generated.join("sources.txt")) else {
         // No encoders configured for this target: dependents build without.
@@ -72,6 +79,12 @@ fn main() {
             .flag(rename);
     }
     let mut objects = build.compile_intermediates();
+    objects.extend(assemble(
+        &generated,
+        &root,
+        &lines("asm.txt"),
+        &lines("asmflags.txt"),
+    ));
     if os == "linux" {
         objects.extend(
             cc::Build::new()
@@ -87,4 +100,42 @@ fn main() {
         println!("cargo:rustc-link-lib={library}");
     }
     cc::Build::new().objects(objects).compile("yapfast_ffmpeg");
+}
+
+/// Assembles FFmpeg's assembly as configure's makefiles would, with
+/// config.asm read first, returning the objects. `--gprefix` puts
+/// gen/rename.h's prefix on every symbol it defines or uses, all of them
+/// FFmpeg's.
+fn assemble(generated: &Path, root: &Path, files: &[String], flags: &[String]) -> Vec<PathBuf> {
+    let nasm = env::var_os("NASM").unwrap_or_else(|| "nasm".into());
+    let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
+    let folder = |path: &Path| format!("-I{}/", path.display());
+    files
+        .iter()
+        .map(|file| {
+            let source = root.join(file);
+            let object = out.join(file.trim_end_matches(".asm").replace('/', "-") + ".o");
+            // nasm joins include paths to file names as they are, so each
+            // ends in a slash.
+            let status = Command::new(&nasm)
+                .args(flags)
+                .arg(folder(generated))
+                .arg(folder(root))
+                .arg(folder(source.parent().expect("a folder")))
+                .arg("-P")
+                .arg(generated.join("config.asm"))
+                .args(["--gprefix", "yf_", "-o"])
+                .arg(&object)
+                .arg(&source)
+                .status();
+            match status {
+                Ok(status) if status.success() => object,
+                Ok(status) => panic!("nasm failed on {file}: {status}"),
+                Err(error) => panic!(
+                    "could not run nasm ({error}), which assembles FFmpeg's x86-64 code: \
+                     install it, or set NASM to its path"
+                ),
+            }
+        })
+        .collect()
 }

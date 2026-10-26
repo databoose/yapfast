@@ -93,6 +93,14 @@ libavcodec/version.c
 libavcodec/videodsp.c
 libavcodec/vlc.c
 libavcodec/vorbis_parser.c
+libavcodec/x86/bswapdsp_init.c
+libavcodec/x86/constants.c
+libavcodec/x86/fdct.c
+libavcodec/x86/fdctdsp_init.c
+libavcodec/x86/h26x/h2656dsp.c
+libavcodec/x86/hevc/dsp_init.c
+libavcodec/x86/idctdsp_init.c
+libavcodec/x86/videodsp_init.c
 libavcodec/xiph.c
 libavutil/adler32.c
 libavutil/aes.c
@@ -187,5 +195,12 @@ libavutil/uuid.c
 libavutil/version.c
 libavutil/video_enc_params.c
 libavutil/video_hint.c
+libavutil/x86/aes_init.c
+libavutil/x86/cpu.c
+libavutil/x86/fixed_dsp_init.c
+libavutil/x86/float_dsp_init.c
+libavutil/x86/imgutils_init.c
+libavutil/x86/lls_init.c
+libavutil/x86/tx_float_init.c
 libavutil/xga_font_data.c
 libavutil/xtea.c

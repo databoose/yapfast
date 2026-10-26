@@ -3,8 +3,9 @@
 Go Live's hardware encoders: FFmpeg 9.0.2's NVENC encoders for NVIDIA, on
 Linux and Windows, on Windows its AMF ones for AMD, and on Linux its VA-API
 ones for AMD and Intel, for H264, HEVC and AV1; and its HEVC decoder, for
-watching H265 streams, which libwebrtc's FFmpeg can't decode. Nothing else
-of FFmpeg is built: no other decoders, formats, filters or assembly.
+watching H265 streams, which libwebrtc's FFmpeg can't decode, with its
+x86-64 assembly. Nothing else of FFmpeg is built: no other decoders,
+formats or filters.
 `crates/yapfast-core/native/hwenc.c` drives the encoders and
 `native/hevc.c` the decoder.
 
@@ -22,15 +23,17 @@ first time; configure finds them through `INCLUDE` and `LIB`, so
 - `include/`: nv-codec-headers' `ffnvcodec/`, which loads NVIDIA's driver
   at run time, the AMF headers the Windows build read, `AMF/`, and libva's
   `va/`, all MIT (`include/NOTICE`).
-- `gen/<os>-<arch>/`: what configure generated, the files to compile, and
-  configure's defines, include folders and system libraries, which
-  `build.rs` uses as configure's makefiles would.
+- `gen/<os>-<arch>/`: what configure generated, `config.asm` among it, the
+  C files to compile and the assembly to assemble (`sources.txt`,
+  `asm.txt`), and configure's defines, include folders, NASM flags and
+  system libraries, which `build.rs` uses as configure's makefiles would.
 - `gen/rename.h`: a `#define` giving each of FFmpeg's symbols, and the libva
   functions it calls, a `yf_` prefix. Not clang-cl's constants or the UCRT's
   inline stdio functions, which every Windows library defines alike.
 
-`build.rs` compiles those files with `gen/rename.h` included first. The
-prefix matters: libwebrtc's archive holds Chromium's own FFmpeg, built to
+`build.rs` compiles those files with `gen/rename.h` included first, and
+assembles the assembly with NASM's `--gprefix yf_`, which gives the same
+prefix to every symbol the assembly defines or uses. The prefix matters: libwebrtc's archive holds Chromium's own FFmpeg, built to
 decode, and three quarters of the names would otherwise meet. `src/va.c`
 defines the `yf_va...` functions, which load libva on first use, so the
 binary needs neither libva nor NVIDIA's libraries to start, and an encoder

@@ -223,10 +223,10 @@ nv-codec-headers', AMF's and libva's headers and configure's output for
 Linux and Windows, all made by its `update.sh`, which configures Windows
 with clang-cl against the MSVC runtime and SDK cargo-xwin downloads; three
 patches let NVENC, AMF and VA-API change their bitrate without a keyframe.
-Its build script compiles it with every symbol prefixed, apart from the
-FFmpeg in libwebrtc, and loads libva, NVIDIA's driver and AMD's AMF runtime
-only when an encoder opens. Its `README.yapfast.md`
-explains the rest. Targets without a `gen/` folder build without hardware
+Its build script compiles it, and NASM assembles its x86-64 assembly, with
+every symbol prefixed, apart from the FFmpeg in libwebrtc, and it loads
+libva, NVIDIA's driver and AMD's AMF runtime only when an encoder opens.
+Its `README.yapfast.md` explains the rest. Targets without a `gen/` folder build without hardware
 encoding or H265 decoding.
 
 Each has a `README.yapfast.md` with its changes, except the two Slint crates, which
