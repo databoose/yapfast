@@ -151,8 +151,9 @@
 // From a DM's menu, PUT /users/@me/relationships/{id} with type 2 blocks,
 // DELETE ends a friendship or block, PUT and DELETE .../{id}/ignore ignore and
 // stop, and PATCH gives a friend a nickname. GET and PUT /users/@me/notes/{id}
-// read and write Alice's note on someone, DELETE /channels/{id} closes a DM,
-// and PATCH /users/@me/guilds/@me/settings mutes and unmutes DMs. PATCH
+// read and write Alice's note on someone, DELETE /channels/{id} closes a DM
+// or leaves a group, and GET /_control/group-leaves lists each group left
+// with its `silent` query as sent, and PATCH /users/@me/guilds/@me/settings mutes and unmutes DMs. PATCH
 // /users/@me/guilds/{id}/settings changes her notification settings for a
 // server and its channels, and USER_GUILD_SETTINGS_UPDATE says so; PATCH
 // /users/@me/guilds/settings changes several servers' at once, as Discord's
@@ -1894,6 +1895,10 @@ const channelEdits = new Map<string, Partial<GuildChannel>>();
 const deletedChannels = new Set<string>();
 // Each body of PATCH /guilds/{id}/channels, for GET /_control/channel-moves.
 const channelMoves: unknown[] = [];
+
+// Each group DM Alice left, with the `silent` query DELETE /channels/{id}
+// sent, or null, for GET /_control/group-leaves.
+const groupLeaves: { channel: string; silent: string | null }[] = [];
 
 // Whether Alice left "Server"; see DELETE /users/@me/guilds/{id}.
 let leftServer = false;
@@ -5609,10 +5614,12 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return new Response(null, { status: 204 });
   }
 
-  // Closing a DM takes it out of her list until either of them writes.
+  // Closing a DM takes it out of her list until either of them writes;
+  // leaving a group takes her out of it.
   if (method === "DELETE" && (m = path.match(/^\/channels\/(\d+)$/))) {
     const dm = privates.get(m[1]!);
     if (!dm) return notFound("Unknown Channel", 10003);
+    if (dm.type === 3) groupLeaves.push({ channel: m[1]!, silent: url.searchParams.get("silent") });
     privates.delete(m[1]!);
     const wire = wirePrivate(m[1]!, dm, "objects");
     dispatch("CHANNEL_DELETE", wire);
@@ -7545,6 +7552,9 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "GET" && path === "/_control/channel-moves") {
       return Response.json(channelMoves);
+    }
+    if (req.method === "GET" && path === "/_control/group-leaves") {
+      return Response.json(groupLeaves);
     }
     if (req.method === "GET" && path === "/_control/invite-joins") {
       return Response.json(inviteJoins);

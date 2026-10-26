@@ -412,7 +412,7 @@ pub struct AppState {
     /// The dialog that makes, changes or deletes a Discord channel or
     /// category, while it's open.
     pub channel_dialog: Option<ChannelDialog>,
-    /// Asks before leaving a Discord server, while it's open.
+    /// Asks before leaving a Discord server or group DM, while it's open.
     pub leave: Option<LeaveDialog>,
     /// Asks whether a channel dragged into a category takes its
     /// permissions, while it's open.
@@ -1544,11 +1544,14 @@ pub enum Action {
         settings: chat::ChannelSettings,
     },
     CloseChannelDialog,
-    /// Ask before leaving a Discord server, by its server id; leave the one
-    /// asked about; or stay.
+    /// Ask before leaving a Discord server, by its server id, or a group
+    /// DM, by its room id; tick or untick leaving the group without telling
+    /// its other members; leave the one asked about; or stay.
     AskLeaveServer(String),
-    LeaveServer,
-    CloseLeaveServer,
+    AskLeaveGroup(String),
+    ToggleSilentLeave,
+    Leave,
+    CloseLeave,
     /// Open the editor of this account's main Discord profile, or of its
     /// profile in a Discord server, by its server id or one of its
     /// channels' room ids; change a text in it; read a picture chosen for
@@ -2633,8 +2636,20 @@ impl Application {
                 vec![]
             }
             Action::AskLeaveServer(server) => self.ask_leave(server),
-            Action::LeaveServer => self.leave_server(),
-            Action::CloseLeaveServer => {
+            Action::AskLeaveGroup(room) => self.ask_leave_group(room),
+            Action::ToggleSilentLeave => {
+                if let Some(dialog) = self
+                    .state
+                    .leave
+                    .as_mut()
+                    .filter(|dialog| dialog.group && !dialog.leaving)
+                {
+                    dialog.silent = !dialog.silent;
+                }
+                vec![]
+            }
+            Action::Leave => self.leave(),
+            Action::CloseLeave => {
                 self.state.leave = None;
                 vec![]
             }
@@ -3150,7 +3165,7 @@ impl Application {
             }
             Event::OverwritesChanged { room, result } => self.overwrites_changed(room, result),
             Event::OverwriteNames { room, members } => self.overwrite_names(room, members),
-            Event::LeftServer { server, result } => self.left_server(server, result),
+            Event::Left { place, result } => self.left(place, result),
             Event::ServerDeleted { server, result } => self.server_deleted(server, result),
             Event::ServerTransferred { server, result } => self.server_transferred(server, result),
             Event::ServerPincodeSent { server, result } => self.server_pincode_sent(server, result),

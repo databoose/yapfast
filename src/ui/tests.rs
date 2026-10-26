@@ -4316,10 +4316,54 @@ fn leaving_a_server_asks_first_in_red() {
     assert_eq!(prompt.title, "Leave 'Test'");
     assert_eq!(prompt.confirm, "Leave server");
     assert!(prompt.danger && !prompt.named && !prompt.saving);
-    window.invoke_leave_server();
+    window.invoke_confirm_leave();
     assert!(adapter.borrow().app.state.leave.as_ref().unwrap().leaving);
     window.invoke_close_leave();
     assert!(!window.get_leave_open());
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn leaving_a_group_dm_asks_first_and_offers_to_tell_no_one() {
+    use yapfast_core::yapfast_discord::service::{Conversation, Snapshot, Status};
+    let (window, adapter, _directory) = discord_server_window();
+    adapter
+        .borrow_mut()
+        .app
+        .apply(Event::Discord(Arc::new(Snapshot {
+            status: Status::Online,
+            user_id: Some("1".into()),
+            conversations: vec![Conversation {
+                id: "31".into(),
+                name: "Hikers".into(),
+                group: true,
+                people: 3,
+                ..Default::default()
+            }],
+            ..Default::default()
+        })));
+    let group = "discord:@me:31";
+    window.invoke_prepare_menu(group.into(), false);
+    let rows = window.get_menu_rows();
+    let leave = rows.iter().find(|row| row.text == "Leave group").unwrap();
+    assert!(leave.danger && leave.separated);
+    window.invoke_choose_menu(group.into(), false, "leave-group".into());
+    assert!(window.get_leave_open());
+    let prompt = window.get_leave_prompt();
+    assert_eq!(prompt.title, "Leave 'Hikers'");
+    assert_eq!(
+        prompt.detail,
+        "Are you sure you want to leave Hikers? You won't be able to rejoin this group unless you are re-invited."
+    );
+    assert_eq!(prompt.confirm, "Leave group");
+    assert_eq!(prompt.option, "Leave without notifying other members");
+    assert!(prompt.danger && !prompt.ticked);
+    window.invoke_toggle_silent_leave();
+    assert!(window.get_leave_prompt().ticked);
+    window.invoke_confirm_leave();
+    let leave = adapter.borrow().app.state.leave.clone().unwrap();
+    assert!(leave.leaving && leave.silent);
+    assert!(window.get_leave_prompt().saving);
 }
 
 #[test]

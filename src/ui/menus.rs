@@ -156,7 +156,7 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                 | MenuChoice::CreateCategory
                 | MenuChoice::EditChannel
                 | MenuChoice::DuplicateChannel => 6,
-                MenuChoice::DeleteChannel | MenuChoice::LeaveServer => 7,
+                MenuChoice::DeleteChannel | MenuChoice::LeaveServer | MenuChoice::LeaveGroup => 7,
                 _ => 0,
             };
             let separated = group.replace(starts).is_some_and(|last| last != starts);
@@ -215,6 +215,7 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
                         | MenuChoice::Disconnect
                         | MenuChoice::DeleteChannel
                         | MenuChoice::LeaveServer
+                        | MenuChoice::LeaveGroup
                         | MenuChoice::TransferOwnership
                 ),
                 separated,
@@ -275,6 +276,7 @@ fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &sl
         MenuChoice::AddNickname => ("Add friend nickname", &icons.nickname),
         MenuChoice::EditNickname => ("Change friend nickname", &icons.nickname),
         MenuChoice::CloseDm => ("Close DM", &icons.cancel),
+        MenuChoice::LeaveGroup => ("Leave group", &icons.leave),
         MenuChoice::InviteToServer => ("Invite to server", &icons.befriend),
         MenuChoice::Unfriend => ("Remove friend", &icons.unfriend),
         MenuChoice::Ignore => ("Ignore", &icons.ignore),
@@ -808,6 +810,7 @@ pub(super) fn choose(
         MenuChoice::AddNote => ask(PersonAsk::Note),
         MenuChoice::AddNickname | MenuChoice::EditNickname => ask(PersonAsk::Nickname),
         MenuChoice::CloseDm => room.map(Action::CloseDm),
+        MenuChoice::LeaveGroup => room.map(Action::AskLeaveGroup),
         MenuChoice::Unfriend => ask(PersonAsk::Unfriend),
         MenuChoice::Block => ask(PersonAsk::Block),
         MenuChoice::Ignore => change(RelationshipChange::Ignore),
@@ -972,7 +975,7 @@ pub(super) fn server_change(
     }
 }
 
-const CHOICES: [MenuChoice; 63] = [
+const CHOICES: [MenuChoice; 64] = [
     MenuChoice::MarkRead,
     MenuChoice::JoinVoice,
     MenuChoice::OpenChat,
@@ -988,6 +991,7 @@ const CHOICES: [MenuChoice; 63] = [
     MenuChoice::AddNickname,
     MenuChoice::EditNickname,
     MenuChoice::CloseDm,
+    MenuChoice::LeaveGroup,
     MenuChoice::InviteToServer,
     MenuChoice::Unfriend,
     MenuChoice::Ignore,
@@ -1055,6 +1059,7 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::AddNickname => "add-nickname",
         MenuChoice::EditNickname => "edit-nickname",
         MenuChoice::CloseDm => "close-dm",
+        MenuChoice::LeaveGroup => "leave-group",
         MenuChoice::InviteToServer => "invite-to-server",
         MenuChoice::Unfriend => "unfriend",
         MenuChoice::Ignore => "ignore",

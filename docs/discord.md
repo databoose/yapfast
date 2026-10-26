@@ -11,7 +11,7 @@ recorded on 2026-10-06.
 | [DM calls](#dm-calls) | Starting, ringing, answering and declining DM and group DM calls, with cameras | A check by hand through real Discord |
 | [Go Live](#screen-sharing) | Sharing a screen with its sound, watching streams | A check on real Windows |
 | [Channels and messages](#servers-channels-and-messages) | History, live updates, sending, replies, edits, reactions, files, embeds, custom emoji, stickers, spoilers, unread state, notifications and their settings, member lists, pins and search, a channel's topic and header, server, category and [channel menus](#a-channels-menu), [forwarding](#forwarding), pinning channels to the top, [following channels](#following-channels), invites, [joining by invite](#joining-by-invite), making and changing channels, [server settings](#server-settings)' Server Profile, Engagement, Boost Perks, [Roles](#roles), [Safety Setup](#safety-setup), [Audit Log](#audit-log) and [Bans](#bans), [channel settings](#channel-settings) and their permissions, [two-factor authentication](#two-factor-authentication), threads, a channel's list of them and starting them, [forums](#forums), leaving servers | Pinning messages, most of a server's settings and its privacy, membership forms when joining |
-| [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting and closing | Leaving a group DM |
+| [DMs](#dms) | DMs, group DMs, message requests and spam, starting a DM, [a DM's menu](#a-dms-menu): pinning, muting, closing and leaving a group | |
 | [Friends](#friends-and-requests) and [profiles](#profiles) | Friends list, friend requests, adding by username, profile cards and the DM panel, custom status, [editing one's profile](#editing-ones-main-profile) and [server profiles](#editing-ones-server-profile), notes, friend nicknames, removing friends, ignoring and blocking | A list of the blocked and ignored; changing the username |
 | [Mirroring](#mirroring-into-matrix) | | Everything |
 
@@ -2407,6 +2407,11 @@ Right-clicking a DM offers, besides Profile and copying, these:
   `muted` and a `mute_config` of `selected_time_window`, in seconds or -1 for
   good, and its `end_time`. Unmute sets `muted` false. USER_GUILD_SETTINGS_UPDATE
   brings the change back, and a muted DM shows faint and counts nothing unread.
+- Leave group, in a group DM, asks first with Discord's dialog, whose box
+  leaves without notifying the other members. Either way it's `DELETE
+  /channels/{id}` with `silent` true or false, which Discord's client always
+  sends; Discord posts no "left the group" message with true. CHANNEL_DELETE
+  takes the group out of the list.
 
 - [Invite to server](#invite-to-server) sends them an invite to one of this
   account's servers, chosen in its submenu.
@@ -2415,7 +2420,7 @@ Someone who isn't a friend is offered Add friend, Accept friend request or
 Cancel friend request in place of Remove friend, unless they're blocked.
 Right-clicking the other person's avatar or name in the DM's messages opens
 the same menu. The person's choices show only in a one-to-one DM. A message request offers
-neither pinning, closing nor muting, as it waits for an answer.
+neither pinning, closing, leaving nor muting, as it waits for an answer.
 
 ### A DM's header
 

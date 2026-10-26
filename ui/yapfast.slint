@@ -252,7 +252,8 @@ export component YapfastWindow inherits Window {
     callback close-move-sync;
     in property <bool> leave-open;
     in property <ChannelPrompt> leave-prompt;
-    callback leave-server;
+    callback confirm-leave;
+    callback toggle-silent-leave;
     callback close-leave;
     in property <string> filter-placeholder;
     in property <string> sidebar-empty;
@@ -3583,7 +3584,8 @@ export component YapfastWindow inherits Window {
     if leave-motion.shown: ChannelDialog {
         motion: leave-motion.amount;
         prompt: root.leave-prompt;
-        save => { root.leave-server(); }
+        save => { root.confirm-leave(); }
+        tick => { root.toggle-silent-leave(); }
         close => { root.close-leave(); }
     }
     // About a DM's other person; see PersonDialog.

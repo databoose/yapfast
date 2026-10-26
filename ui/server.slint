@@ -223,12 +223,16 @@ export struct ChannelPrompt {
     named: bool,
     field: string,
     placeholder: string,
+    /// A box to tick below the detail, such as leaving a group DM without
+    /// telling its other members; empty for none. Ticking it calls tick.
+    option: string,
+    ticked: bool,
     saving: bool,
     error: string,
 }
 
 // Makes, copies or deletes a Discord channel or category, as Discord's
-// create channel dialog does.
+// create channel dialog does; asks before leaving a server or group DM.
 export component ChannelDialog inherits Rectangle {
     in property <ChannelPrompt> prompt;
     in-out property <string> name;
@@ -236,6 +240,7 @@ export component ChannelDialog inherits Rectangle {
     in-out property <int> kind;
     callback save;
     callback alternative;
+    callback tick;
     callback close;
     property <bool> ready: !root.prompt.saving;
     /// How far it's open, from 0 to 1; see PopupMotion.
@@ -276,6 +281,30 @@ export component ChannelDialog inherits Rectangle {
                     placeholder: root.prompt.placeholder; label: root.prompt.field;
                     text <=> root.name;
                     accepted => { if root.ready { root.save(); } }
+                }
+                if root.prompt.option != "": Rectangle {
+                    height: option-row.preferred-height;
+                    accessible-role: checkbox; accessible-checked: root.prompt.ticked;
+                    accessible-label: root.prompt.option;
+                    accessible-action-default => { if root.ready { root.tick(); } }
+                    option-row := HorizontalLayout {
+                        spacing: 10px;
+                        VerticalLayout {
+                            alignment: start; padding-top: 1px;
+                            Rectangle {
+                                width: 18px; height: 18px; border-radius: 4px;
+                                background: root.prompt.ticked ? Theme.accent : transparent;
+                                border-width: root.prompt.ticked ? 0px : 1.5px; border-color: Theme.muted;
+                                if root.prompt.ticked: Image { width: 12px; height: 12px; image-fit: contain; source: @image-url("icons/check.svg"); colorize: Theme.on-accent; }
+                            }
+                        }
+                        Text { text: root.prompt.option; color: Theme.secondary; font-size: 14px; wrap: word-wrap; horizontal-stretch: 1; }
+                    }
+                    TouchArea {
+                        enabled: root.ready;
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => { root.tick(); }
+                    }
                 }
                 if root.prompt.error != "": Text { text: root.prompt.error; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
                 HorizontalLayout {

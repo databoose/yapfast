@@ -1682,6 +1682,13 @@ async fn talks_to_the_fake_server() {
     let bob_id = discord.find_people("bob")[0].id.clone();
     discord.add_to_group(&group, &[bob_id]).await.unwrap();
     snapshot_where(&discord, |snapshot| people_in(snapshot) == Some(4)).await;
+    // Leaving it without telling the others, as its dialog's box does.
+    discord.leave_group(&group, true).await.unwrap();
+    snapshot_where(&discord, |snapshot| people_in(snapshot).is_none()).await;
+    assert_eq!(
+        self::control(server, "GET", "/_control/group-leaves", ""),
+        format!(r#"[{{"channel":"{group}","silent":"true"}}]"#)
+    );
 
     // Each request shows its latest message, as Discord's requests list
     // loads it, and stops once it's answered.

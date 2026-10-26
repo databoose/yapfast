@@ -156,7 +156,7 @@ they do in Discord.
 ### Everything else
 
 - Servers, channels, DMs and group DMs, all live. Pin, mute or close a DM from
-  its menu, and accept or ignore message requests.
+  its menu, leave a group DM, and accept or ignore message requests.
 - Messages you can send, reply to, edit, react to, pin, forward and attach
   files to, with Markdown, embeds, custom emoji, stickers and spoilers.
 - Threads: start one from a message, browse a channel's threads, join or leave
@@ -178,7 +178,6 @@ they do in Discord.
 - A server's form for new members, such as its rules, when you join. Yapfast
   sends you to Discord in your browser to fill it in.
 - A list of the people you blocked.
-- Leaving a group DM.
 - Animated custom emoji in messages, which show their first frame.
 - Captchas, sort of. If Discord asks for one while you link or join a server,
   Yapfast opens it in your browser, but I haven't hit one against real

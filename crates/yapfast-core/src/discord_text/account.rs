@@ -893,26 +893,11 @@ pub(super) fn command(
         }
         return None;
     }
-    if let Command::Discord(DiscordCommand::LeaveServer { server }) = command {
-        let guild = discord::parse_server(&server).map(str::to_owned);
-        match (discord, guild) {
-            (Ok(discord), Some(guild)) => {
-                let (discord, events) = (discord.clone(), events.clone());
-                tokio::spawn(async move {
-                    let result = discord.leave_server(&guild).await.map_err(|error| {
-                        tracing::warn!(error = format!("{error:#}"), "could not leave a server");
-                        format!("Couldn't leave the server: {error}")
-                    });
-                    let _ = events.send(Event::LeftServer { server, result });
-                });
-            }
-            (discord, _) => {
-                let _ = events.send(Event::LeftServer {
-                    server,
-                    result: Err(discord.err().unwrap_or(NOT_DISCORD).into()),
-                });
-            }
-        }
+    if let Command::Discord(
+        command @ (DiscordCommand::LeaveServer { .. } | DiscordCommand::LeaveGroup { .. }),
+    ) = command
+    {
+        leave(command, discord, events);
         return None;
     }
     if let Command::Discord(
@@ -963,6 +948,49 @@ fn from_dialog(change: &MemberChange) -> bool {
 
 /// Carries out a choice from a Discord server's, category's or channel's
 /// menu that makes, reads, changes or deletes a channel, and says how it went.
+/// Leaves a Discord server or group DM, answering with [`Event::Left`].
+fn leave(
+    command: DiscordCommand,
+    discord: Result<&Discord, &str>,
+    events: &UnboundedSender<Event>,
+) {
+    let (place, target) = match command {
+        DiscordCommand::LeaveServer { server } => {
+            let guild = discord::parse_server(&server).map(str::to_owned);
+            (server, guild.map(|guild| (guild, None)))
+        }
+        DiscordCommand::LeaveGroup { room, silent } => {
+            let channel = discord::parse_room(&room)
+                .filter(|(guild, _)| *guild == discord::DM_GUILD)
+                .map(|(_, channel)| channel.to_owned());
+            (room, channel.map(|channel| (channel, Some(silent))))
+        }
+        _ => return,
+    };
+    let (discord, (id, silent)) = match (discord, target) {
+        (Ok(discord), Some(target)) => (discord.clone(), target),
+        (discord, _) => {
+            let _ = events.send(Event::Left {
+                place,
+                result: Err(discord.err().unwrap_or(NOT_DISCORD).into()),
+            });
+            return;
+        }
+    };
+    let events = events.clone();
+    tokio::spawn(async move {
+        let (result, what) = match silent {
+            None => (discord.leave_server(&id).await, "server"),
+            Some(silent) => (discord.leave_group(&id, silent).await, "group"),
+        };
+        let result = result.map_err(|error| {
+            tracing::warn!(error = format!("{error:#}"), what, "could not leave");
+            format!("Couldn't leave the {what}: {error}")
+        });
+        let _ = events.send(Event::Left { place, result });
+    });
+}
+
 fn manage_channel(
     command: DiscordCommand,
     discord: Result<&Discord, &str>,

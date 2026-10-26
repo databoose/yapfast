@@ -1178,6 +1178,16 @@ impl Api {
             .map(drop)
     }
 
+    /// Leaves a group DM; with `silent`, as its dialog's "Leave without
+    /// notifying other members" does, Discord posts no message that this
+    /// account left. Discord's client sends `silent` either way.
+    pub async fn leave_group(&self, channel: &str, silent: bool) -> Result<()> {
+        let path = format!("/channels/{channel}?silent={silent}");
+        self.json(self.request(Method::DELETE, &path))
+            .await
+            .map(drop)
+    }
+
     /// Changes this account's notification settings for a server, or with
     /// [`crate::ready::PRIVATE`] its DMs, by `body`, a partial settings
     /// object; see [`crate::notifications::Change::body`]. Discord answers

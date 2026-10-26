@@ -2551,6 +2551,12 @@ impl Discord {
         self.api.leave_guild(guild).await
     }
 
+    /// Leaves a group DM, `silent`ly or not; see [`Api::leave_group`].
+    /// Snapshots drop it once its CHANNEL_DELETE comes.
+    pub async fn leave_group(&self, channel: &str, silent: bool) -> Result<()> {
+        self.api.leave_group(channel, silent).await
+    }
+
     /// Declines a call ringing this account; the call goes on without it.
     pub async fn decline(&self, channel: &str) -> Result<()> {
         let me = self.snapshots.borrow().user_id.clone().unwrap_or_default();

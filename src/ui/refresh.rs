@@ -1733,7 +1733,7 @@ impl Adapter {
             .into(),
             saving: dialog.saving,
             error: dialog.error.as_deref().unwrap_or_default().into(),
-            alternative: SharedString::default(),
+            ..Default::default()
         });
     }
 
@@ -1912,21 +1912,29 @@ impl Adapter {
         });
     }
 
-    /// Asks before leaving a Discord server, as Discord's dialog does.
+    /// Asks before leaving a Discord server or group DM, as Discord's
+    /// dialogs do.
     fn show_leave(&self, window: &YapfastWindow) {
         let leave = self.app.state.leave.as_ref();
         window.set_leave_open(leave.is_some());
         let Some(leave) = leave else {
             return;
         };
+        let what = if leave.group { "group" } else { "server" };
         window.set_leave_prompt(ChannelPrompt {
             title: format!("Leave '{}'", leave.name).into(),
             detail: format!(
-                "Are you sure you want to leave {}? You won't be able to rejoin this server unless you are re-invited.",
+                "Are you sure you want to leave {}? You won't be able to rejoin this {what} unless you are re-invited.",
                 leave.name
             )
             .into(),
-            confirm: "Leave server".into(),
+            confirm: format!("Leave {what}").into(),
+            option: if leave.group {
+                "Leave without notifying other members".into()
+            } else {
+                Default::default()
+            },
+            ticked: leave.silent,
             danger: true,
             saving: leave.leaving,
             error: leave.error.as_deref().unwrap_or_default().into(),

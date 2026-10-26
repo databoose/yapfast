@@ -1862,7 +1862,7 @@ fn a_discord_dms_menu_manages_its_person_and_notifications() {
     // A group has no one person to manage.
     assert_eq!(
         app.state.menu_choices("discord:@me:31"),
-        [Pin, Call, Mute, CopyLink, CopyId]
+        [Pin, Call, Mute, LeaveGroup, CopyLink, CopyId]
     );
     app.apply(discord_event(snapshot(false, true, true, true)));
     assert_eq!(
@@ -5280,6 +5280,83 @@ fn discord_dms(extra: Vec<yapfast_discord::service::Conversation>) -> Applicatio
 
 #[test]
 #[cfg(feature = "discord")]
+fn leaving_a_group_dm_asks_first_and_may_tell_no_one() {
+    use MenuChoice::*;
+    let mut app = discord_dms(vec![]);
+    let group = "discord:@me:31".to_owned();
+    // After muting, as in Discord's menu; a one-to-one DM closes instead.
+    assert_eq!(
+        app.state.menu_choices(&group),
+        [Pin, Call, Mute, LeaveGroup, CopyLink, CopyId]
+    );
+    assert!(
+        !app.state
+            .menu_choices("discord:@me:30")
+            .contains(&LeaveGroup)
+    );
+    assert!(
+        app.dispatch(Action::AskLeaveGroup("discord:@me:30".into()))
+            .is_empty()
+            && app.state.leave.is_none()
+    );
+
+    app.dispatch(Action::SelectRoom(group.clone()));
+    assert!(
+        app.dispatch(Action::AskLeaveGroup(group.clone()))
+            .is_empty()
+    );
+    let dialog = app.state.leave.clone().unwrap();
+    assert_eq!(
+        (dialog.place.as_str(), dialog.name.as_str()),
+        (group.as_str(), "Hikers")
+    );
+    assert!(
+        dialog.group && !dialog.silent,
+        "telling the others, unless ticked"
+    );
+    app.dispatch(Action::ToggleSilentLeave);
+    assert!(app.state.leave.as_ref().unwrap().silent);
+    assert!(matches!(
+        app.dispatch(Action::Leave).as_slice(),
+        [Effect::Backend(Command::Discord(DiscordCommand::LeaveGroup { room, silent: true }))]
+            if *room == group
+    ));
+    app.dispatch(Action::ToggleSilentLeave);
+    assert!(
+        app.state.leave.as_ref().unwrap().silent,
+        "not while it's leaving"
+    );
+    app.apply(Event::Left {
+        place: group.clone(),
+        result: Err("Couldn't leave the group: no".into()),
+    });
+    let dialog = app.state.leave.clone().unwrap();
+    assert!(!dialog.leaving && dialog.silent);
+    assert_eq!(
+        dialog.error.as_deref(),
+        Some("Couldn't leave the group: no")
+    );
+    app.dispatch(Action::Leave);
+    app.apply(Event::Left {
+        place: group.clone(),
+        result: Ok(()),
+    });
+    assert!(app.state.leave.is_none());
+    // Its CHANNEL_DELETE takes it out of the DM list, and off the screen.
+    let mut snapshot = yapfast_discord::service::Snapshot::clone(app.discord.as_ref().unwrap());
+    snapshot.conversations.retain(|known| known.id != "31");
+    app.apply(discord_event(snapshot));
+    assert!(app.state.rooms.iter().all(|room| room.id != group));
+    assert_ne!(app.state.selected.as_deref(), Some(group.as_str()));
+
+    // Discord takes it only while connected.
+    let mut app = discord_dms(vec![]);
+    app.state.discord_online = false;
+    assert!(!app.state.menu_choices(&group).contains(&LeaveGroup));
+}
+
+#[test]
+#[cfg(feature = "discord")]
 fn a_dms_pins_load_when_shown_and_close_with_the_conversation() {
     let mut app = discord_dms(vec![]);
     let dm = "discord:@me:30".to_owned();
@@ -6783,16 +6860,16 @@ fn leaving_a_discord_server_asks_first_and_is_not_for_its_owner() {
     );
     let dialog = app.state.leave.clone().unwrap();
     assert_eq!(
-        (dialog.server.as_str(), dialog.name.as_str()),
+        (dialog.place.as_str(), dialog.name.as_str()),
         ("discord:10", "Test")
     );
     assert!(matches!(
-        app.dispatch(Action::LeaveServer).as_slice(),
+        app.dispatch(Action::Leave).as_slice(),
         [Effect::Backend(Command::Discord(DiscordCommand::LeaveServer { server }))] if server == "discord:10"
     ));
-    assert!(app.dispatch(Action::LeaveServer).is_empty(), "once");
-    app.apply(Event::LeftServer {
-        server: server.clone(),
+    assert!(app.dispatch(Action::Leave).is_empty(), "once");
+    app.apply(Event::Left {
+        place: server.clone(),
         result: Err("Couldn't leave the server: no".into()),
     });
     let dialog = app.state.leave.clone().unwrap();
@@ -6801,9 +6878,9 @@ fn leaving_a_discord_server_asks_first_and_is_not_for_its_owner() {
         dialog.error.as_deref(),
         Some("Couldn't leave the server: no")
     );
-    app.dispatch(Action::LeaveServer);
-    app.apply(Event::LeftServer {
-        server: server.clone(),
+    app.dispatch(Action::Leave);
+    app.apply(Event::Left {
+        place: server.clone(),
         result: Ok(()),
     });
     assert!(app.state.leave.is_none());

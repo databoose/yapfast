@@ -520,8 +520,9 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
             });
         });
     }
-    bind!(on_leave_server, Action::LeaveServer);
-    bind!(on_close_leave, Action::CloseLeaveServer);
+    bind!(on_confirm_leave, Action::Leave);
+    bind!(on_toggle_silent_leave, Action::ToggleSilentLeave);
+    bind!(on_close_leave, Action::CloseLeave);
     {
         let adapter = adapter.clone();
         let weak = window.as_weak();

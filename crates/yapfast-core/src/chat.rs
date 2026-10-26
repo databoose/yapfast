@@ -2117,10 +2117,16 @@ pub enum DiscordCommand {
         room: String,
         members: Vec<String>,
     },
-    /// Leave a Discord server, by its server id; [`Event::LeftServer`]
-    /// follows.
+    /// Leave a Discord server, by its server id; [`Event::Left`] follows.
     LeaveServer {
         server: String,
+    },
+    /// Leave a Discord group DM, by its room id, telling its other members
+    /// or not; [`Event::Left`] follows, and its CHANNEL_DELETE takes it out
+    /// of the DM list.
+    LeaveGroup {
+        room: String,
+        silent: bool,
     },
     /// Delete a Discord server this account owns, confirming with
     /// two-factor authentication if Discord asks; [`Event::ServerDeleted`]
@@ -3312,10 +3318,10 @@ pub enum Event {
         query: String,
         members: Vec<RoleMember>,
     },
-    /// Whether this account left a Discord server, by its server id, or why
-    /// not.
-    LeftServer {
-        server: String,
+    /// Whether this account left a Discord server or group DM, by its
+    /// server or room id, or why not.
+    Left {
+        place: String,
         result: Result<(), String>,
     },
     /// Whether Discord deleted a server, or why not.

@@ -31,6 +31,8 @@ pub enum MenuChoice {
     EditNickname,
     /// Close a one-to-one Discord DM.
     CloseDm,
+    /// Leave a Discord group DM, asking first.
+    LeaveGroup,
     /// Send someone an invite to one of this account's Discord servers, in
     /// a submenu of them; see `places.rs`.
     InviteToServer,
@@ -291,6 +293,11 @@ impl AppState {
             } else {
                 MenuChoice::Mute
             });
+        }
+        // After muting, as in Discord's menu; Discord takes it only while
+        // connected.
+        if discord && room.person.is_none() && !room.request && self.discord_online {
+            choices.push(MenuChoice::LeaveGroup);
         }
         // A thread's notifications are its own, which Yapfast doesn't change yet.
         if room.network == Network::Discord
@@ -630,6 +637,34 @@ impl Application {
         vec![Effect::Backend(Command::Discord(DiscordCommand::CloseDm {
             room,
         }))]
+    }
+
+    /// Asks before leaving a Discord group DM, from its menu, as Discord's
+    /// client does.
+    pub(super) fn ask_leave_group(&mut self, room: String) -> Vec<Effect> {
+        if !self
+            .state
+            .menu_choices(&room)
+            .contains(&MenuChoice::LeaveGroup)
+        {
+            return vec![];
+        }
+        let name = self
+            .state
+            .rooms
+            .iter()
+            .find(|known| known.id == room)
+            .map(|known| known.name.clone())
+            .unwrap_or_default();
+        self.state.leave = Some(LeaveDialog {
+            place: room,
+            name,
+            group: true,
+            silent: false,
+            leaving: false,
+            error: None,
+        });
+        vec![]
     }
 
     pub(super) fn mute_dm(&mut self, room: String, muting: Muting) -> Vec<Effect> {

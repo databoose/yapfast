@@ -29,12 +29,16 @@ const HEADER: [MenuChoice; 9] = [
     MenuChoice::LeaveServer,
 ];
 
-/// Asks before leaving a Discord server.
+/// Asks before leaving a Discord server or group DM.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeaveDialog {
-    /// The server's id and name.
-    pub server: String,
+    /// The server's or group's id and name.
+    pub place: String,
     pub name: String,
+    /// A group DM, which its dialog offers to leave `silent`ly, without
+    /// telling its other members.
+    pub group: bool,
+    pub silent: bool,
     pub leaving: bool,
     pub error: Option<String>,
 }
@@ -238,35 +242,43 @@ impl Application {
             .map(|known| known.name.clone())
             .unwrap_or_default();
         self.state.leave = Some(LeaveDialog {
-            server,
+            place: server,
             name,
+            group: false,
+            silent: false,
             leaving: false,
             error: None,
         });
         vec![]
     }
 
-    /// Leaves the server the dialog asked about. Its GUILD_DELETE takes it
-    /// out of the list, and Yapfast to the DMs if it was open.
-    pub(super) fn leave_server(&mut self) -> Vec<Effect> {
+    /// Leaves the server or group DM the dialog asked about. A server's
+    /// GUILD_DELETE takes it out of the list, and Yapfast to the DMs if it
+    /// was open; a group's CHANNEL_DELETE takes it out of the DM list.
+    pub(super) fn leave(&mut self) -> Vec<Effect> {
         let Some(dialog) = self.state.leave.as_mut().filter(|dialog| !dialog.leaving) else {
             return vec![];
         };
         dialog.leaving = true;
         dialog.error = None;
-        vec![Effect::Backend(Command::Discord(
-            DiscordCommand::LeaveServer {
-                server: dialog.server.clone(),
-            },
-        ))]
+        let place = dialog.place.clone();
+        let command = if dialog.group {
+            DiscordCommand::LeaveGroup {
+                room: place,
+                silent: dialog.silent,
+            }
+        } else {
+            DiscordCommand::LeaveServer { server: place }
+        };
+        vec![Effect::Backend(Command::Discord(command))]
     }
 
-    pub(super) fn left_server(&mut self, server: String, result: Result<(), String>) {
+    pub(super) fn left(&mut self, place: String, result: Result<(), String>) {
         let Some(dialog) = self
             .state
             .leave
             .as_mut()
-            .filter(|dialog| dialog.leaving && dialog.server == server)
+            .filter(|dialog| dialog.leaving && dialog.place == place)
         else {
             return;
         };
