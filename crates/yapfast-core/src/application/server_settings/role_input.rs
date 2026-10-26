@@ -53,7 +53,7 @@ impl Application {
     pub fn role_rules(&self, server: &str) -> RoleRules {
         #[cfg(feature = "discord")]
         if let Some((known, _, me)) = self.discord_place(server) {
-            let roles = &known.my_roles;
+            let roles = &known.marks.roles;
             let without = roles
                 .iter()
                 .map(|role| {

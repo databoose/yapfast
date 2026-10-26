@@ -7,7 +7,7 @@ use crate::chat::ChannelPlacement;
 #[cfg(feature = "discord")]
 use crate::chat::Permission;
 #[cfg(feature = "discord")]
-use yapfast_discord::ready::Server;
+use yapfast_discord::marked::{MarkedChannel, MarkedServer};
 
 /// Where a dragged channel or category lands.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,10 +107,10 @@ impl Application {
 
     /// [`Self::draggable`], by the channel's or category's id in `server`.
     #[cfg(feature = "discord")]
-    fn drags(&self, server: &Server, kinds: &Kinds, id: &str) -> bool {
+    fn drags(&self, server: &MarkedServer, kinds: &Kinds, id: &str) -> bool {
         if !self.state.discord_online
             || server.follows_only()
-            || server.notifications.of(id).pinned()
+            || server.marks.notifications.of(id).pinned()
         {
             return false;
         }
@@ -128,7 +128,7 @@ impl Application {
     #[cfg(feature = "discord")]
     fn lands(
         &self,
-        server: &Server,
+        server: &MarkedServer,
         kinds: &Kinds,
         shown: &[String],
         dragged: usize,
@@ -156,7 +156,7 @@ impl Application {
     /// goes in, or in the server outside any, and able to see a category it
     /// moves into.
     #[cfg(feature = "discord")]
-    fn may_land(&self, server: &Server, kinds: &Kinds, id: &str, landing: &Landing) -> bool {
+    fn may_land(&self, server: &MarkedServer, kinds: &Kinds, id: &str, landing: &Landing) -> bool {
         let Some(&(kind, parent)) = kinds.get(id) else {
             return false;
         };
@@ -343,16 +343,15 @@ impl Application {
                 ),
                 None => (false, 0),
             };
-            for channels in [&server.text_channels, &server.voice_channels] {
-                let mut listed = list(channels);
+            for mut listed in [list(server.text_channels()), list(server.voice_channels())] {
                 listed.sort_by_key(|(_, parent, _)| rank(*parent));
                 numbered(&listed, None);
             }
         } else {
-            let mut listed = list(match kind {
-                Kind::Voice => &server.voice_channels,
-                _ => &server.text_channels,
-            });
+            let mut listed = match kind {
+                Kind::Voice => list(server.voice_channels()),
+                _ => list(server.text_channels()),
+            };
             let from = listed.iter().position(|(id, _, _)| *id == dragged)?;
             let (_, was, position) = listed.remove(from);
             let index = |other: &str| listed.iter().position(|(id, _, _)| Some(*id) == raw(other));
@@ -416,7 +415,7 @@ impl Application {
 type Kinds<'a> = HashMap<&'a str, (Kind, Option<&'a str>)>;
 
 #[cfg(feature = "discord")]
-fn kinds(server: &Server) -> Kinds<'_> {
+fn kinds(server: &MarkedServer) -> Kinds<'_> {
     let mut kinds = HashMap::with_capacity(
         server.text_channels.len() + server.voice_channels.len() + server.categories.len(),
     );
@@ -443,7 +442,7 @@ fn raw(room: &str) -> Option<&str> {
 /// Where a channel's category comes as the list orders by it: those
 /// outside any first, then each category by position.
 #[cfg(feature = "discord")]
-fn order<'a>(server: &Server, parent: Option<&'a str>) -> (bool, i64, &'a str) {
+fn order<'a>(server: &MarkedServer, parent: Option<&'a str>) -> (bool, i64, &'a str) {
     match parent.and_then(|id| Some((id, server.categories.get(id)?))) {
         Some((id, category)) => (true, category.position, id),
         None => (false, 0, ""),
@@ -453,11 +452,12 @@ fn order<'a>(server: &Server, parent: Option<&'a str>) -> (bool, i64, &'a str) {
 /// A server's text or voice channels this account may see, in the order
 /// the list shows them: each one's id, category and position.
 #[cfg(feature = "discord")]
-fn list(channels: &[yapfast_discord::ready::Channel]) -> Vec<(&str, Option<&str>, i64)> {
+fn list<'a>(
+    channels: impl Iterator<Item = MarkedChannel<'a>>,
+) -> Vec<(&'a str, Option<&'a str>, i64)> {
     channels
-        .iter()
-        .filter(|channel| channel.access != yapfast_discord::ready::Access::Hidden)
-        .map(|channel| {
+        .filter(|channel| channel.marks.access != yapfast_discord::ready::Access::Hidden)
+        .map(|MarkedChannel { channel, .. }| {
             (
                 channel.id.as_str(),
                 channel.parent.as_deref(),
@@ -470,7 +470,7 @@ fn list(channels: &[yapfast_discord::ready::Channel]) -> Vec<(&str, Option<&str>
 /// Where Discord's client asks whether this account may manage a channel
 /// in `parent`: the category, or the server for one outside any.
 #[cfg(feature = "discord")]
-fn manager(server: &Server, parent: Option<&str>) -> String {
+fn manager(server: &MarkedServer, parent: Option<&str>) -> String {
     match parent.filter(|id| server.categories.contains_key(*id)) {
         Some(id) => discord::room_id(&server.id, id),
         None => discord::server_id(&server.id),

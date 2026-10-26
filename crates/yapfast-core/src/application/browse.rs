@@ -112,17 +112,17 @@ impl Application {
             let (known, None, _) = self.discord_place(server)? else {
                 return None;
             };
-            let settings = &known.notifications;
+            let settings = &known.marks.notifications;
             let names = self.discord.as_ref()?.names.read();
             // Show All Channels on with none followed: Discord's client
             // shows every box ticked, as turning it off would follow them.
             let all = !settings.follows_only() && !settings.follows_any();
             let mut channels: Vec<_> = known
-                .text_channels
-                .iter()
+                .text_channels()
                 .map(|channel| (false, channel))
-                .chain(known.voice_channels.iter().map(|channel| (true, channel)))
-                .filter(|(_, channel)| channel.access != Access::Hidden)
+                .chain(known.voice_channels().map(|channel| (true, channel)))
+                .filter(|(_, channel)| channel.marks.access != Access::Hidden)
+                .map(|(voice, channel)| (voice, channel.channel))
                 .collect();
             channels.sort_by_cached_key(|(voice, channel)| {
                 (
@@ -203,7 +203,7 @@ impl Application {
         #[cfg(feature = "discord")]
         if let Some((known, Some(channel), _)) = self.discord_place(&room) {
             use yapfast_discord::ready::Access;
-            let settings = &known.notifications;
+            let settings = &known.marks.notifications;
             if settings.follows_only() {
                 let flags = settings.of(channel).follow_flags(follow);
                 return vec![Effect::Backend(Command::Discord(
@@ -219,11 +219,10 @@ impl Application {
                 // Every channel but the one cleared; a category ticked
                 // joins them.
                 known
-                    .text_channels
-                    .iter()
-                    .chain(&known.voice_channels)
-                    .filter(|known| known.access != Access::Hidden && known.id != channel)
-                    .map(|known| known.id.as_str())
+                    .text_channels()
+                    .chain(known.voice_channels())
+                    .filter(|known| known.marks.access != Access::Hidden && known.id != channel)
+                    .map(|known| known.channel.id.as_str())
                     .chain(follow.then_some(channel))
                     .map(|id| (id.to_owned(), settings.of(id).follow_flags(true)))
                     .collect()

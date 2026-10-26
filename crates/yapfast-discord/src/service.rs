@@ -17,6 +17,7 @@ use crate::{
     activity,
     api::{self, Api, PAGE, Span},
     cache, forum, invite, limits,
+    marked::MarkedServer,
     member_list::{ListedMember, Presence},
     message::{self, Message, Names, Page},
     mfa,
@@ -264,9 +265,10 @@ pub struct Snapshot {
     pub status: Status,
     pub user_id: Option<String>,
     pub account: Option<Account>,
-    /// Shared between snapshots while unchanged, so publishing one copies
-    /// only the servers that changed.
-    pub servers: Vec<Arc<Server>>,
+    /// Each server and this account's marks in it, each shared between
+    /// snapshots while unchanged, so a change of the marks alone copies
+    /// none of the server.
+    pub servers: Vec<MarkedServer>,
     /// The folders in the account's server list. Their servers sit together
     /// in [`Self::servers`], in the folder's order.
     #[serde(default)]
@@ -2461,10 +2463,9 @@ impl Discord {
             {
                 details.join(member);
             }
-            if let Some(server) = server {
-                thread.access = server.access(&thread, me, &server.my_roles);
-            }
-            if thread.access == ready::Access::Hidden {
+            if let Some(server) = server
+                && server.access(&thread, me, &server.marks.roles) == ready::Access::Hidden
+            {
                 continue;
             }
             listed.insert(thread.id.clone(), value.clone());

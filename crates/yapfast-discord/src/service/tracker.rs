@@ -10,13 +10,12 @@ use serde_json::Value;
 
 use super::{
     Account, BlockedUser, Conversation, DO_NOT_DISTURB, Friend, FriendRequest, Live, Preview,
-    Snapshot, Status, VoiceMember, VoiceServer,
-    marks::{Marks, Published},
-    now_ms, server,
+    Snapshot, Status, VoiceMember, VoiceServer, marks::Published, now_ms, server,
 };
 use crate::{
     activity::{self, Activities},
     event::Event,
+    marked::{MarkedServer, ServerMarks},
     member_list::{self, ListedMember, Presence},
     message::{Message, Names},
     ready::{self, PRIVATE, Private, Server},
@@ -185,11 +184,13 @@ impl Tracker {
 
     /// Keeps what `earlier` knew of servers READY gave as unavailable, as it
     /// gives only their ids.
-    pub(super) fn keep_unavailable(&mut self, earlier: &[Arc<Server>]) {
+    pub(super) fn keep_unavailable(&mut self, earlier: &[MarkedServer]) {
         for server in self.servers.iter_mut().filter(|server| server.unavailable) {
             if let Some(known) = earlier.iter().find(|known| known.id == server.id) {
-                let mut known = Server::clone(known);
+                let mut known = Server::clone(&known.server);
                 known.unavailable = true;
+                // The snapshot's copy of a server carries a timeout.
+                known.my_timeout = None;
                 *server = Arc::new(known);
             }
         }
@@ -199,7 +200,7 @@ impl Tracker {
     /// Keeps the thread `channel` of `guild`, on screen, if `earlier` knew
     /// it and READY, which lists only the threads this account is in,
     /// didn't.
-    pub(super) fn keep_thread(&mut self, earlier: &[Arc<Server>], guild: &str, channel: &str) {
+    pub(super) fn keep_thread(&mut self, earlier: &[MarkedServer], guild: &str, channel: &str) {
         let Some(thread) = earlier
             .iter()
             .find(|server| server.id == guild)
@@ -1505,7 +1506,7 @@ impl Tracker {
             });
         }
         // Mark what this account may do in each channel, reusing the servers
-        // the last snapshot marked the same.
+        // and marks the last snapshot published the same.
         let mut published = HashMap::with_capacity(self.servers.len());
         let mut servers = Vec::with_capacity(self.servers.len());
         let now = now_ms();
@@ -1515,38 +1516,50 @@ impl Tracker {
                 .timed_out_until(&server.id, &self.me)
                 .filter(|until| *until > now);
             let last = self.published.remove(&server.id).filter(|last| {
-                Arc::ptr_eq(&last.source, server) && last.roles == roles && last.timeout == timeout
+                Arc::ptr_eq(&last.source, server)
+                    && last.listed.marks.roles == roles
+                    && last.timeout == timeout
             });
-            // A timeout in force takes what the account may do away; a
-            // copy of the server carries it while it lasts.
-            let timed_out = timeout.map(|until| Server {
-                my_timeout: Some(ready::Timeout {
-                    user: self.me.clone(),
-                    until,
-                }),
-                ..(**server).clone()
-            });
-            let source = timed_out.as_ref().unwrap_or(server);
             // What the account may do stays while the server, its roles
             // and its timeout do.
-            let marks = match &last {
-                Some(last) => last.marks.unread(source, &self.unreads, now),
-                None => Marks::new(source, &self.me, roles, &self.unreads, now),
+            let listed = match last {
+                Some(last) => {
+                    let MarkedServer { server, marks } = last.listed;
+                    match marks.unread(&server, &self.unreads, now) {
+                        Some(marks) => MarkedServer {
+                            server,
+                            marks: Arc::new(marks),
+                        },
+                        None => MarkedServer { server, marks },
+                    }
+                }
+                None => {
+                    // A timeout in force takes what the account may do
+                    // away; a copy of the server carries it while it lasts.
+                    let server = match timeout {
+                        Some(until) => Arc::new(Server {
+                            my_timeout: Some(ready::Timeout {
+                                user: self.me.clone(),
+                                until,
+                            }),
+                            ..(**server).clone()
+                        }),
+                        None => server.clone(),
+                    };
+                    let marks = ServerMarks::new(&server, &self.me, roles, &self.unreads, now);
+                    MarkedServer {
+                        server,
+                        marks: Arc::new(marks),
+                    }
+                }
             };
-            let (marked, roles) = match last {
-                Some(last) if last.marks == marks => (last.marked, last.roles),
-                Some(last) => (Arc::new(marks.apply(source)), last.roles),
-                None => (Arc::new(marks.apply(source)), roles.to_vec()),
-            };
-            servers.push(marked.clone());
+            servers.push(listed.clone());
             published.insert(
                 server.id.clone(),
                 Published {
                     source: server.clone(),
-                    roles,
                     timeout,
-                    marks,
-                    marked,
+                    listed,
                 },
             );
         }
@@ -2446,9 +2459,8 @@ mod tests {
         let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
         let channels = |tracker: &mut Tracker| -> Vec<String> {
             tracker.snapshot().servers[0]
-                .voice_channels
-                .iter()
-                .filter(|channel| channel.access == ready::Access::Join)
+                .voice_channels()
+                .filter(|channel| channel.marks.access == ready::Access::Join)
                 .map(|channel| channel.name.clone())
                 .collect()
         };
@@ -2491,9 +2503,20 @@ mod tests {
                 until
             })
         );
-        assert_eq!(server.text_channels[0].access, ready::Access::Locked);
-        assert_eq!(server.voice_channels[0].access, ready::Access::Locked);
-        assert!(Arc::ptr_eq(server, &tracker.snapshot().servers[0]));
+        let access = |server: &MarkedServer| {
+            server
+                .text_channels()
+                .chain(server.voice_channels())
+                .map(|channel| channel.marks.access)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(access(server), [ready::Access::Locked; 2]);
+        // The copy that carries the timeout is kept while it lasts.
+        assert_eq!(&tracker.snapshot().servers[0], server);
+        assert!(Arc::ptr_eq(
+            &server.server,
+            &tracker.snapshot().servers[0].server
+        ));
         assert_eq!(tracker.next_quiet(now), Some(until), "published again then");
 
         // Once it ends, what it took comes back.
@@ -2505,8 +2528,7 @@ mod tests {
         let snapshot = tracker.snapshot();
         let server = &snapshot.servers[0];
         assert_eq!(server.my_timeout, None);
-        assert_eq!(server.text_channels[0].access, ready::Access::Join);
-        assert_eq!(server.voice_channels[0].access, ready::Access::Join);
+        assert_eq!(access(server), [ready::Access::Join; 2]);
         assert_eq!(tracker.next_quiet(now), None);
     }
 
@@ -2607,9 +2629,8 @@ mod tests {
         let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
         let quiet = |tracker: &mut Tracker| -> Vec<bool> {
             tracker.snapshot().servers[0]
-                .threads
-                .iter()
-                .map(|thread| thread.thread.as_deref().unwrap().quiet)
+                .threads()
+                .map(|thread| thread.marks.quiet)
                 .collect()
         };
         assert_eq!(quiet(&mut tracker), [true, false]);
@@ -2677,15 +2698,14 @@ mod tests {
         let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
         let threads = |tracker: &mut Tracker| -> Vec<(String, bool, ready::Access, bool, u64)> {
             tracker.snapshot().servers[0]
-                .threads
-                .iter()
+                .threads()
                 .map(|thread| {
                     let details = thread.thread.as_deref().unwrap();
                     (
                         thread.id.clone(),
                         details.joined,
-                        thread.access,
-                        thread.unread,
+                        thread.marks.access,
+                        thread.marks.unread,
                         details.messages,
                     )
                 })
@@ -2798,31 +2818,39 @@ mod tests {
             ],
         });
         let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
+        let shared = |one: &MarkedServer, other: &MarkedServer| {
+            (
+                Arc::ptr_eq(&one.server, &other.server),
+                Arc::ptr_eq(&one.marks, &other.marks),
+            )
+        };
         let first = tracker.snapshot();
         let same = tracker.snapshot();
-        assert!(Arc::ptr_eq(&first.servers[0], &same.servers[0]));
-        assert!(Arc::ptr_eq(&first.servers[1], &same.servers[1]));
+        assert_eq!(shared(&first.servers[0], &same.servers[0]), (true, true));
+        assert_eq!(shared(&first.servers[1], &same.servers[1]), (true, true));
 
-        // A message marks one server's channel unread; the other stays shared.
+        // A message marks one server's channel unread: only its marks are
+        // new, and the other server's stay shared.
         tracker.apply(
             &Event::MessageCreate,
             &json!({"id": "900", "channel_id": "21", "guild_id": "20", "author": {"id": "2"}}),
         );
         let unread = tracker.snapshot();
-        assert!(Arc::ptr_eq(&first.servers[0], &unread.servers[0]));
-        assert!(!Arc::ptr_eq(&first.servers[1], &unread.servers[1]));
-        assert!(unread.servers[1].text_channels[0].unread);
-        assert!(
-            !first.servers[1].text_channels[0].unread,
-            "published ones don't change"
-        );
+        assert_eq!(shared(&first.servers[0], &unread.servers[0]), (true, true));
+        assert_eq!(shared(&first.servers[1], &unread.servers[1]), (true, false));
+        let general = |server: &MarkedServer| server.text_channels().next().unwrap().marks.unread;
+        assert!(general(&unread.servers[1]));
+        assert!(!general(&first.servers[1]), "published ones don't change");
 
         // Changing a server copies it rather than the one a snapshot holds.
         tracker.apply(&Event::GuildUpdate, &json!({"id": "10", "name": "Renamed"}));
         let renamed = tracker.snapshot();
         assert_eq!(renamed.servers[0].name, "Renamed");
         assert_eq!(unread.servers[0].name, "One");
-        assert!(Arc::ptr_eq(&unread.servers[1], &renamed.servers[1]));
+        assert_eq!(
+            shared(&unread.servers[1], &renamed.servers[1]),
+            (true, true)
+        );
     }
 
     #[test]
@@ -2836,7 +2864,8 @@ mod tests {
         });
         let mut tracker = Tracker::from_ready("1".into(), &ready, Default::default());
         let marks = |tracker: &mut Tracker| {
-            let voice = &tracker.snapshot().servers[0].voice_channels[0];
+            let snapshot = tracker.snapshot();
+            let voice = snapshot.servers[0].voice_channels().next().unwrap().marks;
             (voice.unread, voice.mentions, voice.last_read)
         };
         assert_eq!(marks(&mut tracker), (true, 1, 700));

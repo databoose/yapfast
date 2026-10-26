@@ -15,6 +15,7 @@ use serde_json::Value;
 use crate::{
     components::{self, Card},
     embed::{self, Embed},
+    marked::ServerMarks,
     ready::{self, Server},
 };
 
@@ -340,18 +341,19 @@ pub struct Reaction {
 
 impl Message {
     /// Whether it calls on this account, `me`, as Discord highlights it: by
-    /// name, through one of its roles in `server`, or with @everyone or
-    /// @here, unless its notification settings there suppress those; or as
-    /// a reply to its message. Its own messages never do.
-    pub fn mentions_me(&self, me: &str, server: Option<&ready::Server>) -> bool {
-        self.names_me(me, server) || self.replies_to(me)
+    /// name, through one of its roles in a server it has `marks` in, or
+    /// with @everyone or @here, unless its notification settings there
+    /// suppress those; or as a reply to its message. Its own messages never
+    /// do.
+    pub fn mentions_me(&self, me: &str, marks: Option<&ServerMarks>) -> bool {
+        self.names_me(me, marks) || self.replies_to(me)
     }
 
     /// Whether it calls on `me` other than by replying: by name, a role or
     /// @everyone, as [`Self::mentions_me`] says. A reply that pings puts
     /// the author it replies to in `mentions` too, so for them only their
     /// name in its text counts.
-    pub fn names_me(&self, me: &str, server: Option<&ready::Server>) -> bool {
+    pub fn names_me(&self, me: &str, marks: Option<&ServerMarks>) -> bool {
         if self.author_id == me {
             return false;
         }
@@ -359,14 +361,13 @@ impl Message {
             && (!self.replies_to(me)
                 || self.content.contains(&format!("<@{me}>"))
                 || self.content.contains(&format!("<@!{me}>")));
-        let everyone =
-            self.mention_everyone && server.is_some_and(|server| !server.suppress_everyone);
-        let role = server.is_some_and(|server| {
-            !server.suppress_roles
+        let everyone = self.mention_everyone && marks.is_some_and(|marks| !marks.suppress_everyone);
+        let role = marks.is_some_and(|marks| {
+            !marks.suppress_roles
                 && self
                     .mention_roles
                     .iter()
-                    .any(|role| server.my_roles.contains(role))
+                    .any(|role| marks.roles.contains(role))
         });
         named || everyone || role
     }
@@ -2321,8 +2322,8 @@ mod tests {
                 .extend(extra.as_object().unwrap().clone());
             parse(&value).unwrap()
         };
-        let server = Server {
-            my_roles: vec!["30".into()],
+        let server = ServerMarks {
+            roles: vec!["30".into()],
             ..Default::default()
         };
         let pings = |extra: Value| message(extra).mentions_me(me, Some(&server));
@@ -2362,7 +2363,7 @@ mod tests {
         assert!(!message(reply("3")).replies_to(me));
 
         // Her settings can quiet @everyone and roles, but not her name.
-        let quiet = Server {
+        let quiet = ServerMarks {
             suppress_everyone: true,
             suppress_roles: true,
             ..server.clone()

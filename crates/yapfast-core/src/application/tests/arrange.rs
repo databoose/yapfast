@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::chat::ChannelPlacement;
-use yapfast_discord::ready::permission;
+use yapfast_discord::{marked::MarkedServer, ready::permission};
 
 /// The channel list as it shows, by room id: #rules outside any category,
 /// Talk with #general, #news and Lounge, Games with #chess and Arena, and
@@ -23,7 +23,7 @@ const SHOWN: [&str; 9] = [
 fn server(me: &str, roles: &[&str]) -> Application {
     use yapfast_discord::service::{Snapshot, Status};
     let bits = |bits: u64| bits.to_string();
-    let mut server = yapfast_discord::ready::server(&serde_json::json!({
+    let server = yapfast_discord::ready::server(&serde_json::json!({
         "id": "10", "owner_id": "1",
         "properties": {"name": "Test"},
         "roles": [
@@ -52,12 +52,18 @@ fn server(me: &str, roles: &[&str]) -> Application {
         ],
     }))
     .unwrap();
-    server.my_roles = roles.iter().map(|role| (*role).to_owned()).collect();
+    let marks = yapfast_discord::marked::ServerMarks {
+        roles: roles.iter().map(|role| (*role).to_owned()).collect(),
+        ..Default::default()
+    };
     let mut app = Application::default();
     app.apply(discord_event(Snapshot {
         status: Status::Online,
         user_id: Some(me.into()),
-        servers: vec![Arc::new(server)],
+        servers: vec![MarkedServer {
+            server: Arc::new(server),
+            marks: Arc::new(marks),
+        }],
         ..Default::default()
     }));
     app

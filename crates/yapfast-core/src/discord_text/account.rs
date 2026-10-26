@@ -440,7 +440,13 @@ pub(super) fn command(
                                     page.threads
                                         .iter()
                                         .filter_map(|thread| {
-                                            discord::listed_thread(server, &names, thread)
+                                            // A page's threads have no marks.
+                                            discord::listed_thread(
+                                                server,
+                                                &names,
+                                                thread,
+                                                Default::default(),
+                                            )
                                         })
                                         .collect()
                                 })

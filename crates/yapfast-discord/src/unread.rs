@@ -11,7 +11,7 @@ use crate::{
     event::Event,
     message::{iso_ms, snowflake_at},
     notifications::{Level, Notifications},
-    ready::{Access, Channel, PRIVATE, Private, Server, Thread},
+    ready::{Access, Channel, PRIVATE, Private, Thread},
 };
 
 #[derive(Clone, Copy, Default)]
@@ -417,21 +417,6 @@ impl Unreads {
         Some(last.to_string())
     }
 
-    /// Sets the unread, mention and muted state of a server's text
-    /// channels and threads.
-    pub fn mark(&self, server: &mut Server) {
-        server.muted = self.server_muted(&server.id);
-        let id = server.id.clone();
-        for channel in server.text_channels.iter_mut().chain(&mut server.threads) {
-            (channel.muted, channel.unread, channel.mentions) =
-                self.channel(&id, channel, channel.access);
-            channel.last_read = self.last_read(&id, &channel.id);
-            if let Some(thread) = channel.thread.as_deref_mut() {
-                thread.opened = self.opened(&channel.id);
-            }
-        }
-    }
-
     /// Whether the notification settings keep @everyone and @here, and role
     /// mentions, from calling on this account in a server.
     pub fn suppressed(&self, guild: &str) -> (bool, bool) {
@@ -581,12 +566,15 @@ mod tests {
         let mut unreads = Unreads::from_ready(&ready);
         unreads.learn_own_member("10", &json!({"joined_at": "2015-01-01T00:00:00+00:00"}));
         let mut server = ready::servers(&ready).remove(0);
-        let state = |unreads: &Unreads, server: &mut Server| {
-            unreads.mark(server);
+        let state = |unreads: &Unreads, server: &mut ready::Server| {
             server
                 .text_channels
                 .iter()
-                .map(|channel| (channel.unread, channel.mentions))
+                .map(|channel| {
+                    let (_, unread, mentions) =
+                        unreads.channel(&server.id, channel, ready::Access::Join);
+                    (unread, mentions)
+                })
                 .collect::<Vec<_>>()
         };
         // 13 was never read but has messages since joining; 14 is in a muted category.
@@ -646,20 +634,20 @@ mod tests {
 
         // Where each channel was read up to, for the "New" divider: never
         // read counts from joining.
-        let read = |server: &Server| {
+        let read = |unreads: &Unreads, server: &ready::Server| {
             server
                 .text_channels
                 .iter()
-                .map(|channel| channel.last_read)
+                .map(|channel| unreads.last_read(&server.id, &channel.id))
                 .collect::<Vec<_>>()
         };
         let joined = snowflake_at(iso_ms("2015-01-01T00:00:00+00:00").unwrap());
-        assert_eq!(read(&server), [500, 400, joined, joined]);
+        assert_eq!(read(&unreads, &server), [500, 400, joined, joined]);
 
         assert_eq!(unreads.mark_read("10", "11").as_deref(), Some("604"));
         assert_eq!(unreads.mark_read("10", "11"), None);
         assert_eq!(state(&unreads, &mut server)[0], (false, 0));
-        assert_eq!(read(&server)[0], 604);
+        assert_eq!(read(&unreads, &server)[0], 604);
 
         unreads.apply(
             &Event::MessageAck,

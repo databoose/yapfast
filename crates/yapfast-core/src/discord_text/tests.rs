@@ -388,16 +388,22 @@ fn votes_count_live_and_last_through_an_update_without_them() {
 
 #[test]
 fn messages_render_again_once_what_they_show_changes() {
+    use yapfast_discord::marked::{ChannelMarks, MarkedServer, ServerMarks};
     let server = |name: &str, unread: bool| {
-        Some(Arc::new(yapfast_discord::ready::Server {
+        let server = yapfast_discord::ready::Server {
             id: "10".into(),
             text_channels: vec![yapfast_discord::ready::Channel {
                 id: "11".into(),
                 name: name.into(),
-                unread,
                 ..Default::default()
             }],
             ..Default::default()
+        };
+        Some(MarkedServer::marked(server, ServerMarks::default(), |_| {
+            ChannelMarks {
+                unread,
+                ..Default::default()
+            }
         }))
     };
     let rendering = |names: u64, server| Rendering {
@@ -418,6 +424,10 @@ fn messages_render_again_once_what_they_show_changes() {
         !shown.alike(&rendering(1, server("chat", false))),
         "renamed"
     );
+    // This account's roles decide which mentions call on it.
+    let mut roles = shown.server.clone().unwrap();
+    Arc::make_mut(&mut roles.marks).roles = vec!["20".into()];
+    assert!(!shown.alike(&rendering(1, Some(roles))), "roles");
     assert!(
         !shown.alike(&rendering(2, server("general", false))),
         "names"

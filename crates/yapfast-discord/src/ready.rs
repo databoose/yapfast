@@ -12,7 +12,7 @@ use serde_json::Value;
 use crate::{
     client,
     forum::{self, Forum, GUILD_FORUM},
-    notifications::{Level, Mute, Notifications},
+    notifications::{Level, Mute},
 };
 
 /// Discord serves pictures in powers of two; this covers the 80px avatar in a
@@ -127,7 +127,7 @@ pub struct Server {
     #[serde(default)]
     pub threads: Vec<Channel>,
     // The categories, roles and emoji are shared, as the channels' overwrites
-    // are: a snapshot copies each server to set what's this account's, and
+    // are: a change to the server copies it while a snapshot holds it, and
     // they're most of a large server.
     /// Categories by id, which group and order the channels in them.
     pub categories: Arc<HashMap<String, Category>>,
@@ -159,30 +159,15 @@ pub struct Server {
     #[serde(default)]
     pub verified: bool,
     /// A Community server, where the channel list may list only the
-    /// channels this account follows; see [`Self::follows_only`].
+    /// channels this account follows; see
+    /// [`crate::marked::MarkedServer::follows_only`].
     #[serde(default)]
     pub community: bool,
-    /// Muted in the account's notification settings; set when the service
-    /// publishes it.
-    pub muted: bool,
-    /// This account's roles here, set when the service publishes it.
-    #[serde(default)]
-    pub my_roles: Vec<String>,
-    /// This account's timeout here while it lasts, set when the service
-    /// publishes it.
+    /// This account's timeout here while it lasts, set on a copy of the
+    /// server when the service publishes it; see [`crate::marked`] for the
+    /// rest of what's this account's.
     #[serde(default)]
     pub my_timeout: Option<Timeout>,
-    /// The account's notification settings here keep @everyone and @here,
-    /// and role mentions, from calling on it; set when the service
-    /// publishes it.
-    #[serde(default)]
-    pub suppress_everyone: bool,
-    #[serde(default)]
-    pub suppress_roles: bool,
-    /// This account's notification settings here, shared with the service's
-    /// copy while unchanged; set when the service publishes it.
-    #[serde(default)]
-    pub notifications: Arc<Notifications>,
     /// Its boost level, from 0 to 3, which raises everyone's upload limit
     /// in it; see [`crate::api::upload_limit`].
     pub premium_tier: u8,
@@ -243,21 +228,6 @@ pub struct Channel {
     #[serde(default)]
     pub topic: Option<Arc<str>>,
     pub overwrites: Arc<Vec<Overwrite>>,
-    /// What this account may do here, and the rest below, are set when the
-    /// service publishes it.
-    pub access: Access,
-    /// This account may mention @everyone, @here and every role here; set when
-    /// the service publishes it.
-    pub mention_everyone: bool,
-    /// A text channel with messages this account hasn't read.
-    pub unread: bool,
-    /// Unread messages that mention this account.
-    pub mentions: u64,
-    /// Muted, directly or through its category.
-    pub muted: bool,
-    /// The snowflake of the last message this account read here, or 0.
-    #[serde(default)]
-    pub last_read: u64,
     /// What a thread has besides; none for a channel.
     #[serde(default)]
     pub thread: Option<Box<Thread>>,
@@ -312,10 +282,6 @@ pub struct Thread {
     /// its `archive_timestamp`; 0 when Discord didn't say.
     #[serde(default)]
     pub archive_changed: u64,
-    /// Quiet for its [`Thread::archive_after`] as the last snapshot saw it,
-    /// though Discord may not have archived it yet; see [`Thread::quiet_at`].
-    #[serde(default)]
-    pub quiet: bool,
     /// How many are in it, as Discord counts them: up to 50.
     #[serde(default)]
     pub members: u32,
@@ -328,10 +294,6 @@ pub struct Thread {
     pub tags: Vec<String>,
     #[serde(default)]
     pub pinned: bool,
-    /// This account has a read state of its own here: it opened or joined
-    /// it. A forum post it never opened shows as new, rather than unread.
-    #[serde(skip)]
-    pub opened: bool,
     /// Its newest message, as a list of threads shows it, while Yapfast knows
     /// it: Discord sends it with a server's active threads, and Yapfast follows
     /// the messages that come after.
@@ -532,7 +494,7 @@ pub struct Private {
     pub request: bool,
     /// A request Discord thinks is spam.
     pub spam: bool,
-    /// The rest are set when the service publishes it, as for [`Channel`].
+    /// The rest are set when the service publishes it.
     pub unread: bool,
     pub mentions: u64,
     pub muted: bool,
@@ -685,13 +647,6 @@ impl Server {
             && self.channel_permissions(channel, user, roles)
                 & (BYPASS_SLOWMODE | MANAGE_MESSAGES | MANAGE_CHANNELS)
                 == 0
-    }
-
-    /// Whether the channel list lists only the channels this account
-    /// follows, as Discord's client lists them: Show All Channels turned
-    /// off, which it heeds only in a Community server.
-    pub fn follows_only(&self) -> bool {
-        self.community && self.notifications.follows_only()
     }
 
     /// Whether `user`, holding `roles`, may forward `channel`'s messages, as

@@ -3,6 +3,7 @@
 
 use yapfast_discord::{
     api::{Refused, Span, Stalled},
+    marked::MarkedServer,
     ready::Deletes,
 };
 
@@ -1283,23 +1284,25 @@ impl OpenChannel {
             .iter()
             .find(|server| server.id == self.guild)
             .cloned();
-        let may_pin = server.as_deref().is_none_or(|server| {
-            server.channel(&self.channel).is_some_and(|channel| {
-                server.channel_permissions(channel, &me, &server.my_roles)
+        let may_pin = server.as_ref().is_none_or(|server| {
+            server.server.channel(&self.channel).is_some_and(|channel| {
+                server.channel_permissions(channel, &me, &server.marks.roles)
                     & yapfast_discord::ready::permission::PIN_MESSAGES
                     != 0
             })
         });
-        let may_forward = server.as_deref().is_none_or(|server| {
+        let may_forward = server.as_ref().is_none_or(|server| {
             server
+                .server
                 .channel(&self.channel)
-                .is_some_and(|channel| server.forwards_from(channel, &me, &server.my_roles))
+                .is_some_and(|channel| server.forwards_from(channel, &me, &server.marks.roles))
         });
-        let deletes = server.as_deref().map_or(Deletes::Own, |server| {
+        let deletes = server.as_ref().map_or(Deletes::Own, |server| {
             server
+                .server
                 .channel(&self.channel)
                 .map_or(Deletes::Own, |channel| {
-                    server.deletes(channel, &me, &server.my_roles)
+                    server.deletes(channel, &me, &server.marks.roles)
                 })
         });
         let rendering = Rendering {
@@ -1315,7 +1318,7 @@ impl OpenChannel {
             self.rendered.clear();
         }
         self.rendered_with = rendering;
-        let server = server.as_deref();
+        let server = server.as_ref();
         let name = |user: &str, fallback: &str| {
             discord
                 .name(&self.guild, user)
@@ -1337,7 +1340,13 @@ impl OpenChannel {
             };
             let row = match kept.remove(order) {
                 // A thread it leads to changes apart from the message.
-                Some(row) if row.id == id && row.thread == self.thread_link(server, message) => row,
+                Some(row)
+                    if row.id == id
+                        && row.thread
+                            == self.thread_link(server.map(|server| &**server), message) =>
+                {
+                    row
+                }
                 _ => Arc::new(self.render(discord, &snapshot, server, message, id, &mut wanted)),
             };
             self.rendered.insert(*order, Arc::clone(&row));
@@ -1347,7 +1356,7 @@ impl OpenChannel {
         let me_avatar = discord.avatar(Some(&self.guild), &me);
         let me_color = server.and_then(|server| discord.color(server, &me));
         for pending in pending {
-            let (body, mentions) = rendered(discord, server, &pending.body);
+            let (body, mentions) = rendered(discord, server.map(|server| &**server), &pending.body);
             rows.push(Arc::new(ChatMessage {
                 id: format!("n:{}", pending.nonce),
                 item: format!("n:{}", pending.nonce),
@@ -1372,7 +1381,7 @@ impl OpenChannel {
                         author: name(&original.author_id, &original.author),
                         avatar: Some(discord.avatar(Some(&self.guild), &original.author_id)),
                         body: plain_snippet(&crate::spoiler::hide(
-                            &discord.render(server, &original.content),
+                            &discord.render(server.map(|server| &**server), &original.content),
                         )),
                         item: Some(format!("d:{id}")),
                     })
@@ -1409,7 +1418,7 @@ impl OpenChannel {
         &self,
         discord: &Discord,
         snapshot: &Snapshot,
-        server: Option<&yapfast_discord::ready::Server>,
+        server: Option<&MarkedServer>,
         message: &Message,
         id: String,
         wanted: &mut Vec<String>,
@@ -1422,6 +1431,8 @@ impl OpenChannel {
         };
         let own = message.author_id == me;
         let author = name(&message.author_id, &message.author);
+        let marks = server.map(|server| &*server.marks);
+        let server = server.map(|server| &*server.server);
         let (body, mentions) = rendered(discord, server, &message.content);
         let body = match &message.system {
             Some(system) => system_body(&author, system),
@@ -1531,7 +1542,7 @@ impl OpenChannel {
             edited: message.edited,
             deleted: false,
             blocked: snapshot.blocked.contains(&message.author_id),
-            mentions_me: message.names_me(me, server),
+            mentions_me: message.names_me(me, marks),
             replies_to_me: message.replies_to(me),
             delivery: Delivery::Sent,
             reply,
@@ -1571,7 +1582,7 @@ impl OpenChannel {
             .servers
             .iter()
             .find(|server| server.id == self.guild)
-            .map(|server| &**server);
+            .map(|server| &*server.server);
         self.rendered.iter().any(|(order, row)| {
             row.thread.is_some()
                 && self
@@ -1624,7 +1635,7 @@ pub(super) struct Rendering {
     pub(super) names: u64,
     pub(super) me: String,
     pub(super) blocked: Vec<String>,
-    pub(super) server: Option<Arc<yapfast_discord::ready::Server>>,
+    pub(super) server: Option<MarkedServer>,
     /// This account may pin messages here: anyone may in a DM.
     pub(super) may_pin: bool,
     /// This account may forward messages from here: anyone may from a DM.
@@ -1634,8 +1645,8 @@ pub(super) struct Rendering {
 }
 
 impl Rendering {
-    /// Whether messages render the same with either. A server changes with
-    /// its channels' unread marks, which messages don't show.
+    /// Whether messages render the same with either. A server's marks change
+    /// with its channels' unread state, which messages don't show.
     pub(super) fn alike(&self, other: &Self) -> bool {
         fn channels(
             server: &yapfast_discord::ready::Server,
@@ -1648,13 +1659,15 @@ impl Rendering {
         }
         let server = match (&self.server, &other.server) {
             (Some(one), Some(other)) => {
-                Arc::ptr_eq(one, other)
+                let (marks, others) = (&one.marks, &other.marks);
+                (Arc::ptr_eq(&one.server, &other.server)
                     || (one.role_names == other.role_names
                         && one.role_colors == other.role_colors
-                        && one.my_roles == other.my_roles
-                        && one.suppress_everyone == other.suppress_everyone
-                        && one.suppress_roles == other.suppress_roles
-                        && channels(one).eq(channels(other)))
+                        && channels(one).eq(channels(other))))
+                    && (Arc::ptr_eq(marks, others)
+                        || (marks.roles == others.roles
+                            && marks.suppress_everyone == others.suppress_everyone
+                            && marks.suppress_roles == others.suppress_roles))
             }
             (one, other) => one.is_none() && other.is_none(),
         };

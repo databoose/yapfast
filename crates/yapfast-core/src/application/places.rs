@@ -470,11 +470,11 @@ impl Application {
             && let Some((server, Some(channel), _)) = self.discord_place(id)
             && server.follows_only()
         {
-            let known = server.channel(channel);
+            let known = server.server.channel(channel);
             if known.is_some_and(|known| known.thread.is_some()) {
                 return None;
             }
-            let settings = &server.notifications;
+            let settings = &server.marks.notifications;
             let category = known.and_then(|known| known.parent.as_deref());
             return Some(
                 if category.is_some_and(|category| settings.of(category).followed()) {
@@ -505,7 +505,7 @@ impl Application {
         }
         #[cfg(feature = "discord")]
         if let Some((server, Some(channel), _)) = self.discord_place(&room) {
-            let flags = server.notifications.of(channel).follow_flags(follow);
+            let flags = server.marks.notifications.of(channel).follow_flags(follow);
             return vec![Effect::Backend(Command::Discord(
                 DiscordCommand::FollowChannel { room, flags },
             ))];
@@ -531,16 +531,17 @@ impl Application {
         }
         #[cfg(feature = "discord")]
         if let Some((known, None, _)) = self.discord_place(&server) {
-            let settings = &known.notifications;
+            let settings = &known.marks.notifications;
             let flags = settings.show_all_flags(show);
             let follow = if show || settings.follows_any() {
                 vec![]
             } else {
                 known
-                    .text_channels
-                    .iter()
-                    .chain(&known.voice_channels)
-                    .filter(|channel| channel.access != yapfast_discord::ready::Access::Hidden)
+                    .text_channels()
+                    .chain(known.voice_channels())
+                    .filter(|channel| {
+                        channel.marks.access != yapfast_discord::ready::Access::Hidden
+                    })
                     .map(|channel| {
                         let flags = settings.of(&channel.id).follow_flags(true);
                         (channel.id.clone(), flags)
@@ -582,7 +583,7 @@ impl Application {
         }
         #[cfg(feature = "discord")]
         if let Some((server, Some(channel), _)) = self.discord_place(&room) {
-            let flags = server.notifications.of(channel).pin_flags(pin);
+            let flags = server.marks.notifications.of(channel).pin_flags(pin);
             return vec![Effect::Backend(Command::Discord(
                 DiscordCommand::PinChannel { room, flags },
             ))];
@@ -776,7 +777,7 @@ impl Application {
             channels
                 .iter()
                 .filter(|channel| {
-                    server.channel_permissions(channel, me, &server.my_roles) & wanted == wanted
+                    server.channel_permissions(channel, me, &server.marks.roles) & wanted == wanted
                 })
                 .min_by_key(|channel| (channel.position, &channel.id))
         };
@@ -858,7 +859,7 @@ impl Application {
     pub fn categories(&self, server: &str) -> Vec<ListedCategory> {
         #[cfg(feature = "discord")]
         if let Some((known, None, me)) = self.discord_place(server) {
-            let roles = &known.my_roles;
+            let roles = &known.marks.roles;
             let mut categories: Vec<_> = known
                 .categories
                 .iter()

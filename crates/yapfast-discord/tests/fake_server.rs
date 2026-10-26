@@ -859,10 +859,10 @@ async fn talks_to_the_fake_server() {
     assert_eq!(snapshot.servers.len(), 1);
     let guild = &snapshot.servers[0];
     assert_eq!(guild.name, "Server");
-    let general = &guild.text_channels[0];
+    let general = guild.text_channels().next().unwrap();
     assert_eq!(general.name, "general");
     assert!(
-        general.unread,
+        general.marks.unread,
         "the fixture leaves the last messages unread"
     );
     assert_eq!(guild.voice_channels[0].name, "Lounge");
@@ -878,7 +878,7 @@ async fn talks_to_the_fake_server() {
     let bob = snapshot.voice[&guild.voice_channels[0].id][0]
         .user_id
         .clone();
-    let last_read = general.last_read;
+    let last_read = general.marks.last_read;
     let (guild, general, lounge) = (
         guild.id.clone(),
         general.id.clone(),
@@ -1063,7 +1063,7 @@ async fn talks_to_the_fake_server() {
     discord.mark_read(&guild, &general, true);
     let newest = latest.last().unwrap().id.clone();
     snapshot_where(&discord, |snapshot| {
-        let general = &snapshot.servers[0].text_channels[0];
+        let general = snapshot.servers[0].text_channels().next().unwrap().marks;
         !general.unread && general.last_read.to_string() == newest
     })
     .await;
@@ -1093,7 +1093,12 @@ async fn talks_to_the_fake_server() {
         "Bob's name takes the Mods role's blue"
     );
     snapshot_where(&discord, |snapshot| {
-        snapshot.servers[0].text_channels[0].unread
+        snapshot.servers[0]
+            .text_channels()
+            .next()
+            .unwrap()
+            .marks
+            .unread
     })
     .await;
 
@@ -1155,12 +1160,17 @@ async fn talks_to_the_fake_server() {
             .await
             .unwrap();
         let snapshot = snapshot_where(&discord, |snapshot| {
-            snapshot.servers[0].my_roles.iter().any(|role| role == mods) == add
+            snapshot.servers[0]
+                .marks
+                .roles
+                .iter()
+                .any(|role| role == mods)
+                == add
         })
         .await;
         let joined = &snapshot.servers[0];
         assert_eq!(
-            joined.deletes(&joined.text_channels[0], &alice, &joined.my_roles),
+            joined.deletes(&joined.text_channels[0], &alice, &joined.marks.roles),
             if add { Deletes::Any } else { Deletes::Own }
         );
         if add {
@@ -1180,7 +1190,15 @@ async fn talks_to_the_fake_server() {
         snapshot.servers[0].my_timeout.is_some()
     })
     .await;
-    assert_eq!(timed_out.servers[0].text_channels[0].access, Access::Locked);
+    let access = |snapshot: &yapfast_discord::service::Snapshot| {
+        snapshot.servers[0]
+            .text_channels()
+            .next()
+            .unwrap()
+            .marks
+            .access
+    };
+    assert_eq!(access(&timed_out), Access::Locked);
     let nonce = yapfast_discord::message::nonce();
     assert!(
         discord
@@ -1192,7 +1210,7 @@ async fn talks_to_the_fake_server() {
         snapshot.servers[0].my_timeout.is_none()
     })
     .await;
-    assert_eq!(lifted.servers[0].text_channels[0].access, Access::Join);
+    assert_eq!(access(&lifted), Access::Join);
     let nonce = yapfast_discord::message::nonce();
     discord
         .send(&guild, &general, "back", sending(&nonce, None), vec![])
@@ -1561,7 +1579,14 @@ async fn talks_to_the_fake_server() {
     assert_eq!(found.len(), 1);
     assert_eq!(discord.name(&guild, &found[0]).as_deref(), Some("Carol"));
     let listed = discord.snapshots().borrow().servers[0].clone();
-    assert!(!listed.text_channels[0].mention_everyone);
+    assert!(
+        !listed
+            .text_channels()
+            .next()
+            .unwrap()
+            .marks
+            .mention_everyone
+    );
     let mentionable: Vec<_> = listed
         .mentionable(false)
         .into_iter()
@@ -2683,13 +2708,13 @@ async fn talks_to_the_fake_server() {
     change(None, Change::Level(Some(Level::All))).await;
     let muted = snapshot_where(&discord, |snapshot| {
         let server = ours(snapshot);
-        server.notifications.hide_muted_channels
-            && server.notifications.level == Some(Level::All)
-            && server.text_channels[0].muted
-            && server.notifications.of(&general).level == Some(Level::Nothing)
+        server.marks.notifications.hide_muted_channels
+            && server.marks.notifications.level == Some(Level::All)
+            && server.text_channels().next().unwrap().marks.muted
+            && server.marks.notifications.of(&general).level == Some(Level::Nothing)
     })
     .await;
-    let own = ours(&muted).notifications.of(&general);
+    let own = ours(&muted).marks.notifications.of(&general);
     assert!(own.mute.muted && own.mute.until.is_some());
     change(
         here,
@@ -2709,10 +2734,10 @@ async fn talks_to_the_fake_server() {
     .await;
     snapshot_where(&discord, |snapshot| {
         let server = ours(snapshot);
-        server.muted
-            && server.notifications.mute.until.is_none()
-            && !server.text_channels[0].muted
-            && server.notifications.of(&general).level == Some(Level::Nothing)
+        server.marks.muted
+            && server.marks.notifications.mute.until.is_none()
+            && !server.text_channels().next().unwrap().marks.muted
+            && server.marks.notifications.of(&general).level == Some(Level::Nothing)
     })
     .await;
     // As it was, for what follows.
@@ -2729,9 +2754,9 @@ async fn talks_to_the_fake_server() {
     change(here, Change::Level(None)).await;
     snapshot_where(&discord, |snapshot| {
         let server = ours(snapshot);
-        !server.muted
-            && server.notifications.level == Some(Level::Mentions)
-            && server.notifications.of(&general).level.is_none()
+        !server.marks.muted
+            && server.marks.notifications.level == Some(Level::Mentions)
+            && server.marks.notifications.of(&general).level.is_none()
     })
     .await;
 
@@ -2740,6 +2765,7 @@ async fn talks_to_the_fake_server() {
     // leaves the opt-in flag that pinning set.
     change(here, Change::Level(Some(Level::All))).await;
     let flags = ours(&discord.snapshots().borrow())
+        .marks
         .notifications
         .of(&general)
         .pin_flags(true);
@@ -2749,18 +2775,18 @@ async fn talks_to_the_fake_server() {
         .await
         .unwrap();
     snapshot_where(&discord, |snapshot| {
-        let own = ours(snapshot).notifications.of(&general);
+        let own = ours(snapshot).marks.notifications.of(&general);
         own.pinned() && own.level == Some(Level::All)
     })
     .await;
     discord.channel_flags(&guild, &general, 4096).await.unwrap();
     change(here, Change::Level(None)).await;
     let unpinned = snapshot_where(&discord, |snapshot| {
-        let own = ours(snapshot).notifications.of(&general);
+        let own = ours(snapshot).marks.notifications.of(&general);
         !own.pinned() && own.level.is_none()
     })
     .await;
-    assert_eq!(ours(&unpinned).notifications.of(&general).flags, 4096);
+    assert_eq!(ours(&unpinned).marks.notifications.of(&general).flags, 4096);
 
     // A Community server lists only the channels followed once Show All
     // Channels is off, which the server's own flags say, following channels
@@ -2773,14 +2799,14 @@ async fn talks_to_the_fake_server() {
         .unwrap();
     snapshot_where(&discord, |snapshot| {
         let server = ours(snapshot);
-        server.follows_only() && server.notifications.follows(&general, None)
+        server.follows_only() && server.marks.notifications.follows(&general, None)
     })
     .await;
     discord.channel_flags(&guild, &general, 0).await.unwrap();
     discord.show_all_channels(&guild, 0, &[]).await.unwrap();
     snapshot_where(&discord, |snapshot| {
         let server = ours(snapshot);
-        !server.follows_only() && !server.notifications.follows(&general, None)
+        !server.follows_only() && !server.marks.notifications.follows(&general, None)
     })
     .await;
     post_control(server, "/_control/guild", r#"{"features": []}"#);
@@ -2805,13 +2831,12 @@ async fn talks_to_the_fake_server() {
     };
     let general_muted = |snapshot: &Snapshot| {
         ours(snapshot)
-            .text_channels
-            .iter()
-            .any(|channel| channel.id == general && channel.muted)
+            .text_channels()
+            .any(|channel| channel.id == general && channel.marks.muted)
     };
     mute_category(true).await;
     snapshot_where(&discord, |snapshot| {
-        general_muted(snapshot) && ours(snapshot).notifications.of(&category).mute.muted
+        general_muted(snapshot) && ours(snapshot).marks.notifications.of(&category).mute.muted
     })
     .await;
     mute_category(false).await;
@@ -3113,7 +3138,8 @@ async fn talks_to_the_fake_server() {
     let me = snapshot.user_id.clone().unwrap();
     assert!(
         snapshot.servers[0]
-            .my_roles
+            .marks
+            .roles
             .contains(&"1400000000000000112".to_owned())
     );
     let latest = discord
@@ -3123,7 +3149,7 @@ async fn talks_to_the_fake_server() {
         .messages;
     let highlighted: Vec<bool> = latest[latest.len() - 7..]
         .iter()
-        .map(|message| message.mentions_me(&me, Some(&snapshot.servers[0])))
+        .map(|message| message.mentions_me(&me, Some(&snapshot.servers[0].marks)))
         .collect();
     assert_eq!(
         highlighted,
@@ -4449,11 +4475,17 @@ async fn shows_a_forum_as_discords_client_does(discord: &Discord, server: &str, 
         details("Crash when pasting a GIF").tags,
         [details_tag(forum, 1), details_tag(forum, 2)]
     );
+    let opened = |name: &str| {
+        listed
+            .threads()
+            .find(|thread| thread.name == name)
+            .is_some_and(|thread| thread.marks.opened)
+    };
     let dark = details("Dark theme for the sidebar");
-    assert!(dark.joined && dark.opened);
+    assert!(dark.joined && opened("Dark theme for the sidebar"));
     // Its first message isn't counted.
     assert_eq!(dark.messages, 2);
-    assert!(!details("Keyboard shortcut list?").opened);
+    assert!(!opened("Keyboard shortcut list?"));
 
     // Their first messages, as their cards show them.
     let ids: Vec<&str> = active.iter().map(|name| post(name).id.as_str()).collect();
@@ -4509,9 +4541,8 @@ async fn shows_a_forum_as_discords_client_does(discord: &Discord, server: &str, 
     discord.mark_read(guild, &forum.id, true);
     let unread = |snapshot: &Snapshot| {
         snapshot.servers[0]
-            .text_channels
-            .iter()
-            .any(|channel| channel.name == "ideas" && channel.unread)
+            .text_channels()
+            .any(|channel| channel.name == "ideas" && channel.marks.unread)
     };
     snapshot_where(discord, |snapshot| !unread(snapshot)).await;
     post_control(server, "/_control/forum-post", "");
@@ -4872,11 +4903,9 @@ async fn lists_who_reacted_as_discords_client_does(
 async fn marks_quiet_threads_as_discords_client_does(discord: &Discord, server: &str) {
     let plans_quiet = |snapshot: &Snapshot| {
         snapshot.servers[0]
-            .threads
-            .iter()
+            .threads()
             .find(|thread| thread.name == "Plans")
-            .and_then(|thread| thread.thread.as_deref())
-            .map(|details| details.quiet)
+            .map(|thread| thread.marks.quiet)
     };
     // Opened again as the fake started, it isn't quiet yet.
     assert_eq!(plans_quiet(&discord.snapshots().borrow()), Some(false));

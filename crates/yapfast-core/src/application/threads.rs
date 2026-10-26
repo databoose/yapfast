@@ -606,13 +606,14 @@ impl Application {
         {
             let names = snapshot.names.read();
             return server
-                .threads
-                .iter()
+                .threads()
                 .filter(|thread| {
                     thread.parent.as_deref() == Some(channel)
-                        && thread.access != yapfast_discord::ready::Access::Hidden
+                        && thread.marks.access != yapfast_discord::ready::Access::Hidden
                 })
-                .filter_map(|thread| discord::listed_thread(server, &names, thread))
+                .filter_map(|thread| {
+                    discord::listed_thread(server, &names, thread.channel, thread.marks)
+                })
                 .collect();
         }
         let _ = room;

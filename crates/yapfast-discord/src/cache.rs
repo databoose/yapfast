@@ -821,7 +821,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        ready::Server,
+        marked::{ChannelMarks, MarkedServer, ServerMarks},
+        ready::{Channel, Server},
         service::{Account, Conversation},
     };
 
@@ -848,11 +849,26 @@ mod tests {
                 mfa_enabled: false,
                 has_email: true,
             }),
-            servers: vec![Arc::new(Server {
-                id: "10".into(),
-                name: "Server".into(),
-                ..Default::default()
-            })],
+            servers: vec![MarkedServer::marked(
+                Server {
+                    id: "10".into(),
+                    name: "Server".into(),
+                    text_channels: vec![Channel {
+                        id: "11".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                ServerMarks {
+                    muted: true,
+                    ..Default::default()
+                },
+                |_| ChannelMarks {
+                    unread: true,
+                    mentions: 2,
+                    ..Default::default()
+                },
+            )],
             conversations: vec![Conversation {
                 id: "20".into(),
                 call: true,
@@ -870,6 +886,8 @@ mod tests {
         assert_eq!(shown.snapshot.status, Status::Connecting);
         assert_eq!(shown.snapshot.account.unwrap().name, "Alice");
         assert_eq!(shown.snapshot.servers[0].name, "Server");
+        // With what's this account's there, in the server's own object.
+        assert_eq!(shown.snapshot.servers, snapshot.servers);
         assert!(
             !shown.snapshot.conversations[0].call,
             "calls are over by now"

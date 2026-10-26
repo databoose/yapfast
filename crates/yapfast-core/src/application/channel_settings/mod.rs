@@ -262,7 +262,7 @@ impl Application {
     pub(super) fn snapshot_overwrites(&self, room: &str) -> Option<Vec<ChannelOverwrite>> {
         #[cfg(feature = "discord")]
         if let Some((server, Some(id), _)) = self.discord_place(room) {
-            let overwrites = match server.channel(id) {
+            let overwrites = match server.server.channel(id) {
                 Some(channel) => &channel.overwrites,
                 None => &server.categories.get(id)?.overwrites,
             };
@@ -288,7 +288,7 @@ impl Application {
         #[cfg(feature = "discord")]
         if let Some((server, Some(_), me)) = self.discord_place(room) {
             use yapfast_discord::ready::permission;
-            let roles = &server.my_roles;
+            let roles = &server.marks.roles;
             let held = server.server_permissions(me, roles);
             // Manage Permissions as the channel's own overwrites give it,
             // without the server's.
@@ -346,7 +346,7 @@ impl Application {
                     deny: overwrite.deny,
                 })
                 .collect();
-            return server.overwritten(&overwrites, me, &server.my_roles) & (1 << bit) != 0;
+            return server.overwritten(&overwrites, me, &server.marks.roles) & (1 << bit) != 0;
         }
         let _ = (room, overwrites, bit);
         true

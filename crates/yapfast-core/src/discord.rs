@@ -16,6 +16,7 @@ use tokio::{
 };
 #[cfg(feature = "discord")]
 use yapfast_discord::{
+    marked::{ChannelMarks, MarkedChannel, MarkedServer},
     ready::{Access, PRIVATE},
     service::{Discord, Snapshot},
 };
@@ -216,10 +217,11 @@ pub fn index(snapshot: &Snapshot, show_hidden: bool) -> (Vec<Arc<ChatRoom>>, Vec
 }
 
 /// [`index`], kept between snapshots: each server's rooms are made again
-/// only when the server, who is in its voice channels or its listed member
-/// count changed, so a large account's thousands of channels aren't remade
-/// for every change. Rooms and servers that come out the same as before are
-/// kept, so the application's lists go on sharing them.
+/// only when the server, this account's marks in it, who is in its voice
+/// channels or its listed member count changed, so a large account's
+/// thousands of channels aren't remade for every change. Rooms and servers
+/// that come out the same as before are kept, so the application's lists go
+/// on sharing them.
 #[cfg(feature = "discord")]
 #[derive(Default)]
 pub struct Index {
@@ -231,7 +233,9 @@ pub struct Index {
 /// One server's rooms, and what they were made from.
 #[cfg(feature = "discord")]
 struct Indexed {
-    source: Arc<yapfast_discord::ready::Server>,
+    /// Compared by address: the server and its marks are each shared
+    /// between snapshots while they don't change.
+    source: MarkedServer,
     show_hidden: bool,
     premium: u8,
     /// Who was in each of its voice channels with anyone in it, by channel id.
@@ -281,11 +285,12 @@ impl Indexed {
     fn current(
         &self,
         snapshot: &Snapshot,
-        server: &Arc<yapfast_discord::ready::Server>,
+        server: &MarkedServer,
         show_hidden: bool,
         premium: u8,
     ) -> bool {
-        Arc::ptr_eq(&self.source, server)
+        Arc::ptr_eq(&self.source.server, &server.server)
+            && Arc::ptr_eq(&self.source.marks, &server.marks)
             && self.show_hidden == show_hidden
             && self.premium == premium
             && self.listed.as_ref() == Self::listed(snapshot, server)
@@ -394,13 +399,15 @@ impl Index {
 #[cfg(feature = "discord")]
 const DISCORD_EPOCH: u64 = 1_420_070_400_000;
 
-/// A thread of `server` as a list of its threads shows it, naming people as
-/// `names` knows them; none for a channel that isn't a thread.
+/// A thread of `server` with its `marks` as a list of its threads shows
+/// it, naming people as `names` knows them; none for a channel that isn't a
+/// thread.
 #[cfg(feature = "discord")]
 pub fn listed_thread(
     server: &yapfast_discord::ready::Server,
     names: &yapfast_discord::message::Names,
     thread: &yapfast_discord::ready::Channel,
+    marks: ChannelMarks,
 ) -> Option<chat::ListedThread> {
     let details = thread.thread.as_deref()?;
     let last = details
@@ -438,8 +445,8 @@ pub fn listed_thread(
         tags: details.tags.clone(),
         pinned: details.pinned,
         replies: details.messages,
-        opened: details.opened,
-        unread: details.opened && thread.unread,
+        opened: marks.opened,
+        unread: marks.opened && marks.unread,
         created_ms: (thread.id.parse::<u64>().unwrap_or_default() >> 22) + DISCORD_EPOCH,
     })
 }
@@ -597,16 +604,16 @@ fn dm_rooms(snapshot: &Snapshot, premium: u8, me: &str) -> Vec<ChatRoom> {
 #[cfg(feature = "discord")]
 fn server_rooms(
     snapshot: &Snapshot,
-    server: &yapfast_discord::ready::Server,
+    server: &MarkedServer,
     show_hidden: bool,
     premium: u8,
 ) -> (Vec<ChatRoom>, ChatServer) {
     let me = snapshot.user_id.as_deref().unwrap_or_default();
-    let text = server.text_channels.iter().map(|channel| (false, channel));
-    let voice = server.voice_channels.iter().map(|channel| (true, channel));
+    let text = server.text_channels().map(|channel| (false, channel));
+    let voice = server.voice_channels().map(|channel| (true, channel));
     let mut listed: Vec<_> = text
         .chain(voice)
-        .filter(|(_, channel)| show_hidden || channel.access != Access::Hidden)
+        .filter(|(_, channel)| show_hidden || channel.marks.access != Access::Hidden)
         .collect();
     let mut rooms = Vec::with_capacity(listed.len());
     listed.sort_by_cached_key(|(voice, channel)| {
@@ -620,18 +627,19 @@ fn server_rooms(
     // Threads list under their channels, as in Discord's client: those this
     // account is in that are still active, while they're new enough, unread
     // and not muted, or mention it; and those on screen.
-    let mut threads: std::collections::HashMap<&str, Vec<&yapfast_discord::ready::Channel>> =
+    let mut threads: std::collections::HashMap<&str, Vec<MarkedChannel>> =
         std::collections::HashMap::new();
-    for thread in &server.threads {
+    for thread in server.threads() {
         let Some(details) = thread.thread.as_deref() else {
             continue;
         };
-        let relevant = !details.quiet || thread.unread && !thread.muted || thread.mentions > 0;
+        let marks = thread.marks;
+        let relevant = !marks.quiet || marks.unread && !marks.muted || marks.mentions > 0;
         let shown = details.joined && !details.archived && relevant
             || snapshot.viewing.contains(&thread.id);
         if shown
-            && thread.access != Access::Hidden
-            && let Some(parent) = thread.parent.as_deref()
+            && marks.access != Access::Hidden
+            && let Some(parent) = thread.channel.parent.as_deref()
         {
             threads.entry(parent).or_default().push(thread);
         }
@@ -640,8 +648,8 @@ fn server_rooms(
     // by their own position, voice channels after text ones.
     let mut pinned: Vec<_> = listed
         .iter()
-        .filter(|(_, channel)| server.notifications.of(&channel.id).pinned())
-        .map(|&(voice, channel)| (voice, channel.position, &channel.id))
+        .filter(|(_, channel)| server.marks.notifications.of(&channel.id).pinned())
+        .map(|&(voice, channel)| (voice, channel.position, &channel.channel.id))
         .collect();
     pinned.sort_unstable();
     let pinned = pinned
@@ -656,15 +664,16 @@ fn server_rooms(
     let follows_only = server.follows_only();
     let unlisted = |channel: &yapfast_discord::ready::Channel| {
         follows_only
-            && !server.notifications.of(&channel.id).pinned()
+            && !server.marks.notifications.of(&channel.id).pinned()
             && !server
+                .marks
                 .notifications
                 .follows(&channel.id, channel.parent.as_deref())
     };
     let mut channels = Vec::new();
     // A category's channels come together, and share its room id.
     let mut shared: Option<(&str, Arc<str>)> = None;
-    for (voice, channel) in listed {
+    for (voice, MarkedChannel { channel, marks }) in listed {
         let id = room_id(&server.id, &channel.id);
         let category = server.category(channel);
         let category_id = category
@@ -694,14 +703,14 @@ fn server_rooms(
                     .voice
                     .get(&channel.id)
                     .map_or(0, |members| members.len() as u64),
-                unread: u64::from(channel.unread),
-                mentions: channel.mentions,
-                muted: channel.muted,
-                last_read: read_item(channel.last_read),
-                locked: channel.access == Access::Hidden,
-                join_locked: channel.access != Access::Join,
-                read_only: !server.may_send(channel, me, &server.my_roles),
-                slowed: server.slowed(channel, me, &server.my_roles),
+                unread: u64::from(marks.unread),
+                mentions: marks.mentions,
+                muted: marks.muted,
+                last_read: read_item(marks.last_read),
+                locked: marks.access == Access::Hidden,
+                join_locked: marks.access != Access::Join,
+                read_only: !server.may_send(channel, me, &server.marks.roles),
+                slowed: server.slowed(channel, me, &server.marks.roles),
                 timed_out_until: server.my_timeout.as_ref().map(|timeout| timeout.until),
                 category,
                 category_id: category_id.clone(),
@@ -739,15 +748,15 @@ fn server_rooms(
                     .as_ref()
                     .filter(|(listed, _)| *listed == channel.id)
                     .map_or(0, |(_, count)| *count),
-                unread: u64::from(channel.unread),
-                mentions: channel.mentions,
+                unread: u64::from(marks.unread),
+                mentions: marks.mentions,
                 // Muted itself or through its category.
-                muted: channel.muted,
-                last_read: read_item(channel.last_read),
-                locked: channel.access == Access::Hidden,
+                muted: marks.muted,
+                last_read: read_item(marks.last_read),
+                locked: marks.access == Access::Hidden,
                 join_locked: false,
-                read_only: channel.access == Access::Locked,
-                slowed: server.slowed(channel, me, &server.my_roles),
+                read_only: marks.access == Access::Locked,
+                slowed: server.slowed(channel, me, &server.marks.roles),
                 timed_out_until: server.my_timeout.as_ref().map(|timeout| timeout.until),
                 category,
                 category_id: category_id.clone(),
@@ -784,12 +793,12 @@ fn server_rooms(
         name: server.name.clone(),
         channels,
         discord: true,
-        muted: server.muted,
+        muted: server.marks.muted,
         unavailable: server.unavailable,
         icon: server.icon.clone(),
         // Index::update sets it, since a folder changes without its servers.
         folder: None,
-        hide_muted: server.notifications.hide_muted_channels,
+        hide_muted: server.marks.notifications.hide_muted_channels,
         community: server.community,
         pinned,
     };
@@ -799,8 +808,8 @@ fn server_rooms(
 /// A thread as it lists under `parent`, its channel's room.
 #[cfg(feature = "discord")]
 fn thread_room(
-    server: &yapfast_discord::ready::Server,
-    thread: &yapfast_discord::ready::Channel,
+    server: &MarkedServer,
+    thread: MarkedChannel,
     parent: &ChatRoom,
     me: &str,
     premium: u8,
@@ -815,15 +824,15 @@ fn thread_room(
         encrypted: false,
         // Its member list is its channel's.
         members: 0,
-        unread: u64::from(thread.unread),
-        mentions: thread.mentions,
-        muted: thread.muted,
-        last_read: read_item(thread.last_read),
+        unread: u64::from(thread.marks.unread),
+        mentions: thread.marks.mentions,
+        muted: thread.marks.muted,
+        last_read: read_item(thread.marks.last_read),
         locked: false,
         join_locked: false,
         // Locked, or this account may not write in threads here.
-        read_only: thread.access == Access::Locked,
-        slowed: server.slowed(thread, me, &server.my_roles),
+        read_only: thread.marks.access == Access::Locked,
+        slowed: server.slowed(&thread, me, &server.marks.roles),
         timed_out_until: server.my_timeout.as_ref().map(|timeout| timeout.until),
         category: parent.category.clone(),
         category_id: parent.category_id.clone(),
@@ -976,9 +985,37 @@ impl Pictures {
 
 #[cfg(all(test, feature = "discord"))]
 mod tests {
-    use yapfast_discord::ready::{Channel, Server};
+    use yapfast_discord::{
+        marked::ServerMarks,
+        ready::{Channel, Server},
+    };
 
     use super::*;
+
+    /// `server` with the marks `marks` names for its channels by id, and
+    /// the defaults for the rest.
+    fn marked(server: Server, marks: &[(&str, ChannelMarks)]) -> MarkedServer {
+        MarkedServer::marked(server, ServerMarks::default(), |channel| {
+            marks
+                .iter()
+                .find(|(id, _)| *id == channel.id)
+                .map_or_else(ChannelMarks::default, |(_, marks)| *marks)
+        })
+    }
+
+    /// `server` with `threads` and their marks.
+    fn with_threads(mut server: Server, threads: Vec<(Channel, ChannelMarks)>) -> MarkedServer {
+        let marks: Vec<(String, ChannelMarks)> = threads
+            .iter()
+            .map(|(thread, marks)| (thread.id.clone(), *marks))
+            .collect();
+        server.threads = threads.into_iter().map(|(thread, _)| thread).collect();
+        let marks: Vec<(&str, ChannelMarks)> = marks
+            .iter()
+            .map(|(id, marks)| (id.as_str(), *marks))
+            .collect();
+        marked(server, &marks)
+    }
 
     #[test]
     fn picture_downloads_back_off_together() {
@@ -1036,7 +1073,7 @@ mod tests {
             ..Default::default()
         };
         let snapshot = Snapshot {
-            servers: vec![Arc::new(server)],
+            servers: vec![MarkedServer::from(server)],
             ..Default::default()
         };
         let (rooms, _) = index(&snapshot, false);
@@ -1058,18 +1095,24 @@ mod tests {
 
     #[test]
     fn lists_threads_under_their_channel() {
-        let thread = |id: &str, parent: &str, joined, archived, access| Channel {
-            id: id.into(),
-            name: format!("thread {id}"),
-            parent: Some(parent.into()),
-            access,
-            unread: true,
-            thread: Some(Box::new(yapfast_discord::ready::Thread {
-                joined,
-                archived,
+        let thread = |id: &str, parent: &str, joined, archived, access| {
+            let thread = Channel {
+                id: id.into(),
+                name: format!("thread {id}"),
+                parent: Some(parent.into()),
+                thread: Some(Box::new(yapfast_discord::ready::Thread {
+                    joined,
+                    archived,
+                    ..Default::default()
+                })),
                 ..Default::default()
-            })),
-            ..Default::default()
+            };
+            let marks = ChannelMarks {
+                access,
+                unread: true,
+                ..Default::default()
+            };
+            (thread, marks)
         };
         let channel = |id: &str| Channel {
             id: id.into(),
@@ -1080,14 +1123,6 @@ mod tests {
         let server = Server {
             id: "10".into(),
             text_channels: vec![channel("21"), channel("22")],
-            threads: vec![
-                thread("44", "21", true, false, Access::Join),
-                // Archived, not joined, or hidden, it doesn't list.
-                thread("43", "21", true, true, Access::Join),
-                thread("42", "22", false, false, Access::Join),
-                thread("41", "22", true, false, Access::Hidden),
-                thread("40", "22", true, false, Access::Locked),
-            ],
             categories: Arc::new(
                 [(
                     "1".to_owned(),
@@ -1100,8 +1135,19 @@ mod tests {
             ),
             ..Default::default()
         };
+        let server = with_threads(
+            server,
+            vec![
+                thread("44", "21", true, false, Access::Join),
+                // Archived, not joined, or hidden, it doesn't list.
+                thread("43", "21", true, true, Access::Join),
+                thread("42", "22", false, false, Access::Join),
+                thread("41", "22", true, false, Access::Hidden),
+                thread("40", "22", true, false, Access::Locked),
+            ],
+        );
         let first = Snapshot {
-            servers: vec![Arc::new(server)],
+            servers: vec![server],
             ..Default::default()
         };
         let listed = |rooms: &[Arc<ChatRoom>]| -> Vec<(String, Option<String>, bool)> {
@@ -1144,19 +1190,25 @@ mod tests {
 
     #[test]
     fn a_quiet_thread_lists_only_while_unread_mentioned_or_on_screen() {
-        let thread = |id: &str, unread, muted, mentions| Channel {
-            id: id.into(),
-            name: format!("thread {id}"),
-            parent: Some("21".into()),
-            unread,
-            muted,
-            mentions,
-            thread: Some(Box::new(yapfast_discord::ready::Thread {
-                joined: true,
+        let thread = |id: &str, unread, muted, mentions| {
+            let thread = Channel {
+                id: id.into(),
+                name: format!("thread {id}"),
+                parent: Some("21".into()),
+                thread: Some(Box::new(yapfast_discord::ready::Thread {
+                    joined: true,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+            let marks = ChannelMarks {
+                unread,
+                muted,
+                mentions,
                 quiet: id != "45",
                 ..Default::default()
-            })),
-            ..Default::default()
+            };
+            (thread, marks)
         };
         let server = Server {
             id: "10".into(),
@@ -1165,7 +1217,11 @@ mod tests {
                 name: "21".into(),
                 ..Default::default()
             }],
-            threads: vec![
+            ..Default::default()
+        };
+        let server = with_threads(
+            server,
+            vec![
                 // Not quiet yet.
                 thread("45", false, false, 0),
                 // Quiet: unread, or mentioning this account even when muted.
@@ -1175,10 +1231,9 @@ mod tests {
                 thread("42", false, false, 0),
                 thread("41", true, true, 0),
             ],
-            ..Default::default()
-        };
+        );
         let snapshot = Snapshot {
-            servers: vec![Arc::new(server)],
+            servers: vec![server],
             ..Default::default()
         };
         let names = |snapshot: &Snapshot| -> Vec<String> {
@@ -1211,7 +1266,7 @@ mod tests {
             ..Default::default()
         };
         let server = |id: &str, text: &str, voice: &str| {
-            Arc::new(Server {
+            MarkedServer::from(Server {
                 id: id.into(),
                 name: id.into(),
                 text_channels: vec![channel(text)],
@@ -1235,8 +1290,16 @@ mod tests {
             servers: vec![server("10", "11", "12"), server("20", "21", "22")],
             ..Default::default()
         };
-        let mut unread = (*first.servers[1]).clone();
-        unread.text_channels[0].unread = true;
+        let unread = marked(
+            (*first.servers[1].server).clone(),
+            &[(
+                "21",
+                ChannelMarks {
+                    unread: true,
+                    ..Default::default()
+                },
+            )],
+        );
         let changes = [
             // Someone joins a voice channel.
             Snapshot {
@@ -1251,7 +1314,7 @@ mod tests {
             },
             // One server changes; another is gone.
             Snapshot {
-                servers: vec![Arc::new(unread)],
+                servers: vec![unread],
                 ..first.clone()
             },
             // The servers go into a folder, unchanged themselves.
@@ -1294,7 +1357,7 @@ mod tests {
             ..Default::default()
         };
         let first = Snapshot {
-            servers: vec![Arc::new(Server {
+            servers: vec![MarkedServer::from(Server {
                 id: "10".into(),
                 text_channels: vec![channel("11"), channel("12")],
                 ..Default::default()
@@ -1316,13 +1379,16 @@ mod tests {
         };
         assert!(shared(&rooms, &servers, &kept));
         assert!(!kept.update_into(&first, false, &mut rooms, &mut servers));
-        // One channel turns unread: the server's rooms are made again, and
-        // only that one is new.
+        // One channel turns unread: only the server's marks change, its
+        // rooms are made again, and only that one is new.
         let before = rooms.clone();
-        let mut unread = (*first.servers[0]).clone();
-        unread.text_channels[0].unread = true;
+        let mut unread = first.servers[0].clone();
+        Arc::make_mut(&mut unread.marks)
+            .channel_mut(&unread.server, "11")
+            .unwrap()
+            .unread = true;
         let next = Snapshot {
-            servers: vec![Arc::new(unread)],
+            servers: vec![unread],
             ..first.clone()
         };
         assert!(kept.update_into(&next, false, &mut rooms, &mut servers));
@@ -1334,29 +1400,33 @@ mod tests {
 
     #[test]
     fn lists_channels_under_their_server() {
-        let channel = |id: &str, access| Channel {
+        let channel = |id: &str| Channel {
             id: id.into(),
             name: id.into(),
+            ..Default::default()
+        };
+        let access = |access| ChannelMarks {
             access,
             ..Default::default()
         };
         let snapshot = Snapshot {
-            servers: vec![Arc::new(Server {
-                id: "10".into(),
-                name: "Test".into(),
-                text_channels: vec![
-                    channel("21", Access::Join),
-                    channel("22", Access::Locked),
-                    channel("23", Access::Hidden),
-                ],
-                voice_channels: vec![
-                    channel("11", Access::Join),
-                    channel("12", Access::Locked),
-                    channel("13", Access::Hidden),
-                ],
-                icon: Some("icon.png".into()),
-                ..Default::default()
-            })],
+            servers: vec![MarkedServer::marked(
+                Server {
+                    id: "10".into(),
+                    name: "Test".into(),
+                    text_channels: vec![channel("21"), channel("22"), channel("23")],
+                    voice_channels: vec![channel("11"), channel("12"), channel("13")],
+                    icon: Some("icon.png".into()),
+                    ..Default::default()
+                },
+                ServerMarks::default(),
+                // Each server's second channel is locked, its third hidden.
+                |channel| match &channel.id[1..] {
+                    "2" => access(Access::Locked),
+                    "3" => access(Access::Hidden),
+                    _ => access(Access::Join),
+                },
+            )],
             voice: [(
                 "11".to_owned(),
                 vec![yapfast_discord::service::VoiceMember {

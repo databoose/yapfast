@@ -9,10 +9,7 @@ use crate::chat::{NotificationChange, Notifications, Permission, ServerNotificat
 #[cfg(feature = "discord")]
 use crate::chat::NotifyLevel;
 #[cfg(feature = "discord")]
-use yapfast_discord::{
-    notifications::Level,
-    ready::{Server, permission},
-};
+use yapfast_discord::{marked::MarkedServer, notifications::Level, ready::permission};
 
 /// The Discord server and, for a room id, the channel or category a place
 /// names: a server id or a room id.
@@ -71,7 +68,7 @@ impl Application {
     pub(super) fn discord_place<'a>(
         &'a self,
         at: &'a str,
-    ) -> Option<(&'a Server, Option<&'a str>, &'a str)> {
+    ) -> Option<(&'a MarkedServer, Option<&'a str>, &'a str)> {
         let snapshot = self.discord.as_ref()?;
         let (guild, channel) = place(at)?;
         let server = snapshot.servers.iter().find(|server| server.id == guild)?;
@@ -108,8 +105,8 @@ impl Application {
     pub fn may(&self, place: &str, permission: Permission) -> bool {
         #[cfg(feature = "discord")]
         if let Some((server, id, me)) = self.discord_place(place) {
-            let roles = &server.my_roles;
-            let channel = id.and_then(|id| server.channel(id));
+            let roles = &server.marks.roles;
+            let channel = id.and_then(|id| server.server.channel(id));
             let held = match (channel, id) {
                 (Some(channel), _) => server.channel_permissions(channel, me, roles),
                 // A category, or a channel Yapfast doesn't know.
@@ -131,7 +128,7 @@ impl Application {
     pub fn outranks(&self, place: &str, user: &str, roles: &[String]) -> bool {
         #[cfg(feature = "discord")]
         if let Some((server, _, me)) = self.discord_place(place) {
-            return server.outranks(me, &server.my_roles, user, roles);
+            return server.outranks(me, &server.marks.roles, user, roles);
         }
         let _ = (place, user, roles);
         false
@@ -152,7 +149,7 @@ impl Application {
     pub fn may_grant(&self, place: &str, role: &str) -> bool {
         #[cfg(feature = "discord")]
         if let Some((server, _, me)) = self.discord_place(place) {
-            return server.may_grant(me, &server.my_roles, role);
+            return server.may_grant(me, &server.marks.roles, role);
         }
         let _ = (place, role);
         false
@@ -163,7 +160,7 @@ impl Application {
     pub fn notifications(&self, place: &str) -> Option<Notifications> {
         #[cfg(feature = "discord")]
         if let Some((server, channel, _)) = self.discord_place(place) {
-            let settings = &server.notifications;
+            let settings = &server.marks.notifications;
             let now = crate::clock::now_ms();
             let server_level = settings.level.unwrap_or(server.default_level);
             return Some(match channel {
@@ -220,7 +217,7 @@ impl Application {
         let own = self.notifications(server)?;
         #[cfg(feature = "discord")]
         if let Some((known, None, _)) = self.discord_place(server) {
-            let settings = &known.notifications;
+            let settings = &known.marks.notifications;
             return Some(ServerNotifications {
                 own,
                 suppress_everyone: settings.suppress_everyone,

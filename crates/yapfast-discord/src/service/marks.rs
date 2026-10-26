@@ -1,52 +1,23 @@
-//! What a published snapshot marks on each server for this account: access,
-//! mutes and unread state, kept so unchanged servers are shared.
+//! What a published snapshot marks on each server for this account (see
+//! [`crate::marked`]), kept so unchanged servers and marks are shared.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use crate::{
+    marked::{ChannelMarks, MarkedServer, ServerMarks},
     notifications::Notifications,
-    ready::{Access, Channel, Server},
+    ready::{Channel, Server},
     unread::Unreads,
 };
 
-/// A server as a snapshot published it: marked from `source` with `marks`,
-/// for an account with `roles` there, timed out until `timeout`.
+/// A server as a snapshot published it: made from `source`, for an account
+/// timed out there until `timeout`.
 pub(super) struct Published {
     pub(super) source: Arc<Server>,
-    pub(super) roles: Vec<String>,
     pub(super) timeout: Option<u64>,
-    pub(super) marks: Marks,
-    pub(super) marked: Arc<Server>,
-}
-
-/// What [`super::tracker::Tracker::snapshot`] sets on a server for this account: whether
-/// it's muted, its roles there, its notification settings and which mentions
-/// they suppress, then
-/// for each text channel, each voice channel and each thread, in order,
-/// what [`ChannelMarks`] holds.
-#[derive(PartialEq, Eq)]
-pub(super) struct Marks {
-    muted: bool,
-    roles: Vec<String>,
-    /// Shared with the tracker's, and compared by address first.
-    settings: Arc<Notifications>,
-    suppressed: (bool, bool),
-    channels: Vec<ChannelMarks>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct ChannelMarks {
-    access: Access,
-    mention_everyone: bool,
-    muted: bool,
-    unread: bool,
-    mentions: u64,
-    last_read: u64,
-    /// A thread gone quiet; see [`crate::ready::Thread::quiet_at`].
-    quiet: bool,
-    /// A thread this account has a read state of its own in; see
-    /// [`crate::ready::Thread::opened`].
-    opened: bool,
+    /// `source`, or while a timeout lasts a copy of it that carries the
+    /// timeout, with its marks.
+    pub(super) listed: MarkedServer,
 }
 
 /// Whether `channel` is a thread gone quiet at `now`, in Unix milliseconds.
@@ -57,7 +28,9 @@ fn quiet(channel: &Channel, now: u64) -> bool {
         .is_some_and(|thread| thread.quiet_at(&channel.id) <= now)
 }
 
-impl Marks {
+impl ServerMarks {
+    /// What [`super::tracker::Tracker::snapshot`] marks on `server` for
+    /// this account, `me`, with `roles` there.
     pub(super) fn new(
         server: &Server,
         me: &str,
@@ -97,117 +70,91 @@ impl Marks {
                 opened: unreads.opened(&thread.id),
             });
         }
+        let (suppress_everyone, suppress_roles) = unreads.suppressed(&server.id);
         Self {
             muted: unreads.server_muted(&server.id),
             roles: roles.to_vec(),
-            settings: settings(server, unreads),
-            suppressed: unreads.suppressed(&server.id),
+            notifications: settings(server, unreads),
+            suppress_everyone,
+            suppress_roles,
             channels,
         }
     }
 
     /// These marks, made from `server`, with the unread state of its
     /// channels and threads, and which threads are quiet, as they are at
-    /// `now`.
-    pub(super) fn unread(&self, server: &Server, unreads: &Unreads, now: u64) -> Self {
-        let mut channels = self.channels.clone();
+    /// `now`; none when that's all as it was, so nothing is copied.
+    pub(super) fn unread(&self, server: &Server, unreads: &Unreads, now: u64) -> Option<Self> {
+        let mut changed: Option<Vec<ChannelMarks>> = None;
         // In the order of `new`: text channels, voice channels, threads.
-        let written = server
+        let channels = server
             .text_channels
             .iter()
             .chain(&server.voice_channels)
             .chain(&server.threads)
-            .zip(&mut channels);
-        for (channel, marks) in written {
+            .zip(&self.channels)
+            .enumerate();
+        for (at, (channel, was)) in channels {
+            let mut marks = *was;
             (marks.muted, marks.unread, marks.mentions) =
-                unreads.channel(&server.id, channel, marks.access);
+                unreads.channel(&server.id, channel, was.access);
             marks.last_read = unreads.last_read(&server.id, &channel.id);
             marks.quiet = quiet(channel, now);
             marks.opened = channel.thread.is_some() && unreads.opened(&channel.id);
-        }
-        Self {
-            muted: unreads.server_muted(&server.id),
-            roles: self.roles.clone(),
-            settings: settings(server, unreads),
-            suppressed: unreads.suppressed(&server.id),
-            channels,
-        }
-    }
-
-    /// A copy of `server` with these marks.
-    pub(super) fn apply(&self, server: &Server) -> Server {
-        let mut marked = server.clone();
-        marked.muted = self.muted;
-        marked.my_roles.clone_from(&self.roles);
-        marked.notifications = self.settings.clone();
-        (marked.suppress_everyone, marked.suppress_roles) = self.suppressed;
-        let channels = marked
-            .text_channels
-            .iter_mut()
-            .chain(&mut marked.voice_channels)
-            .chain(&mut marked.threads);
-        for (channel, marks) in channels.zip(&self.channels) {
-            channel.access = marks.access;
-            channel.mention_everyone = marks.mention_everyone;
-            channel.muted = marks.muted;
-            channel.unread = marks.unread;
-            channel.mentions = marks.mentions;
-            channel.last_read = marks.last_read;
-            if let Some(thread) = channel.thread.as_deref_mut() {
-                thread.quiet = marks.quiet;
-                thread.opened = marks.opened;
+            if marks != *was {
+                changed.get_or_insert_with(|| self.channels.clone())[at] = marks;
             }
         }
-        marked
+        let muted = unreads.server_muted(&server.id);
+        let notifications = settings(server, unreads);
+        let (suppress_everyone, suppress_roles) = unreads.suppressed(&server.id);
+        let same = changed.is_none()
+            && muted == self.muted
+            && notifications == self.notifications
+            && (suppress_everyone, suppress_roles) == (self.suppress_everyone, self.suppress_roles);
+        (!same).then(|| Self {
+            muted,
+            roles: self.roles.clone(),
+            notifications,
+            suppress_everyone,
+            suppress_roles,
+            channels: changed.unwrap_or_else(|| self.channels.clone()),
+        })
     }
 }
 
 /// The account's notification settings for `server`, the defaults until
 /// Discord sends them.
 fn settings(server: &Server, unreads: &Unreads) -> Arc<Notifications> {
-    unreads
-        .settings(&server.id)
-        .cloned()
-        .unwrap_or_else(|| server.notifications.clone())
+    static DEFAULTS: LazyLock<Arc<Notifications>> = LazyLock::new(Arc::default);
+    unreads.settings(&server.id).unwrap_or(&DEFAULTS).clone()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ready::{Emoji, Overwrite};
 
     #[test]
-    fn a_marked_server_shares_its_roles_emoji_and_overwrites() {
-        let server = Server {
-            id: "10".into(),
-            roles: Arc::new([("10".into(), 0)].into()),
-            role_names: Arc::new([("20".into(), "Mods".into())].into()),
-            emojis: Arc::new(vec![Emoji {
-                id: "5".into(),
-                name: "wave".into(),
-                animated: false,
-                available: true,
-            }]),
-            text_channels: vec![Channel {
-                id: "11".into(),
-                overwrites: Arc::new(vec![Overwrite {
-                    id: "10".into(),
-                    member: false,
-                    allow: 0,
-                    deny: 0,
-                }]),
-                ..Default::default()
-            }],
+    fn marks_are_made_again_only_when_they_change() {
+        let channel = |id: &str| Channel {
+            id: id.into(),
             ..Default::default()
         };
-        let marks = Marks::new(&server, "1", &[], &Unreads::default(), 0);
-        let marked = marks.apply(&server);
-        assert!(Arc::ptr_eq(&marked.roles, &server.roles));
-        assert!(Arc::ptr_eq(&marked.role_names, &server.role_names));
-        assert!(Arc::ptr_eq(&marked.emojis, &server.emojis));
-        assert!(Arc::ptr_eq(
-            &marked.text_channels[0].overwrites,
-            &server.text_channels[0].overwrites
-        ));
+        let server = Server {
+            id: "10".into(),
+            text_channels: vec![channel("11"), channel("12")],
+            voice_channels: vec![channel("13")],
+            ..Default::default()
+        };
+        let unreads = Unreads::default();
+        let marks = ServerMarks::new(&server, "1", &["20".into()], &unreads, 0);
+        assert_eq!(marks.channels.len(), 3);
+        assert_eq!(marks.unread(&server, &unreads, 0), None);
+        // Read since: only that channel's marks change.
+        let mut unread = marks.clone();
+        unread.channels[1].unread = true;
+        let read = unread.unread(&server, &unreads, 0).unwrap();
+        assert_eq!(read, marks);
+        assert_eq!(read.roles, ["20"]);
     }
 }

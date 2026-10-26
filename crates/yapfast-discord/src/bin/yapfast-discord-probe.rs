@@ -82,19 +82,17 @@ async fn servers() -> Result<()> {
     let snapshot = discord.snapshots().borrow().clone();
     for server in &snapshot.servers {
         println!("{} ({})", server.name, server.id);
-        let text = server.text_channels.iter().map(|channel| ("text", channel));
-        let voice = server
-            .voice_channels
-            .iter()
-            .map(|channel| ("voice", channel));
+        let text = server.text_channels().map(|channel| ("text", channel));
+        let voice = server.voice_channels().map(|channel| ("voice", channel));
         for (kind, channel) in text.chain(voice) {
-            let access = match channel.access {
+            let marks = channel.marks;
+            let access = match marks.access {
                 Access::Join => "",
                 Access::Locked if kind == "text" => ", read only",
                 Access::Locked => ", locked",
                 Access::Hidden => ", hidden",
             };
-            let unread = match (channel.unread, channel.mentions, channel.muted) {
+            let unread = match (marks.unread, marks.mentions, marks.muted) {
                 (_, mentions, _) if mentions > 0 => format!(", {mentions} mentions"),
                 (true, ..) => ", unread".into(),
                 (_, _, true) => ", muted".into(),

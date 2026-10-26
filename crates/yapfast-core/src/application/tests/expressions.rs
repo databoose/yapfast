@@ -356,7 +356,7 @@ fn emoji_changed_elsewhere_are_fetched_again() {
         &serde_json::json!([{"id": "8", "name": "new"}]),
     ));
     let mut snapshot = snapshot;
-    snapshot.servers[0] = Arc::new(server);
+    snapshot.servers[0].server = Arc::new(server);
     let effects = app.apply(discord_event(snapshot));
     assert!(effects.iter().any(|effect| matches!(
         effect,

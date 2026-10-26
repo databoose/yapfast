@@ -285,6 +285,7 @@ impl Application {
         #[cfg(feature = "discord")]
         if let Some((server, Some(channel), _)) = self.discord_place(room)
             && let Some(forum) = server
+                .server
                 .channel(channel)
                 .and_then(|channel| channel.forum.as_deref())
         {
@@ -305,7 +306,7 @@ impl Application {
         if let Some((server, Some(channel), _)) = self.discord_place(room)
             && let Some(channel) = server.channel(channel)
         {
-            return channel.last_read;
+            return channel.marks.last_read;
         }
         let _ = room;
         0

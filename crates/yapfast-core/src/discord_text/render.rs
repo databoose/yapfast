@@ -12,9 +12,7 @@ pub(super) fn notification(
     message: &Message,
 ) -> Notification {
     let snapshot = discord.snapshots().borrow().clone();
-    let server = guild
-        .and_then(|guild| snapshot.servers.iter().find(|server| server.id == guild))
-        .map(Arc::as_ref);
+    let server = guild.and_then(|guild| snapshot.servers.iter().find(|server| server.id == guild));
     let author = discord
         .name(
             guild.unwrap_or(yapfast_discord::ready::PRIVATE),
@@ -31,8 +29,9 @@ pub(super) fn notification(
             .unwrap_or_default(),
         content => content,
     };
-    let mut body =
-        crate::chat::notification_text(&crate::spoiler::hide(&discord.render(server, text)));
+    let mut body = crate::chat::notification_text(&crate::spoiler::hide(
+        &discord.render(server.map(|server| &*server.server), text),
+    ));
     if body.is_empty() {
         body = if message
             .attachments
@@ -65,7 +64,10 @@ pub(super) fn notification(
         author,
         body,
         avatar: Some(discord.avatar(guild, &message.author_id)),
-        mention: message.mentions_me(snapshot.user_id.as_deref().unwrap_or_default(), server),
+        mention: message.mentions_me(
+            snapshot.user_id.as_deref().unwrap_or_default(),
+            server.map(|server| &*server.marks),
+        ),
     }
 }
 
@@ -267,7 +269,7 @@ pub(super) fn found_in(discord: &Discord, room: &str, messages: &[Message]) -> V
     let snapshot = discord.snapshots().borrow().clone();
     let server = discord::parse_room(room)
         .and_then(|(guild, _)| snapshot.servers.iter().find(|server| server.id == guild))
-        .map(Arc::as_ref);
+        .map(|server| &*server.server);
     messages
         .iter()
         .map(|message| found(discord, server, message))
@@ -282,7 +284,7 @@ pub(super) fn hits_in(discord: &Discord, guild: &str, messages: &[Message]) -> V
         .servers
         .iter()
         .find(|server| server.id == guild)
-        .map(Arc::as_ref);
+        .map(|server| &*server.server);
     messages
         .iter()
         .map(|message| SearchHit {
@@ -367,7 +369,7 @@ pub(super) fn send_topic(
         .servers
         .iter()
         .find(|server| server.id == channel.guild)
-        .map(Arc::as_ref);
+        .map(|server| &*server.server);
     let raw = server
         .and_then(|server| {
             server
@@ -409,11 +411,7 @@ fn topic(
 /// A forum's topic, its post guidelines, by server and channel id.
 pub(super) fn forum_topic(discord: &Discord, guild: &str, forum: &str) -> Option<Arc<Topic>> {
     let snapshot = discord.snapshots().borrow().clone();
-    let server = snapshot
-        .servers
-        .iter()
-        .find(|server| server.id == guild)
-        .map(Arc::as_ref)?;
+    let server = snapshot.servers.iter().find(|server| server.id == guild)?;
     let raw = server.channel(forum)?.topic.clone()?;
     Some(topic(discord, Some(server), &raw))
 }
@@ -466,7 +464,7 @@ pub(super) fn mention_groups(discord: &Discord, room: &str) -> Vec<MentionGroup>
     // A voice channel's chat may mention everyone too.
     let everyone = server
         .channel(channel)
-        .is_some_and(|known| known.mention_everyone);
+        .is_some_and(|known| known.marks.mention_everyone);
     let mut groups = Vec::new();
     if everyone {
         for name in ["everyone", "here"] {
@@ -502,7 +500,7 @@ pub(super) fn chat_profile(
         .servers
         .iter()
         .find(|server| server.id == guild)
-        .map(Arc::as_ref);
+        .map(|server| &*server.server);
     Profile {
         name: profile.name,
         avatar: Some(profile.avatar),

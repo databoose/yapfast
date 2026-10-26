@@ -119,7 +119,7 @@ fn permissions_change_as_discords_client_lets_them_and_save_one_at_a_time() {
 
     // A snapshot from before Discord's CHANNEL_UPDATE doesn't undo it; one
     // with a change made elsewhere does show.
-    change_server(&mut app, |server| server.my_roles = vec!["20".into()]);
+    change_marks(&mut app, |_, marks| marks.roles = vec!["20".into()]);
     assert_eq!(app.listed_overwrites(), [everyone]);
     change_server(&mut app, |server| {
         server.put_channel(&serde_json::json!({

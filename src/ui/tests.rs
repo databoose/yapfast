@@ -282,7 +282,7 @@ fn files_dropped_on_the_window_stage_or_say_why_not() {
 #[test]
 #[cfg(feature = "discord")]
 fn files_dropped_on_the_thread_beside_go_with_its_message() {
-    let (window, adapter, folder) = discord_server_window_changed(0, |server| {
+    let (window, adapter, folder) = discord_server_window_changed(0, |server, _| {
         server
             .threads
             .push(yapfast_core::yapfast_discord::ready::Channel {
@@ -3405,6 +3405,7 @@ fn discord_server_adapter(
     directory: &std::path::Path,
 ) -> Rc<RefCell<Adapter>> {
     use yapfast_discord::{
+        marked::{ChannelMarks, MarkedServer, ServerMarks},
         notifications::{Level, Mute, Notifications as Settings, Override},
         ready,
         service::{Snapshot, Status},
@@ -3416,7 +3417,7 @@ fn discord_server_adapter(
     )
     .unwrap();
     bind_callbacks(window, &adapter);
-    let mut server = ready::server(&serde_json::json!({
+    let server = ready::server(&serde_json::json!({
         "id": "10", "owner_id": "99",
         "properties": {"name": "Test", "default_message_notifications": 1},
         "roles": [{"id": "10", "name": "@everyone", "position": 0, "permissions": "3072"}],
@@ -3427,7 +3428,7 @@ fn discord_server_adapter(
         ],
     }))
     .unwrap();
-    server.notifications = Arc::new(Settings {
+    let notifications = Arc::new(Settings {
         overrides: [(
             "12".to_owned(),
             Override {
@@ -3442,14 +3443,25 @@ fn discord_server_adapter(
         .into(),
         ..Default::default()
     });
-    server.text_channels[1].muted = true;
+    let muted = server.text_channels[1].id.clone();
+    let server = MarkedServer::marked(
+        server,
+        ServerMarks {
+            notifications,
+            ..Default::default()
+        },
+        |channel| ChannelMarks {
+            muted: channel.id == muted,
+            ..Default::default()
+        },
+    );
     adapter
         .borrow_mut()
         .app
         .apply(yapfast_core::chat::Event::Discord(Arc::new(Snapshot {
             status: Status::Online,
             user_id: Some("1".into()),
-            servers: vec![Arc::new(server)],
+            servers: vec![server],
             ..Default::default()
         })));
     adapter
@@ -3623,16 +3635,20 @@ fn discord_server_window() -> (YapfastWindow, Rc<RefCell<Adapter>>, tempfile::Te
 fn discord_server_window_granting(
     extra: u64,
 ) -> (YapfastWindow, Rc<RefCell<Adapter>>, tempfile::TempDir) {
-    discord_server_window_changed(extra, |_| {})
+    discord_server_window_changed(extra, |_, _| {})
 }
 
 /// [`discord_server_window_granting`], with `change` made to the server.
 #[cfg(feature = "discord")]
 fn discord_server_window_changed(
     extra: u64,
-    change: impl FnOnce(&mut yapfast_core::yapfast_discord::ready::Server),
+    change: impl FnOnce(
+        &mut yapfast_core::yapfast_discord::ready::Server,
+        &mut yapfast_core::yapfast_discord::marked::ServerMarks,
+    ),
 ) -> (YapfastWindow, Rc<RefCell<Adapter>>, tempfile::TempDir) {
     use yapfast_core::yapfast_discord::{
+        marked::{MarkedServer, ServerMarks},
         notifications::Notifications,
         ready::{self, permission},
         service::{Snapshot, Status},
@@ -3664,20 +3680,27 @@ fn discord_server_window_changed(
         ],
     }))
     .unwrap();
-    server.notifications = Arc::new(Notifications {
-        hide_muted_channels: true,
-        suppress_roles: true,
+    let mut marks = ServerMarks {
+        notifications: Arc::new(Notifications {
+            hide_muted_channels: true,
+            suppress_roles: true,
+            ..Default::default()
+        }),
         ..Default::default()
-    });
-    server.text_channels[0].mentions = 1;
-    change(&mut server);
+    };
+    let general = server.text_channels[0].id.clone();
+    marks.channel_mut(&server, &general).unwrap().mentions = 1;
+    change(&mut server, &mut marks);
     adapter
         .borrow_mut()
         .app
         .apply(Event::Discord(Arc::new(Snapshot {
             status: Status::Online,
             user_id: Some("1".into()),
-            servers: vec![Arc::new(server)],
+            servers: vec![MarkedServer {
+                server: Arc::new(server),
+                marks: Arc::new(marks),
+            }],
             ..Default::default()
         })));
     (window, adapter, directory)
@@ -3821,7 +3844,7 @@ fn discord_categories_head_their_channels_and_open_their_menus() {
 #[test]
 #[cfg(feature = "discord")]
 fn categories_of_the_same_name_head_and_fold_their_own_channels() {
-    let (window, adapter, _directory) = discord_server_window_changed(0, |server| {
+    let (window, adapter, _directory) = discord_server_window_changed(0, |server, _| {
         Arc::make_mut(&mut server.categories)
             .get_mut("5")
             .unwrap()
@@ -3855,8 +3878,8 @@ fn categories_of_the_same_name_head_and_fold_their_own_channels() {
 #[cfg(feature = "discord")]
 fn pinned_channels_leave_their_categories_for_the_top() {
     use yapfast_core::yapfast_discord::notifications::{Notifications, Override};
-    let (window, adapter, _directory) = discord_server_window_changed(0, |server| {
-        let mut settings = Notifications::clone(&server.notifications);
+    let (window, adapter, _directory) = discord_server_window_changed(0, |_, marks| {
+        let mut settings = Notifications::clone(&marks.notifications);
         settings.overrides.insert(
             "11".into(),
             Override {
@@ -3864,7 +3887,7 @@ fn pinned_channels_leave_their_categories_for_the_top() {
                 ..Default::default()
             },
         );
-        server.notifications = Arc::new(settings);
+        marks.notifications = Arc::new(settings);
     });
     {
         // A category of that name folding doesn't fold the pinned ones.
@@ -3920,13 +3943,14 @@ fn pinned_channels_leave_their_categories_for_the_top() {
 #[cfg(feature = "discord")]
 fn a_community_server_lists_the_channels_followed_and_offers_following() {
     use yapfast_core::yapfast_discord::notifications::Notifications;
-    let (window, adapter, _directory) = discord_server_window_changed(0, |server| {
-        let mut settings = Notifications::clone(&server.notifications);
+    let (window, adapter, _directory) = discord_server_window_changed(0, |server, marks| {
+        let mut settings = Notifications::clone(&marks.notifications);
         settings.flags = 1 << 14;
-        server.notifications = Arc::new(settings);
+        marks.notifications = Arc::new(settings);
         server.community = true;
-        server.text_channels[0].mentions = 0;
-        server.text_channels[0].unread = true;
+        let general = marks.channel_mut(server, "11").unwrap();
+        general.mentions = 0;
+        general.unread = true;
     });
     window.invoke_navigate_server("discord:10".into());
     let rail = window.get_servers();
@@ -3978,7 +4002,7 @@ fn a_community_server_lists_the_channels_followed_and_offers_following() {
 #[test]
 #[cfg(feature = "discord")]
 fn browse_channels_opens_from_a_community_servers_list_and_searches() {
-    let (window, _adapter, _directory) = discord_server_window_changed(0, |server| {
+    let (window, _adapter, _directory) = discord_server_window_changed(0, |server, _| {
         server.community = true;
         server.text_channels[0].topic = Some("Say **hi**".into());
     });
@@ -4833,7 +4857,7 @@ fn members_and_invites_list_as_discords_pages_do() {
     };
     let (window, adapter, _directory) = discord_server_window_changed(
         permission::KICK_MEMBERS | permission::MANAGE_GUILD | permission::CREATE_INSTANT_INVITE,
-        |server| {
+        |server, _| {
             server.put_role(
                 &serde_json::json!({"id": "20", "name": "Mods", "position": 2,
                                                 "color": 0x3498db, "permissions": "0"}),
@@ -5005,7 +5029,7 @@ fn members_and_invites_list_as_discords_pages_do() {
 #[test]
 fn delete_server_ends_the_owners_sidebar_and_asks_for_the_name() {
     use slint::Model;
-    let (window, _adapter, _directory) = discord_server_window_changed(0, |server| {
+    let (window, _adapter, _directory) = discord_server_window_changed(0, |server, _| {
         server.owner_id = Some("1".into());
     });
     window.invoke_prepare_menu("header:discord:10".into(), false);
@@ -5045,7 +5069,7 @@ fn emoji_and_stickers_show_as_discords_pages_do() {
         yapfast_discord::ready::permission,
     };
     let (window, adapter, _directory) =
-        discord_server_window_changed(permission::CREATE_GUILD_EXPRESSIONS, |_| {});
+        discord_server_window_changed(permission::CREATE_GUILD_EXPRESSIONS, |_, _| {});
     window.invoke_prepare_menu("header:discord:10".into(), false);
     window.invoke_choose_menu("header:discord:10".into(), false, "server-settings".into());
     let rows: Vec<String> = window
@@ -5186,8 +5210,8 @@ fn roles_lock_what_ranks_above_her_and_the_permissions_she_lacks() {
     };
     // She holds Staff, which may kick.
     let (window, adapter, _directory) =
-        discord_server_window_changed(permission::MANAGE_ROLES, |server| {
-            server.my_roles = vec!["20".into()];
+        discord_server_window_changed(permission::MANAGE_ROLES, |server, marks| {
+            marks.roles = vec!["20".into()];
             Arc::make_mut(&mut server.role_positions).insert("20".into(), 2);
             Arc::make_mut(&mut server.roles).insert("20".into(), permission::KICK_MEMBERS);
         });
