@@ -736,6 +736,16 @@ impl Server {
             return;
         }
         self.forget(id);
+        self.add_channel(channel);
+        self.sort_channels();
+    }
+
+    /// Adds a channel or category from a channel object, where the lists
+    /// end: one not known yet, for [`Self::sort_channels`] to place.
+    fn add_channel(&mut self, channel: &Value) {
+        let Some(id) = channel["id"].as_str() else {
+            return;
+        };
         match channel["type"].as_u64() {
             // A forum lists among the text channels, as in Discord's client.
             Some(GUILD_TEXT | GUILD_ANNOUNCEMENT | GUILD_FORUM) => {
@@ -760,7 +770,6 @@ impl Server {
             }
             _ => {}
         }
-        self.sort_channels();
     }
 
     /// Puts channels and categories where `placements` say, as the
@@ -809,7 +818,10 @@ impl Server {
     fn forget(&mut self, id: &str) {
         self.text_channels.retain(|channel| channel.id != id);
         self.voice_channels.retain(|channel| channel.id != id);
-        Arc::make_mut(&mut self.categories).remove(id);
+        // Only a category's: a snapshot may share them, and they'd be copied.
+        if self.categories.contains_key(id) {
+            Arc::make_mut(&mut self.categories).remove(id);
+        }
     }
 
     /// Adds or replaces a thread from a channel object. One without
@@ -904,19 +916,29 @@ impl Server {
 
     /// Discord's order: by category, then by position.
     fn sort_channels(&mut self) {
-        let mut text = std::mem::take(&mut self.text_channels);
-        let mut voice = std::mem::take(&mut self.voice_channels);
-        let key = |channel: &Channel| {
-            (
-                self.category_order(channel),
-                channel.position,
-                channel.id.clone(),
-            )
-        };
-        text.sort_by_cached_key(key);
-        voice.sort_by_cached_key(key);
-        self.text_channels = text;
-        self.voice_channels = voice;
+        let text = self.order(&self.text_channels);
+        let voice = self.order(&self.voice_channels);
+        permute(&mut self.text_channels, text);
+        permute(&mut self.voice_channels, voice);
+    }
+
+    /// Where each of `channels` was, in Discord's order: the keys borrow
+    /// their ids, as [`Self::category_order`]'s copies would cost a large
+    /// server two allocations a channel on each sort.
+    fn order(&self, channels: &[Channel]) -> Vec<usize> {
+        let mut keys: Vec<_> = channels
+            .iter()
+            .enumerate()
+            .map(|(at, channel)| {
+                // Channels outside categories first, as category_order has it.
+                let category = self
+                    .category(channel)
+                    .map(|category| (category.position, channel.parent.as_deref()));
+                (category, channel.position, channel.id.as_str(), at)
+            })
+            .collect();
+        keys.sort_unstable();
+        keys.into_iter().map(|(.., at)| at).collect()
     }
 
     /// A text or voice channel's name, or a thread's.
@@ -1266,22 +1288,49 @@ pub fn server(guild: &Value) -> Option<Server> {
         server.put_role(role);
     }
     let channels = guild["channels"].as_array().into_iter().flatten();
-    // Categories first, so the channels in them sort by their position.
-    let (categories, channels): (Vec<_>, Vec<_>) =
-        channels.partition(|channel| channel["type"].as_u64() == Some(GUILD_CATEGORY));
-    for channel in categories.into_iter().chain(channels) {
-        server.put_channel(channel);
-    }
-    // A user account hears only of the active threads it joined.
-    for thread in guild["threads"].as_array().into_iter().flatten() {
-        server.put_thread(thread);
-        if let Some(id) = thread["id"].as_str()
-            && let Some(thread) = server.thread_mut(id)
-        {
-            thread.joined = true;
+    // Sorted once all are in: one sort a channel, each copying every key,
+    // took 10.7 ms for a server of 500 channels.
+    for channel in channels {
+        if is_thread(channel) {
+            server.put_thread(channel);
+        } else {
+            server.add_channel(channel);
         }
     }
+    server.sort_channels();
+    // A user account hears only of the active threads it joined. The newest
+    // first, as put_thread keeps them.
+    let mut threads: Vec<Channel> = guild["threads"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(parse_thread)
+        .collect();
+    for details in threads
+        .iter_mut()
+        .filter_map(|thread| thread.thread.as_deref_mut())
+    {
+        details.joined = true;
+    }
+    threads.append(&mut server.threads);
+    threads.sort_by_cached_key(|thread| std::cmp::Reverse(thread.id.parse::<u64>().unwrap_or(0)));
+    threads.dedup_by(|later, earlier| later.id == earlier.id);
+    server.threads = threads;
     Some(server)
+}
+
+/// Reorders `list` to hold what was at each of `order` in turn, as
+/// `sort_by_cached_key` applies its sorted indices.
+fn permute<T>(list: &mut [T], mut order: Vec<usize>) {
+    for at in 0..list.len() {
+        let mut from = order[at];
+        // What was there has moved on already, to where `from` was.
+        while from < at {
+            from = order[from];
+        }
+        order[at] = from;
+        list.swap(at, from);
+    }
 }
 
 /// Whether a channel object is a thread.
