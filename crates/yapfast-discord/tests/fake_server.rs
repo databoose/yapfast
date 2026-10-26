@@ -1,6 +1,7 @@
-//! Yapfast's Discord service against testing/fake_discord.ts. Start the fake
-//! server, then run with YAPFAST_DISCORD_TEST_SERVER pointing at it:
-//! `cargo test -p yapfast-discord --test fake_server -- --ignored`.
+//! Yapfast's Discord service against testing/fake_discord.ts. Each test
+//! starts the fake afresh with bun on the port YAPFAST_DISCORD_TEST_SERVER
+//! names, one test at a time; `scripts/test-fake-discord [FILTER]` picks
+//! the port and runs them.
 
 use std::{sync::Arc, time::Duration};
 
@@ -512,18 +513,37 @@ fn control(server: &str, method: &str, path: &str, body: &str) -> String {
         body.len()
     )
     .unwrap();
-    let mut answer = String::new();
-    connection.read_to_string(&mut answer).unwrap();
-    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
-    answer
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body.to_owned())
-        .unwrap_or_default()
+    // Read the body by its length: Bun can leave the connection open after
+    // an async handler's answer until its idle timeout, about 10 seconds.
+    let mut answer = Vec::new();
+    let mut byte = [0_u8];
+    while !answer.ends_with(b"\r\n\r\n") {
+        connection.read_exact(&mut byte).unwrap();
+        answer.push(byte[0]);
+    }
+    let head = String::from_utf8(answer).unwrap();
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    let length = head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().unwrap())
+    });
+    let mut body = Vec::new();
+    match length {
+        Some(length) => {
+            body.resize(length, 0);
+            connection.read_exact(&mut body).unwrap();
+        }
+        None => {
+            connection.read_to_end(&mut body).unwrap();
+        }
+    }
+    String::from_utf8(body).unwrap()
 }
 
-/// The presence Alice's session last sent the fake. Yapfast keeps to
-/// Discord's 5 presence updates in 20 seconds, plus up to two 10-second
-/// detection scans when a game exits.
+/// The presence Alice's session last sent the fake. Against it, Yapfast
+/// holds presence updates back for 300 ms rather than Discord's 20 seconds,
+/// and looks for games every half second rather than 15.
 async fn presence_where(server: &str, check: impl Fn(&serde_json::Value) -> bool) {
     timeout(WAIT + Duration::from_secs(40), async {
         loop {
@@ -843,47 +863,128 @@ fn waits_as_detected_game() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs testing/fake_discord.ts and YAPFAST_DISCORD_TEST_SERVER"]
-async fn talks_to_the_fake_server() {
-    let server = client::test_server().expect("set YAPFAST_DISCORD_TEST_SERVER");
-    let token = token::load().unwrap();
-    assert_eq!(token, client::TEST_TOKEN);
-    let discord = Discord::start(token).unwrap();
+/// The fake Discord, started afresh for each test on the port
+/// YAPFAST_DISCORD_TEST_SERVER names, so no test sees what another left.
+/// Tests take turns at it.
+struct Fake {
+    process: std::process::Child,
+    _turn: tokio::sync::MutexGuard<'static, ()>,
+}
 
-    // READY, then the voice states from READY_SUPPLEMENTAL.
-    let snapshot = snapshot_where(&discord, |snapshot| {
-        snapshot.status == Status::Online && !snapshot.voice.is_empty()
-    })
-    .await;
+impl Drop for Fake {
+    fn drop(&mut self) {
+        let _ = self.process.kill();
+        let _ = self.process.wait();
+    }
+}
+
+/// A test's fake Discord and Alice's session on it, once READY and its
+/// voice states have arrived.
+struct Fixture {
+    _fake: Fake,
+    discord: Discord,
+    server: &'static str,
+    snapshot: Arc<Snapshot>,
+    guild: String,
+    general: String,
+    lounge: String,
+    bob: String,
+}
+
+impl Fixture {
+    /// Starts the fake for the test `name`, logging to
+    /// target/fake-discord-`name`.log, and Alice's session on it.
+    async fn start(name: &str) -> Fixture {
+        static TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let turn = TURN.lock().await;
+        let server = client::test_server().expect("set YAPFAST_DISCORD_TEST_SERVER");
+        let port = server.rsplit(':').next().unwrap();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let log =
+            std::fs::File::create(root.join(format!("target/fake-discord-{name}.log"))).unwrap();
+        let process = std::process::Command::new("bun")
+            .args(["testing/fake_discord.ts", "--port", port])
+            .current_dir(&root)
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
+            .spawn()
+            .expect("could not start bun testing/fake_discord.ts");
+        let mut fake = Fake {
+            process,
+            _turn: turn,
+        };
+        timeout(WAIT, async {
+            let address = server.trim_start_matches("http://");
+            while std::net::TcpStream::connect(address).is_err() {
+                if let Some(status) = fake.process.try_wait().unwrap() {
+                    panic!(
+                        "the fake Discord exited with {status}; see target/fake-discord-{name}.log"
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the fake Discord didn't answer");
+        // A test that refreshed the login, or failed, may have left another.
+        token::store(client::TEST_TOKEN).unwrap();
+        let token = token::load().unwrap();
+        let discord = Discord::start(token).unwrap();
+        let snapshot = snapshot_where(&discord, |snapshot| {
+            snapshot.status == Status::Online && !snapshot.voice.is_empty()
+        })
+        .await;
+        let shown = &snapshot.servers[0];
+        let guild = shown.id.clone();
+        let general = shown.text_channels().next().unwrap().id.clone();
+        let lounge = shown.voice_channels[0].id.clone();
+        let bob = snapshot.voice[&lounge][0].user_id.clone();
+        Fixture {
+            _fake: fake,
+            guild,
+            general,
+            lounge,
+            bob,
+            discord,
+            server,
+            snapshot,
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn reads_history_and_member_lists() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        snapshot,
+        guild,
+        general,
+        lounge,
+        bob,
+    } = Fixture::start("reads_history_and_member_lists").await;
+    // READY, then the voice states from READY_SUPPLEMENTAL, which the
+    // fixture waited for.
     assert_eq!(snapshot.servers.len(), 1);
-    let guild = &snapshot.servers[0];
-    assert_eq!(guild.name, "Server");
-    let general = guild.text_channels().next().unwrap();
-    assert_eq!(general.name, "general");
+    let server_shown = &snapshot.servers[0];
+    assert_eq!(server_shown.name, "Server");
+    let general_shown = server_shown.text_channels().next().unwrap();
+    assert_eq!(general_shown.name, "general");
     assert!(
-        general.marks.unread,
+        general_shown.marks.unread,
         "the fixture leaves the last messages unread"
     );
-    assert_eq!(guild.voice_channels[0].name, "Lounge");
-    let in_voice: Vec<_> = snapshot.voice[&guild.voice_channels[0].id]
+    assert_eq!(server_shown.voice_channels[0].name, "Lounge");
+    let in_voice: Vec<_> = snapshot.voice[&lounge]
         .iter()
         .map(|member| member.name.as_str())
         .collect();
     assert_eq!(in_voice, ["Bob", "Carol", "Dave"]);
-    assert!(
-        snapshot.voice[&guild.voice_channels[0].id][0].streaming,
-        "Bob is live"
-    );
-    let bob = snapshot.voice[&guild.voice_channels[0].id][0]
-        .user_id
-        .clone();
-    let last_read = general.marks.last_read;
-    let (guild, general, lounge) = (
-        guild.id.clone(),
-        general.id.clone(),
-        guild.voice_channels[0].id.clone(),
-    );
+    assert!(snapshot.voice[&lounge][0].streaming, "Bob is live");
+    assert_eq!(snapshot.voice[&lounge][0].user_id, bob);
+    let last_read = general_shown.marks.last_read;
 
     // Two pages of history: 50, then the rest, oldest first. The latest
     // starts with a boost, which counts but doesn't show.
@@ -1067,7 +1168,21 @@ async fn talks_to_the_fake_server() {
         !general.unread && general.last_read.to_string() == newest
     })
     .await;
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn sends_edits_and_deletes_messages() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        snapshot,
+        guild,
+        general,
+        ..
+    } = Fixture::start("sends_edits_and_deletes_messages").await;
+    let mut live = discord.live();
     // Bob chats live until stopped.
     let control = reqwest::Client::new();
     control
@@ -1216,7 +1331,21 @@ async fn talks_to_the_fake_server() {
         .send(&guild, &general, "back", sending(&nonce, None), vec![])
         .await
         .unwrap();
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn votes_in_and_posts_polls() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        guild,
+        general,
+        ..
+    } = Fixture::start("votes_in_and_posts_polls").await;
+    let control = reqwest::Client::new();
+    let mut live = discord.live();
     // Polls: a vote comes back live, who voted lists by answer, and Alice's
     // own poll ends early with a notice of its winner.
     let posted = control
@@ -1313,7 +1442,29 @@ async fn talks_to_the_fake_server() {
         expiry.abs_diff(now + 4 * 3_600_000) < 60_000,
         "it takes votes for four hours"
     );
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn forwards_messages() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        guild,
+        general,
+        ..
+    } = Fixture::start("forwards_messages").await;
+    let control = reqwest::Client::new();
+    let mut live = discord.live();
+    // A message of Bob's to forward.
+    post_control(server, "/_control/chat-start", "");
+    let message = live_where(&mut live, |event| match event {
+        Live::Created(message) => Some(message),
+        _ => None,
+    })
+    .await;
+    post_control(server, "/_control/chat-stop", "");
     // Forwarding, as Discord's client does: a message of its own that
     // carries the original, then the message added as another.
     discord
@@ -1360,7 +1511,22 @@ async fn talks_to_the_fake_server() {
             .await
             .is_err()
     );
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn lists_dms_and_notifies() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        snapshot,
+        guild,
+        general,
+        ..
+    } = Fixture::start("lists_dms_and_notifies").await;
+    let control = reqwest::Client::new();
+    let mut live = discord.live();
     // DMs and message requests, the latest first; each unread message in a
     // DM counts as a mention, and requests count none.
     let listed: Vec<_> = snapshot
@@ -1394,8 +1560,7 @@ async fn talks_to_the_fake_server() {
             .id
             .clone()
     };
-    let (dm_bob, weekend, erin, frank) =
-        (id("Bob"), id("Weekend plans"), id("Erin"), id("Free Nitro"));
+    let (dm_bob, weekend) = (id("Bob"), id("Weekend plans"));
     assert!(
         snapshot.conversations[2]
             .avatar
@@ -1540,7 +1705,21 @@ async fn talks_to_the_fake_server() {
     })
     .await
     .expect("both reads are acknowledged in one request");
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn types_and_mentions() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        guild,
+        general,
+        ..
+    } = Fixture::start("types_and_mentions").await;
+    let control = reqwest::Client::new();
+    let mut live = discord.live();
     // Bob starts typing, and Yapfast says Alice is typing.
     control
         .post(format!("{server}/_control/typing"))
@@ -1598,7 +1777,31 @@ async fn talks_to_the_fake_server() {
         5,
         "Bots, Crew, Staff and Leads too, for those who may"
     );
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn opens_dms_and_searches_pins() {
+    let Fixture {
+        _fake,
+        discord,
+        snapshot,
+        guild,
+        general,
+        bob,
+        ..
+    } = Fixture::start("opens_dms_and_searches_pins").await;
+    let mut live = discord.live();
+    let dm = |name: &str| {
+        snapshot
+            .conversations
+            .iter()
+            .find(|dm| dm.name == name)
+            .unwrap()
+            .id
+            .clone()
+    };
+    let dm_bob = dm("Bob");
     // New DMs: friends come first, others by name, and opening a DM with
     // Carol starts one, which the DM list gains; opening it again finds it.
     let friends: Vec<_> = discord
@@ -1689,7 +1892,29 @@ async fn talks_to_the_fake_server() {
     assert_eq!(said[0], "The welcome has the plan");
     assert!(said[1].starts_with("Welcome to **Yapfast**"));
     assert_eq!(discord.name(&guild, &bob).as_deref(), Some("Bob"));
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn makes_group_dms_and_answers_requests() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        snapshot,
+        ..
+    } = Fixture::start("makes_group_dms_and_answers_requests").await;
+    let dm = |name: &str| {
+        snapshot
+            .conversations
+            .iter()
+            .find(|dm| dm.name == name)
+            .unwrap()
+            .id
+            .clone()
+    };
+    let (erin, frank) = (dm("Erin"), dm("Free Nitro"));
+    let carol_id = discord.find_people("carol")[0].id.clone();
     // Friends added to a DM make a group of them; more join it later.
     let dave = discord.find_people("da")[0].id.clone();
     let group = discord
@@ -1748,7 +1973,18 @@ async fn talks_to_the_fake_server() {
             && !snapshot.conversations.iter().any(|dm| dm.id == frank)
     })
     .await;
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn shows_profiles() {
+    let Fixture {
+        _fake,
+        discord,
+        guild,
+        bob,
+        ..
+    } = Fixture::start("shows_profiles").await;
     // Bob's profile: in the server, his server bio wins over his own; from
     // a DM, his own shows.
     let in_server = discord.profile(&guild, &bob, |_| {}).await.unwrap();
@@ -1769,7 +2005,21 @@ async fn talks_to_the_fake_server() {
     let own = discord.profile(PRIVATE, &bob, |_| {}).await.unwrap();
     assert!(own.bio.is_some_and(|bio| bio.starts_with("Plays bass")));
     assert!(own.roles.is_empty() && own.joined.is_none());
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn shows_embeds_and_media() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        guild,
+        general,
+        ..
+    } = Fixture::start("shows_embeds_and_media").await;
+    let control = reqwest::Client::new();
+    let mut live = discord.live();
     // Link previews: the article's arrives in an update, as Discord crawls
     // the page after the message is sent. A GIF link shows as a picture,
     // without its address.
@@ -1866,7 +2116,21 @@ async fn talks_to_the_fake_server() {
         .await
         .unwrap();
     let _ = std::fs::remove_file(&path);
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn calls_and_goes_live() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        guild,
+        lounge,
+        bob,
+        ..
+    } = Fixture::start("calls_and_goes_live").await;
+    let mut live = discord.live();
     // Go Live: watching Bob needs the voice channel; then Alice joins the
     // call, watches him and shares her own screen.
     let bob_stream = stream::key(&guild, &lounge, &bob);
@@ -2223,7 +2487,21 @@ async fn talks_to_the_fake_server() {
     call.leave();
     discord.leave(&guild);
     snapshot_where(&discord, |snapshot| in_lounge(snapshot).is_none()).await;
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn follows_the_call_across_rooms_and_clients() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        snapshot,
+        guild,
+        lounge,
+        ..
+    } = Fixture::start("follows_the_call_across_rooms_and_clients").await;
+    let mut live = discord.live();
     // Joining Create Room, a bot moves Alice to a room it makes, which puts
     // her call on another voice server; Yapfast hears where, and connects there.
     let voice_channel = |snapshot: &Snapshot, name: &str| {
@@ -2315,7 +2593,28 @@ async fn talks_to_the_fake_server() {
     presence_where(server, |presence| presence["status"] == "online").await;
     post_control(server, "/_control/elsewhere?leave", "");
     snapshot_where(&discord, |snapshot| mine(&me, &lounge)(snapshot).is_none()).await;
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn moderates_voice() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        snapshot,
+        guild,
+        lounge,
+        ..
+    } = Fixture::start("moderates_voice").await;
+    let create_room = snapshot
+        .servers
+        .iter()
+        .flat_map(|server| &server.voice_channels)
+        .find(|found| found.name == "Create Room")
+        .unwrap()
+        .id
+        .clone();
     // Alice's Staff role may mute, deafen and move members in voice, as
     // the voice menu does: Dave, muted and deafened by himself, is server
     // muted and deafened, then not, moved to Create Room and disconnected.
@@ -2392,7 +2691,21 @@ async fn talks_to_the_fake_server() {
     );
     post_control(server, "/_control/voice-reset", "");
     snapshot_where(&discord, |snapshot| dave_in(&lounge)(snapshot).is_some()).await;
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn calls_in_dms() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        snapshot,
+        bob,
+        ..
+    } = Fixture::start("calls_in_dms").await;
+    let mut live = discord.live();
+    let me = snapshot.user_id.clone().unwrap();
     // A DM call: Alice starts one with Bob, connecting with the DM for the
     // server, and rings him; he answers.
     let dm = discord
@@ -2491,7 +2804,17 @@ async fn talks_to_the_fake_server() {
     assert_eq!(in_call(&discord.snapshots().borrow()), ["Bob"]);
     post_control(server, "/_control/hang-up", "");
     snapshot_where(&discord, |snapshot| !snapshot.voice.contains_key(&dm)).await;
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn rings_and_befriends() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        ..
+    } = Fixture::start("rings_and_befriends").await;
     // Dave isn't a friend, and Discord doesn't let Alice ring him.
     post_control(server, "/_control/dm", "");
     let dave = snapshot_where(&discord, |snapshot| {
@@ -2576,7 +2899,17 @@ async fn talks_to_the_fake_server() {
         requested(snapshot) == [("Erin".to_owned(), false)]
     })
     .await;
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn shows_status_and_games() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        ..
+    } = Fixture::start("shows_status_and_games").await;
     // Alice's custom status from her settings shows from this session, and
     // changing it changes what the session shows.
     let custom = snapshot_where(&discord, |snapshot| snapshot.custom_status.is_some())
@@ -2622,7 +2955,34 @@ async fn talks_to_the_fake_server() {
     presence_where(server, |presence| presence["status"] == "dnd").await;
     discord.set_status("online").await.unwrap();
     presence_where(server, |presence| presence["status"] == "online").await;
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn acts_from_a_dms_menu() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        ..
+    } = Fixture::start("acts_from_a_dms_menu").await;
+    // Dave writes, and Alice and he become friends.
+    post_control(server, "/_control/dm", "");
+    let dave = snapshot_where(&discord, |snapshot| {
+        snapshot
+            .conversations
+            .iter()
+            .any(|found| found.name == "Dave")
+    })
+    .await
+    .conversations
+    .iter()
+    .find(|found| found.name == "Dave")
+    .cloned()
+    .unwrap();
+    let (dave, dave_user) = (dave.id.clone(), dave.person.clone().unwrap());
+    discord.befriend(&dave_user).await.unwrap();
+    snapshot_where(&discord, |snapshot| snapshot.friends.contains(&dave_user)).await;
     // From Dave's DM's menu: a nickname for him and a note on him, ignoring
     // and muting, then unfriending, blocking and unblocking, and closing it.
     let dave_dm = |snapshot: &Snapshot| {
@@ -2676,6 +3036,41 @@ async fn talks_to_the_fake_server() {
     })
     .await;
 
+    discord.unfriend(&dave_user).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        !snapshot.friends.contains(&dave_user)
+            && dave_dm(snapshot).is_some_and(|dm| dm.name == "Dave")
+    })
+    .await;
+    discord.block(&dave_user, true).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        snapshot.blocked.contains(&dave_user)
+            && snapshot
+                .blocked_list
+                .iter()
+                .any(|blocked| blocked.user_id == dave_user && blocked.name == "Dave")
+    })
+    .await;
+    discord.block(&dave_user, false).await.unwrap();
+    snapshot_where(&discord, |snapshot| {
+        !snapshot.blocked.contains(&dave_user) && snapshot.blocked_list.is_empty()
+    })
+    .await;
+    discord.close_dm(&dave).await.unwrap();
+    snapshot_where(&discord, |snapshot| dave_dm(snapshot).is_none()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn changes_notification_settings() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        guild,
+        general,
+        ..
+    } = Fixture::start("changes_notification_settings").await;
     // The server's and #general's notification settings, as Discord
     // confirms them: a channel's mute keeps its level, and the server's
     // switches are its own.
@@ -2844,7 +3239,28 @@ async fn talks_to_the_fake_server() {
     .await;
     mute_category(false).await;
     snapshot_where(&discord, |snapshot| !general_muted(snapshot)).await;
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn follows_the_topic() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        guild,
+        general,
+        bob,
+        ..
+    } = Fixture::start("follows_the_topic").await;
+    let ours = |snapshot: &Snapshot| {
+        snapshot
+            .servers
+            .iter()
+            .find(|server| server.id == guild)
+            .cloned()
+            .unwrap()
+    };
     // #general's topic comes with the server, and CHANNEL_UPDATE changes it.
     let topic = |snapshot: &Snapshot| {
         ours(snapshot)
@@ -2863,29 +3279,18 @@ async fn talks_to_the_fake_server() {
     post_control(server, "/_control/topic", "");
     snapshot_where(&discord, |snapshot| topic(snapshot).is_none()).await;
     post_control(server, "/_control/topic", &first);
-    discord.unfriend(&dave_user).await.unwrap();
-    snapshot_where(&discord, |snapshot| {
-        !snapshot.friends.contains(&dave_user)
-            && dave_dm(snapshot).is_some_and(|dm| dm.name == "Dave")
-    })
-    .await;
-    discord.block(&dave_user, true).await.unwrap();
-    snapshot_where(&discord, |snapshot| {
-        snapshot.blocked.contains(&dave_user)
-            && snapshot
-                .blocked_list
-                .iter()
-                .any(|blocked| blocked.user_id == dave_user && blocked.name == "Dave")
-    })
-    .await;
-    discord.block(&dave_user, false).await.unwrap();
-    snapshot_where(&discord, |snapshot| {
-        !snapshot.blocked.contains(&dave_user) && snapshot.blocked_list.is_empty()
-    })
-    .await;
-    discord.close_dm(&dave).await.unwrap();
-    snapshot_where(&discord, |snapshot| dave_dm(snapshot).is_none()).await;
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn resumes_the_gateway() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        ..
+    } = Fixture::start("resumes_the_gateway").await;
+    let mut live = discord.live();
     // Discord asks the gateway to reconnect: the session resumes, without a
     // new identify, and carries on.
     post_control(server, "/_control/gateway-reconnect", "");
@@ -2904,7 +3309,12 @@ async fn talks_to_the_fake_server() {
     })
     .await;
     assert_eq!(discord.snapshots().borrow().status, Status::Online);
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn links_by_qr_code() {
+    let Fixture { _fake, server, .. } = Fixture::start("links_by_qr_code").await;
     // Linking by QR code: the code shows, Alice scans it and confirms on her
     // phone, and the login arrives.
     let (steps, mut shown) = tokio::sync::mpsc::unbounded_channel();
@@ -2968,9 +3378,24 @@ async fn talks_to_the_fake_server() {
     // set it once, or twice if the first requests went together.
     let cookies: serde_json::Value =
         serde_json::from_str(&self::control(server, "GET", "/_control/cookies", "")).unwrap();
-    assert!(cookies["returned"].as_u64().unwrap() > 10, "{cookies}");
+    // The cookie jar outlives each test's fake, so this one may find it
+    // already set.
+    assert!(cookies["returned"].as_u64().unwrap() > 0, "{cookies}");
     assert!(cookies["set"].as_u64().unwrap() <= 2, "{cookies}");
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn makes_invites() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        general,
+        ..
+    } = Fixture::start("makes_invites").await;
+    let carol_id = discord.find_people("carol")[0].id.clone();
+    let carol_dm = discord.open_dm(&carol_id).await.unwrap();
     // An invite to #general, as Discord's invite dialog asks for one.
     let code = discord.create_invite(&general, 3600, 5).await.unwrap();
     assert_eq!(code.len(), 8);
@@ -3009,7 +3434,17 @@ async fn talks_to_the_fake_server() {
         in_dm.last().map(|message| message.content.as_str()),
         Some(format!("https://discord.gg/{}", sent["code"].as_str().unwrap()).as_str())
     );
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn manages_channels_and_categories() {
+    let Fixture {
+        _fake,
+        discord,
+        guild,
+        ..
+    } = Fixture::start("manages_channels_and_categories").await;
     // Channels and categories, which her Crew role may manage: one made
     // shows once its CHANNEL_CREATE comes, with Discord's name for it.
     use yapfast_discord::service::ChannelSettings;
@@ -3133,7 +3568,19 @@ async fn talks_to_the_fake_server() {
             .await
             .is_err()
     );
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn highlights_mentions() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        guild,
+        general,
+        ..
+    } = Fixture::start("highlights_mentions").await;
     // Bob calls on Alice every way Discord highlights for her, through her
     // Crew role among them, and two ways it doesn't.
     post_control(server, "/_control/mentions", "");
@@ -3159,7 +3606,22 @@ async fn talks_to_the_fake_server() {
         [true, true, true, true, true, false, false],
         "by name, Crew, @everyone, @here and a reply; not Mods, nor nothing"
     );
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn acts_from_a_members_menu() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        snapshot,
+        guild,
+        general,
+        bob,
+        ..
+    } = Fixture::start("acts_from_a_members_menu").await;
+    let me = snapshot.user_id.clone().unwrap();
     // A member's menu. Alice is Staff: she renames herself, and Dave, who
     // has no role, but not Carol, a Lead above her. Each change comes back
     // as GUILD_MEMBER_UPDATE, and the member list follows.
@@ -3273,7 +3735,20 @@ async fn talks_to_the_fake_server() {
     post_control(server, "/_control/members-reset", "");
     live_where(&mut members, |live| listed(live, &|dave| dave.is_some())).await;
     assert_eq!(discord.name(&guild, &me).as_deref(), Some("Alice"));
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn edits_the_server_profile() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        snapshot,
+        guild,
+        ..
+    } = Fixture::start("edits_the_server_profile").await;
+    let me = snapshot.user_id.clone().unwrap();
     // Her per-server profile: a nickname and pronouns anyone may set, the
     // rest only with Nitro. Her server avatar comes back with
     // GUILD_MEMBER_UPDATE; her banner, bio and pronouns with her profile.
@@ -3357,24 +3832,19 @@ async fn talks_to_the_fake_server() {
             .is_some_and(|account| account.premium_type == 0)
     })
     .await;
+}
 
-    edits_the_main_profile_as_discords_client_does(&discord, server).await;
-    lists_a_channels_threads_as_discords_client_does(&discord, &guild, &general).await;
-    joins_and_leaves_threads_as_discords_client_does(&discord, server).await;
-    shows_a_forum_as_discords_client_does(&discord, server, &guild).await;
-    marks_quiet_threads_as_discords_client_does(&discord, server).await;
-    lists_who_reacted_as_discords_client_does(&discord, server, &guild, &general).await;
-    finds_gifs_as_discords_client_does(&discord, server, &guild, &general).await;
-    starts_threads_as_discords_client_does(&discord, server, &guild, &general).await;
-    posts_in_a_forum_as_discords_client_does(&discord, server, &guild).await;
-    changes_server_settings_as_discords_client_does(&discord, server, &guild).await;
-    changes_roles_as_discords_client_does(&discord, server, &guild).await;
-    changes_channel_permissions_as_discords_client_does(&discord, server, &guild).await;
-    moderates_as_discords_client_does(&discord, server, &guild).await;
-    lists_members_and_invites_as_discords_client_does(&discord, server, &guild).await;
-    keeps_emoji_and_stickers_as_discords_client_does(&discord, server, &guild).await;
-    gives_up_the_server_as_discords_client_does(&discord, server, &guild).await;
-
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn leaves_and_joins_a_server() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        guild,
+        general,
+        ..
+    } = Fixture::start("leaves_and_joins_a_server").await;
     // Leaving "Server", which Bob owns, takes it out of her list; the fake
     // lets her back in, so the tests after these find it again.
     discord.leave_server(&guild).await.unwrap();
@@ -3397,7 +3867,18 @@ async fn talks_to_the_fake_server() {
             .iter()
             .any(|channel| channel.id == general)
     );
+}
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn refreshes_the_login_and_signs_out() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        guild,
+        ..
+    } = Fixture::start("refreshes_the_login_and_signs_out").await;
     // Discord refreshes the login in a READY: Yapfast asks with the new one
     // from then on, and keeps it. The fake takes only the latest, and hands
     // the first back the same way for the tests after these.
@@ -3422,11 +3903,13 @@ async fn talks_to_the_fake_server() {
 /// which Crew's Manage Server allows, and confirming with 2FA what Discord
 /// holds back; part of [`talks_to_the_fake_server`], whose session it
 /// shares. It puts "Server" and its members back after.
-async fn changes_server_settings_as_discords_client_does(
-    discord: &Discord,
-    server: &str,
-    guild: &str,
-) {
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn changes_server_settings_as_discords_client_does() {
+    let fixture = Fixture::start("changes_server_settings_as_discords_client_does").await;
+    let discord = &fixture.discord;
+    let server = fixture.server;
+    let guild = fixture.guild.as_str();
     use serde_json::json;
     use yapfast_discord::mfa::Method;
     let profile = discord.guild_profile(guild).await.unwrap();
@@ -3606,7 +4089,13 @@ async fn changes_server_settings_as_discords_client_does(
 /// Discord's client does, below Staff, her highest; part of
 /// [`talks_to_the_fake_server`], whose session it shares. It puts the roles
 /// and members back after.
-async fn changes_roles_as_discords_client_does(discord: &Discord, server: &str, guild: &str) {
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn changes_roles_as_discords_client_does() {
+    let fixture = Fixture::start("changes_roles_as_discords_client_does").await;
+    let discord = &fixture.discord;
+    let server = fixture.server;
+    let guild = fixture.guild.as_str();
     use serde_json::json;
     let (staff, leads, crew, bots, mods) = (
         "1400000000000000114",
@@ -3720,11 +4209,13 @@ async fn changes_roles_as_discords_client_does(discord: &Discord, server: &str, 
 /// time, taking one off, and syncing with the category; part of
 /// [`talks_to_the_fake_server`], whose session it shares. It puts the
 /// channels' overwrites back after.
-async fn changes_channel_permissions_as_discords_client_does(
-    discord: &Discord,
-    server: &str,
-    guild: &str,
-) {
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn changes_channel_permissions_as_discords_client_does() {
+    let fixture = Fixture::start("changes_channel_permissions_as_discords_client_does").await;
+    let discord = &fixture.discord;
+    let server = fixture.server;
+    let guild = fixture.guild.as_str();
     use yapfast_discord::ready::{Overwrite, permission};
     let (general, crew) = ("1400000000000000102", "1400000000000000112");
     let overwrites = |known: &yapfast_discord::service::Snapshot| -> Option<Vec<Overwrite>> {
@@ -3777,7 +4268,13 @@ async fn changes_channel_permissions_as_discords_client_does(
 
 /// Safety Setup and Bans in Server Settings, as Discord's client uses
 /// them; part of [`talks_to_the_fake_server`], whose session it shares.
-async fn moderates_as_discords_client_does(discord: &Discord, server: &str, guild: &str) {
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn moderates_as_discords_client_does() {
+    let fixture = Fixture::start("moderates_as_discords_client_does").await;
+    let discord = &fixture.discord;
+    let server = fixture.server;
+    let guild = fixture.guild.as_str();
     use serde_json::json;
     use yapfast_discord::mfa::Method;
     // Safety Setup's levels, saved with the guild's PATCH.
@@ -3951,11 +4448,13 @@ async fn moderates_as_discords_client_does(discord: &Discord, server: &str, guil
 
 /// Members and Invites in Server Settings, as Discord's client asks for
 /// them; part of [`talks_to_the_fake_server`], whose session it shares.
-async fn lists_members_and_invites_as_discords_client_does(
-    discord: &Discord,
-    server: &str,
-    guild: &str,
-) {
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn lists_members_and_invites_as_discords_client_does() {
+    let fixture = Fixture::start("lists_members_and_invites_as_discords_client_does").await;
+    let discord = &fixture.discord;
+    let server = fixture.server;
+    let guild = fixture.guild.as_str();
     use serde_json::json;
     use yapfast_discord::api::MembersSearch;
     let search = |body: serde_json::Value| async move {
@@ -4084,11 +4583,13 @@ async fn lists_members_and_invites_as_discords_client_does(
 /// Emoji and Stickers in Server Settings: listing them with who uploaded
 /// each, adding, renaming and deleting her own, as her Crew role's Create
 /// Expressions allows, and not Bob's; part of [`talks_to_the_fake_server`].
-async fn keeps_emoji_and_stickers_as_discords_client_does(
-    discord: &Discord,
-    server: &str,
-    guild: &str,
-) {
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn keeps_emoji_and_stickers_as_discords_client_does() {
+    let fixture = Fixture::start("keeps_emoji_and_stickers_as_discords_client_does").await;
+    let discord = &fixture.discord;
+    let server = fixture.server;
+    let guild = fixture.guild.as_str();
     use base64::Engine;
     let dot = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
     let png = base64::engine::general_purpose::STANDARD
@@ -4216,7 +4717,13 @@ async fn keeps_emoji_and_stickers_as_discords_client_does(
 /// Transfer Ownership and Delete Server, as the server's owner: by the code
 /// Discord emails without 2FA, or by confirming with it; part of
 /// [`talks_to_the_fake_server`].
-async fn gives_up_the_server_as_discords_client_does(discord: &Discord, server: &str, guild: &str) {
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn gives_up_the_server_as_discords_client_does() {
+    let fixture = Fixture::start("gives_up_the_server_as_discords_client_does").await;
+    let discord = &fixture.discord;
+    let server = fixture.server;
+    let guild = fixture.guild.as_str();
     use yapfast_discord::mfa::Method;
     let (alice, bob) = ("1400000000000000001", "1400000000000000002");
     let code = |error: anyhow::Error| yapfast_discord::api::code(&error);
@@ -4317,7 +4824,12 @@ async fn gives_up_the_server_as_discords_client_does(discord: &Discord, server: 
 
 /// Editing her main profile as Discord's client does, then putting it
 /// back; part of [`talks_to_the_fake_server`], whose session it shares.
-async fn edits_the_main_profile_as_discords_client_does(discord: &Discord, server: &str) {
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn edits_the_main_profile_as_discords_client_does() {
+    let fixture = Fixture::start("edits_the_main_profile_as_discords_client_does").await;
+    let discord = &fixture.discord;
+    let server = fixture.server;
     let own = discord.own_profile(None).await.unwrap();
     assert_eq!(
         (own.name.as_str(), own.bio.as_str(), own.accent),
@@ -4393,7 +4905,12 @@ async fn next_step(shown: &mut tokio::sync::mpsc::UnboundedReceiver<Step>) -> St
 
 /// Joining a thread from its menu, then leaving it, as Discord's client
 /// does; part of [`talks_to_the_fake_server`], whose session it shares.
-async fn joins_and_leaves_threads_as_discords_client_does(discord: &Discord, server: &str) {
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn joins_and_leaves_threads_as_discords_client_does() {
+    let fixture = Fixture::start("joins_and_leaves_threads_as_discords_client_does").await;
+    let discord = &fixture.discord;
+    let server = fixture.server;
     let book_club = |snapshot: &Snapshot| {
         snapshot.servers[0]
             .threads
@@ -4401,7 +4918,11 @@ async fn joins_and_leaves_threads_as_discords_client_does(discord: &Discord, ser
             .find(|thread| thread.name == "Book club")
             .and_then(|thread| Some((thread.id.clone(), thread.thread.as_deref()?.joined)))
     };
-    let (id, joined) = book_club(&discord.snapshots().borrow()).unwrap();
+    // Viewing the server subscribes to its threads.
+    discord.view(&fixture.guild, Some(&fixture.general));
+    let (id, joined) =
+        book_club(&*snapshot_where(discord, |snapshot| book_club(snapshot).is_some()).await)
+            .unwrap();
     assert!(!joined);
     discord
         .join_thread(&id, true, "Context Menu")
@@ -4427,8 +4948,16 @@ async fn joins_and_leaves_threads_as_discords_client_does(discord: &Discord, ser
 
 /// A forum's posts and what their cards show, as Discord's client loads
 /// them; part of [`talks_to_the_fake_server`], whose session it shares.
-async fn shows_a_forum_as_discords_client_does(discord: &Discord, server: &str, guild: &str) {
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn shows_a_forum_as_discords_client_does() {
+    let fixture = Fixture::start("shows_a_forum_as_discords_client_does").await;
+    let discord = &fixture.discord;
+    let server = fixture.server;
+    let guild = fixture.guild.as_str();
     use yapfast_discord::forum::Emoji;
+    // Viewing the server subscribes to its threads, and so its forum posts.
+    discord.view(guild, Some(&fixture.general));
     // The forum lists among the text channels, and its active posts came
     // with the server's threads.
     let snapshot = snapshot_where(discord, |snapshot| {
@@ -4565,7 +5094,13 @@ async fn shows_a_forum_as_discords_client_does(discord: &Discord, server: &str, 
     assert_eq!(new.thread.as_deref().unwrap().tags, [details_tag(forum, 0)]);
 }
 
-async fn posts_in_a_forum_as_discords_client_does(discord: &Discord, server: &str, guild: &str) {
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn posts_in_a_forum_as_discords_client_does() {
+    let fixture = Fixture::start("posts_in_a_forum_as_discords_client_does").await;
+    let discord = &fixture.discord;
+    let server = fixture.server;
+    let guild = fixture.guild.as_str();
     let forum = |snapshot: &Snapshot| {
         snapshot.servers[0]
             .text_channels
@@ -4649,12 +5184,15 @@ fn details_tag(forum: &yapfast_discord::ready::Channel, index: usize) -> String 
 
 /// A channel's list of threads, as Discord's client fills it; part of
 /// [`talks_to_the_fake_server`], whose session it shares.
-async fn lists_a_channels_threads_as_discords_client_does(
-    discord: &Discord,
-    guild: &str,
-    general: &str,
-) {
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn lists_a_channels_threads_as_discords_client_does() {
+    let fixture = Fixture::start("lists_a_channels_threads_as_discords_client_does").await;
+    let discord = &fixture.discord;
+    let guild = fixture.guild.as_str();
+    let general = fixture.general.as_str();
     let (guild, general) = (guild.to_owned(), general.to_owned());
+    discord.view(&guild, Some(&general));
     // Viewing the server subscribed to its threads: the active ones came,
     // with their newest messages, but not a private one she isn't in.
     let snapshot = snapshot_where(discord, |snapshot| {
@@ -4739,12 +5277,14 @@ async fn lists_a_channels_threads_as_discords_client_does(
 /// favourites in the second settings, which another client's change
 /// updates live, and one sent by a direct link to its file. Part of
 /// [`talks_to_the_fake_server`].
-async fn finds_gifs_as_discords_client_does(
-    discord: &Discord,
-    server: &str,
-    guild: &str,
-    general: &str,
-) {
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn finds_gifs_as_discords_client_does() {
+    let fixture = Fixture::start("finds_gifs_as_discords_client_does").await;
+    let discord = &fixture.discord;
+    let server = fixture.server;
+    let guild = fixture.guild.as_str();
+    let general = fixture.general.as_str();
     let trending = discord.gifs_trending().await.unwrap();
     assert_eq!(trending.categories[0].name, "happy");
     assert!(trending.preview.is_some());
@@ -4841,12 +5381,14 @@ async fn finds_gifs_as_discords_client_does(
 /// Who reacted to a message, a page at a time, as a reaction's tooltip and
 /// the Reactions window ask; and a moderator removing someone's reaction.
 /// Part of [`talks_to_the_fake_server`], whose session it shares.
-async fn lists_who_reacted_as_discords_client_does(
-    discord: &Discord,
-    server: &str,
-    guild: &str,
-    general: &str,
-) {
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn lists_who_reacted_as_discords_client_does() {
+    let fixture = Fixture::start("lists_who_reacted_as_discords_client_does").await;
+    let discord = &fixture.discord;
+    let server = fixture.server;
+    let guild = fixture.guild.as_str();
+    let general = fixture.general.as_str();
     let latest = discord.history(guild, general, Span::Latest).await.unwrap();
     let newest = latest
         .messages
@@ -4903,7 +5445,12 @@ async fn lists_who_reacted_as_discords_client_does(
 /// A thread this account is in goes quiet its archive duration after its
 /// last activity, without Discord saying so; part of
 /// [`talks_to_the_fake_server`], whose session it shares.
-async fn marks_quiet_threads_as_discords_client_does(discord: &Discord, server: &str) {
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn marks_quiet_threads_as_discords_client_does() {
+    let fixture = Fixture::start("marks_quiet_threads_as_discords_client_does").await;
+    let discord = &fixture.discord;
+    let server = fixture.server;
     let plans_quiet = |snapshot: &Snapshot| {
         snapshot.servers[0]
             .threads()
@@ -4932,12 +5479,14 @@ async fn marks_quiet_threads_as_discords_client_does(discord: &Discord, server: 
 
 /// Threads Alice starts, as Discord's client starts them; part of
 /// [`talks_to_the_fake_server`], whose session it shares.
-async fn starts_threads_as_discords_client_does(
-    discord: &Discord,
-    server: &str,
-    guild: &str,
-    general: &str,
-) {
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn starts_threads_as_discords_client_does() {
+    let fixture = Fixture::start("starts_threads_as_discords_client_does").await;
+    let discord = &fixture.discord;
+    let server = fixture.server;
+    let guild = fixture.guild.as_str();
+    let general = fixture.general.as_str();
     let latest = discord
         .history(guild, general, Span::Latest)
         .await

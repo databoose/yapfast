@@ -377,13 +377,15 @@ device list for both networks. The `--no-default-features` build without either
 network only opens `--preview`.
 
 `YAPFAST_DISCORD_TEST_SERVER=http://127.0.0.1:18400` points Discord at
-`testing/fake_discord.ts` (`bun testing/fake_discord.ts --port 18400`). It uses a
-test token instead of the linked account, so the real token never reaches it.
-`scripts/test-fake-discord [FILTER]` starts the fake on a free port, waits until
-it answers, runs the ignored tests in `crates/yapfast-discord/tests/fake_server.rs`
-with the `fast` profile, and stops it. It then runs
-`crates/yapfast-discord/tests/fake_env.rs` against a second fake that runs the
-example environment.
+`testing/fake_discord.ts` (`bun testing/fake_discord.ts --port 18400`). It uses
+a test token instead of the linked account, so the real token never reaches it.
+`scripts/test-fake-discord [FILTER]` runs the ignored tests in
+`crates/yapfast-discord/tests/fake_server.rs` with the `fast` profile, one area
+each, such as `forum` or `calls_in_dms`, a second or so apiece. Each starts a
+fake of its own, so none depends on another and a filter runs any alone; the
+whole file takes about a minute. The script then runs yapfast-core's Discord
+tests against one fake, and `crates/yapfast-discord/tests/fake_env.rs` against
+a fake that runs the example environment.
 
 `--env PATH` replaces the fake's built-in content with an environment, for
 demos, promo recordings and screenshots. An environment is a JSON file, or a
