@@ -13,7 +13,7 @@
 
 <p align="center">
   <b>A Discord client without the web browser.</b><br>
-  About 30 MB of RAM idle, where Discord's app takes 720 (<a href="#measured-against-discord">measured as Vesktop</a>).
+  About 30 MB of RAM idle, where Discord's app takes 720 MB (<a href="#measured-against-discord">measured as Vesktop</a>).
 </p>
 
 <p align="center">
