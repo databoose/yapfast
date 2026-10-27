@@ -350,6 +350,7 @@ pub(crate) async fn call(
     let track = call.play(input);
     let _ = track.pause();
     let mut capture: Option<Capture> = None;
+    let microphone_thread = discord_audio::MicrophoneThread::default();
     let mut filming: Option<Filming> = None;
     let mut opening: Opening = None;
     let mut cameras = Cameras::start(call.video_frames());
@@ -466,7 +467,7 @@ pub(crate) async fn call(
                                 hearing.set_deafened(false);
                                 Watch::hear(&mut watch, true);
                             }
-                            match open_discord_microphone(state, &reverse, &microphone, &track) {
+                            match open_discord_microphone(state, &reverse, &microphone, &track, &microphone_thread) {
                                 Ok(opened) => {
                                     capture = Some(opened);
                                     state.muted = false;
@@ -492,7 +493,7 @@ pub(crate) async fn call(
                             state.microphone = Some(id);
                             Chosen::write(remembered, state);
                             if capture.take().is_some() {
-                                match open_discord_microphone(state, &reverse, &microphone, &track) {
+                                match open_discord_microphone(state, &reverse, &microphone, &track, &microphone_thread) {
                                     Ok(opened) => capture = Some(opened),
                                     Err(_) => {
                                         state.muted = true;
@@ -911,9 +912,16 @@ fn open_discord_microphone(
     reverse: &discord_audio::Reverse,
     microphone: &yapfast_discord::voice::Microphone,
     track: &yapfast_discord::voice::Track,
+    thread: &discord_audio::MicrophoneThread,
 ) -> Result<Capture> {
     let open = |id: Option<&str>| {
-        discord_audio::capture(id, reverse.clone(), microphone.clone(), track.clone())
+        discord_audio::capture(
+            thread,
+            id,
+            reverse.clone(),
+            microphone.clone(),
+            track.clone(),
+        )
     };
     match open(state.microphone.as_deref()) {
         Ok(capture) => Ok(capture),

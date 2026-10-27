@@ -280,6 +280,53 @@ impl Drop for Speakers {
     }
 }
 
+/// The thread that runs a call's microphone, one [`capture`] after another.
+/// Between them, while muted, it waits with the noise suppressor, which
+/// isn't Send, so that unmuting or switching microphones doesn't load
+/// DeepFilterNet again, 0.2 s of a core. It keeps the suppressor's 39 MiB
+/// until the call drops it, which ends the thread.
+#[derive(Default)]
+pub struct MicrophoneThread(Mutex<Option<mpsc::Sender<CaptureRequest>>>);
+
+/// What a capture needs, sent to the microphone thread.
+struct CaptureRequest {
+    microphone: Option<String>,
+    reverse: Reverse,
+    out: Microphone,
+    track: Track,
+    stop: Arc<AtomicBool>,
+    talking: Arc<AtomicBool>,
+    opened: mpsc::SyncSender<Result<()>>,
+}
+
+impl MicrophoneThread {
+    /// Hands `request` to the thread, starting it if it isn't running.
+    fn start(&self, request: CaptureRequest) -> Result<()> {
+        let mut running = self.0.lock().unwrap();
+        let request = match &*running {
+            Some(requests) => match requests.send(request) {
+                Ok(()) => return Ok(()),
+                // A capture panicked and ended the thread.
+                Err(mpsc::SendError(request)) => request,
+            },
+            None => request,
+        };
+        let (requests, waiting) = mpsc::channel::<CaptureRequest>();
+        thread::Builder::new()
+            .name("yapfast-discord-in".into())
+            .spawn(move || {
+                let mut denoiser = None;
+                for request in waiting {
+                    denoiser = request.run(denoiser);
+                }
+            })
+            .context("could not start the Discord microphone")?;
+        let _ = requests.send(request);
+        *running = Some(requests);
+        Ok(())
+    }
+}
+
 /// Sends the processed microphone to the call until dropped.
 pub struct Capture {
     stop: Arc<AtomicBool>,
@@ -475,13 +522,17 @@ struct Processing {
 }
 
 impl Processing {
-    fn new() -> Self {
+    /// Takes up `denoiser` if it's the suppressor chosen.
+    fn new(denoiser: Option<Denoiser>) -> Self {
         let mut echo = AudioProcessingModule::new(true, false, true, false);
         let _ = echo.set_stream_delay_ms(ECHO_DELAY_MS);
+        let chosen = crate::noise::chosen();
         Self {
             echo,
             dereverb: None,
-            denoiser: Denoiser::new(crate::noise::chosen(), crate::noise::limit()),
+            denoiser: denoiser
+                .filter(|denoiser| denoiser.suppressor() == chosen)
+                .unwrap_or_else(|| Denoiser::new(chosen, crate::noise::limit())),
             gain: AudioProcessingModule::new(false, true, false, false),
             leveler: crate::leveling::Leveler::default(),
             gate: Gate::default(),
@@ -568,7 +619,7 @@ impl Processing {
 /// does, and rises at once.
 fn measure(microphone: Option<&str>, shared: &MeterShared) -> Result<()> {
     let mut stream = open_microphone(microphone)?;
-    let mut processing = Processing::new();
+    let mut processing = Processing::new(None);
     let mut block = [0i16; BLOCK];
     let mut shown = f32::NEG_INFINITY;
     while !shared.stop.load(Ordering::Relaxed) {
@@ -583,69 +634,28 @@ fn measure(microphone: Option<&str>, shared: &MeterShared) -> Result<()> {
     Ok(())
 }
 
-/// Opens the microphone and sends its processed audio while someone talks:
-/// the track plays while the gate is open and pauses otherwise, so Discord
-/// shows speaking only during speech.
+/// Opens the microphone on `thread` and sends its processed audio while
+/// someone talks: the track plays while the gate is open and pauses
+/// otherwise, so Discord shows speaking only during speech.
 pub fn capture(
+    thread: &MicrophoneThread,
     microphone: Option<&str>,
     reverse: Reverse,
     out: Microphone,
     track: Track,
 ) -> Result<Capture> {
-    let microphone = microphone.map(str::to_owned);
     let (opened, result) = mpsc::sync_channel(1);
     let stop = Arc::new(AtomicBool::new(false));
     let talking = Arc::new(AtomicBool::new(false));
-    let (stopped, gated_track) = (stop.clone(), track.clone());
-    let speaking = talking.clone();
-    thread::Builder::new()
-        .name("yapfast-discord-in".into())
-        .spawn(move || {
-            let mut stream = match open_microphone(microphone.as_deref()) {
-                Ok(stream) => {
-                    let _ = opened.send(Ok(()));
-                    stream
-                }
-                Err(error) => {
-                    let _ = opened.send(Err(error));
-                    return;
-                }
-            };
-            // The modules aren't Send, so they live on this thread.
-            let mut processing = Processing::new();
-            let reverse = reverse.lock().unwrap();
-            // Drop what played before the microphone opened.
-            while let Ok(played) = reverse.try_recv() {
-                recycle(played);
-            }
-            let mut block = [0i16; BLOCK];
-            while !stopped.load(Ordering::Relaxed) {
-                stream.read(&mut block);
-                while let Ok(mut played) = reverse.try_recv() {
-                    processing.played(&mut played);
-                    recycle(played);
-                }
-                let was_open = processing.gate.is_open();
-                let sent = processing.block(&mut block);
-                // The gate sends while it's open.
-                let open = !sent.is_empty();
-                if open != was_open {
-                    speaking.store(open, Ordering::Relaxed);
-                    let _ = if open {
-                        out.clear();
-                        gated_track.play()
-                    } else {
-                        gated_track.pause()
-                    };
-                }
-                for samples in sent {
-                    out.push(samples);
-                }
-            }
-            speaking.store(false, Ordering::Relaxed);
-            let _ = gated_track.pause();
-        })
-        .context("could not start the Discord microphone")?;
+    thread.start(CaptureRequest {
+        microphone: microphone.map(str::to_owned),
+        reverse,
+        out,
+        track: track.clone(),
+        stop: stop.clone(),
+        talking: talking.clone(),
+        opened,
+    })?;
     result
         .recv_timeout(Duration::from_secs(5))
         .map_err(|_| anyhow!("The microphone didn't open in time."))?
@@ -655,6 +665,58 @@ pub fn capture(
         talking,
         track,
     })
+}
+
+impl CaptureRequest {
+    /// Captures until stopped, with `denoiser` if it's the suppressor
+    /// chosen, and returns the one it used, or `denoiser` if the microphone
+    /// didn't open.
+    fn run(self, denoiser: Option<Denoiser>) -> Option<Denoiser> {
+        let mut stream = match open_microphone(self.microphone.as_deref()) {
+            Ok(stream) => {
+                let _ = self.opened.send(Ok(()));
+                stream
+            }
+            Err(error) => {
+                let _ = self.opened.send(Err(error));
+                return denoiser;
+            }
+        };
+        // The modules aren't Send, so they live on this thread.
+        let mut processing = Processing::new(denoiser);
+        let reverse = self.reverse.lock().unwrap();
+        // Drop what played before the microphone opened.
+        while let Ok(played) = reverse.try_recv() {
+            recycle(played);
+        }
+        let mut block = [0i16; BLOCK];
+        while !self.stop.load(Ordering::Relaxed) {
+            stream.read(&mut block);
+            while let Ok(mut played) = reverse.try_recv() {
+                processing.played(&mut played);
+                recycle(played);
+            }
+            let was_open = processing.gate.is_open();
+            let sent = processing.block(&mut block);
+            // The gate sends while it's open.
+            let open = !sent.is_empty();
+            if open != was_open {
+                self.talking.store(open, Ordering::Relaxed);
+                let _ = if open {
+                    self.out.clear();
+                    self.track.play()
+                } else {
+                    self.track.pause()
+                };
+            }
+            for samples in sent {
+                self.out.push(samples);
+            }
+        }
+        self.talking.store(false, Ordering::Relaxed);
+        let _ = self.track.pause();
+        Some(processing.denoiser)
+    }
 }
 
 /// Runs a recording through the microphone's processing: raw mono 16-bit
@@ -704,7 +766,7 @@ fn processes_a_recording() {
     // The same echo cancellation alone, to hear what it leaves.
     let mut echo = AudioProcessingModule::new(true, false, true, false);
     let mut echoed = Vec::new();
-    let mut processing = Processing::new();
+    let mut processing = Processing::new(None);
     let (mut processed, mut sent) = (Vec::new(), Vec::new());
     let (mut opened, mut blocks) = (0, 0);
     let mut took = std::time::Duration::ZERO;
