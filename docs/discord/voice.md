@@ -242,9 +242,13 @@ tract (crate `deep_filter`; the code and the model's weights are MIT or
 Apache-2.0). crates.io has only libDF 0.2.5, from before DeepFilterNet 3, so
 Yapfast takes the repository's last commit, `d375b2d`, and its `default-model`
 feature builds the 8 MB model into Yapfast. It runs both of its stages on every
-block, as libDF's command line does. The library's defaults skip deep
-filtering above 20 dB SNR, which dulled clean speech and took up to 5 dB off
-speech over a fan.
+block but in a pause, as libDF's command line does on every block. The
+library's defaults skip deep filtering above 20 dB SNR, which dulled clean
+speech and took up to 5 dB off speech over a fan. A pause starts after 500 ms
+of blocks its SNR estimate puts below -10 dB, past the gate's 400 ms hold, and
+lasts until a block isn't: only its encoder runs, a third of its work, and the
+block's gains are zero, which leaves the strength's mix of the microphone.
+Skipping the decoders from the first such block dulled what the gate sent.
 
 RNNoise, through `nnnoiseless` (BSD-3-Clause), lets keyboard clicks through,
 and they hold the gate open. Settings → Voice & video → "Noise suppression in

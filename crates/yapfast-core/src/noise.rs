@@ -148,6 +148,15 @@ mod denoise {
     /// 35. Lower, keyboards opened the gate in pauses; higher, quiet speech
     /// sometimes didn't.
     const SPEECH_SNR: f32 = 5.0;
+    /// DeepFilterNet's speech-to-noise estimate below which a block is only
+    /// noise, in dB, and how many such blocks in a row make a pause. In a
+    /// pause its two decoders, two thirds of its work, don't run and the
+    /// block's gains are zero, until a block isn't noise. 500 ms is past the
+    /// voice gate's hold, so what the gate sends after speech is processed in
+    /// full. Skipping them from the first such block took the wideband PESQ
+    /// of what the gate sent over hiss from 3.00 to 2.62.
+    const NOISE_ONLY: f32 = -10.0;
+    const PAUSE: u32 = 50;
     /// RNNoise's probability from which a block counts as speech.
     const SPEECH_PROBABILITY: f32 = 0.6;
 
@@ -166,6 +175,8 @@ mod denoise {
         previous: Vec<f32>,
         /// Takes clicks out of DeepFilterNet's output while asked to.
         declicker: Option<crate::declick::Declicker>,
+        /// How many blocks in a row DeepFilterNet took for noise alone.
+        noise: u32,
     }
 
     /// How far DeepFilterNet's output is behind its input, in samples.
@@ -202,6 +213,7 @@ mod denoise {
                 clean: vec![0.0; BLOCK],
                 previous: vec![0.0; BLOCK],
                 declicker: None,
+                noise: 0,
             };
             denoiser.limit(limit);
             denoiser
@@ -253,6 +265,12 @@ mod denoise {
                     }
                     let noisy = ArrayView2::from_shape((1, BLOCK), &self.noisy).unwrap();
                     let clean = ArrayViewMut2::from_shape((1, BLOCK), &mut self.clean).unwrap();
+                    // libDF skips its decoders below its lowest threshold.
+                    network.min_db_thresh = if self.noise >= PAUSE {
+                        NOISE_ONLY
+                    } else {
+                        f32::NEG_INFINITY
+                    };
                     let snr = match network.process(noisy, clean) {
                         Ok(snr) => snr,
                         Err(error) => {
@@ -267,6 +285,11 @@ mod denoise {
                     if let Some(declicker) = &mut self.declicker {
                         declicker.output(block);
                     }
+                    self.noise = if snr < NOISE_ONLY {
+                        self.noise.saturating_add(1)
+                    } else {
+                        0
+                    };
                     snr >= SPEECH_SNR
                 }
                 Network::RNNoise(network) => {
@@ -287,8 +310,9 @@ mod denoise {
         }
     }
 
-    /// DeepFilterNet 3 with both its stages on every block, as libDF's own
-    /// command line runs it. The library's defaults skip deep filtering above
+    /// DeepFilterNet 3 with both its stages on every block outside a pause
+    /// ([`PAUSE`]), as libDF's own command line runs them on every block. The
+    /// library's defaults skip deep filtering above
     /// 20 dB SNR and gains above 30, which dulled clean speech (PESQ 3.91
     /// rather than 4.53) and took up to 5 dB off speech over a fan.
     fn deep_filter_net() -> anyhow::Result<DfTract> {
