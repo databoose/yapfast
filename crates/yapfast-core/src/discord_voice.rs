@@ -176,11 +176,12 @@ impl Watch {
         }
     }
 
-    /// Plays the stream's sound at the volume chosen for it.
+    /// Plays the stream's sound at the volume chosen for it, times the
+    /// speakers'.
     fn volume(watch: &mut Option<Self>) {
         if let Some(watching) = watch.as_mut()
             && let Some((worker, _)) = watching.worker.as_mut()
-            && let Err(error) = worker.volume(crate::volume::get(
+            && let Err(error) = worker.volume(crate::volume::heard(
                 crate::volume::Kind::Stream,
                 &watching.user,
             ))
@@ -219,7 +220,7 @@ impl Watch {
     /// the server it was on before.
     fn open(&mut self, server: &StreamServer, state: &mut State) -> Result<()> {
         self.opening = None;
-        let volume = crate::volume::get(crate::volume::Kind::Stream, &self.user);
+        let volume = crate::volume::heard(crate::volume::Kind::Stream, &self.user);
         let (worker, frames, reports) =
             Worker::watch(server, state.speaker.clone(), state.deafened, volume)?;
         self.worker = Some((worker, reports));

@@ -234,7 +234,8 @@ WebRTC's suppressor sounded different from it. So Yapfast's Discord microphone
 runs, in 10 ms blocks: WebRTC's echo cancellation and high-pass filter; if
 asked, taking the room's echo out; a noise suppressor, which also tells the
 gate which blocks are speech; WebRTC's gain control on what's left; then
-Yapfast's leveling.
+Yapfast's leveling and the microphone's volume, from
+[Settings](../voice.md#sounds).
 
 The suppressor is DeepFilterNet 3, through libDF, its Rust implementation on
 tract (crate `deep_filter`; the code and the model's weights are MIT or
@@ -273,7 +274,9 @@ or that are 18 dB louder still. While open, each such block holds it another
 since its frames overlap, louder than the sensitivity, and its estimate takes
 it for speech, so fewer than three blocks let clicks open the gate. Under
 speech, DeepFilterNet turns clicks down far less than in pauses; the declicker,
-below, takes out more. Levels are RMS over the block, after gain control.
+below, takes out more. Levels are RMS over the block, after gain control and
+at the microphone's volume, so at 0% the gate stays shut and a boosted quiet
+microphone opens it sooner.
 "Input sensitivity in Discord calls" sets it from -80 to 0 dBFS
 (`input_sensitivity`); behind its handle, the microphone's level goes from
 green through orange at -18 dBFS to red at -6, with whether the gate is open.

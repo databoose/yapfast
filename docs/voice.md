@@ -185,6 +185,20 @@ scales its sound. Yapfast calls play remote audio inside WebRTC, which LiveKit's
 Rust API can't adjust per track, so Yapfast's patch to `webrtc-sys` sets each
 track's volume through WebRTC's `SetVolume` by track id.
 
+Settings › Voice & video has a volume under each device, as Discord's
+does: "Microphone volume" sets how loud every call sends you, and "Speaker
+volume" how loud every call plays, both from 0% to 200% on the same curve
+as a person's volume, with 100% marked. Dragging plays each step at once,
+and letting go saves the value in `layout.json` (`microphone_volume`,
+`speaker_volume`). Everyone in a call, and their stream's sound, plays at
+their own volume times the speakers' (`volume::heard`), so Yapfast calls
+set it on each track as above and Discord voice mixes with it. The
+microphone's volume applies with leveling, as one gain ramped across each
+10 ms block, and like leveling it never pushes a peak past 90% of full
+scale, so a boosted microphone doesn't clip on a shout; leveling hears the
+voice before the volume, so changing it doesn't move your usual level.
+Yapfast's own sounds keep their volume in Settings › Sounds.
+
 Settings' "Even out your voice", on unless turned off, levels the microphone
 after WebRTC's processing. Yapfast follows your usual speaking level over the last
 half minute or so, and undoes up to 8 dB of drift from it as you lean towards
@@ -292,8 +306,8 @@ The controller shows reconnecting and allows up to 60 seconds before ending a
 degraded connection. A joining request has a 35-second deadline. Leave cancels
 a pending join immediately and waits up to ten seconds for membership cleanup;
 normal leaving has the same cleanup deadline. Crash membership expiry uses a
-five-minute sticky lifetime. Ringing DM/group calls, screen sharing, and
-overall input and output volume are later slices. Push-to-talk works as in
+five-minute sticky lifetime. Ringing DM/group calls and screen sharing are
+later slices. Push-to-talk works as in
 Discord calls; see [Discord's microphone](discord/voice.md#push-to-talk). A call goes
 on with the window closed to the [tray](tray.md), whose menu can disconnect it.
 

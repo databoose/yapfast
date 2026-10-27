@@ -934,6 +934,10 @@ struct Layout {
     input_mode: InputMode,
     push_to_talk_key: Option<crate::push_to_talk::Keybind>,
     push_to_talk_release_delay: Option<u32>,
+    /// How loud every call sends the microphone and plays, as sliders'
+    /// percentages from 0% to 200%; 100% unless changed.
+    microphone_volume: Option<u8>,
+    speaker_volume: Option<u8>,
     /// How loud people sound in calls, and their streams, by Discord or
     /// Matrix user id; see [`yapfast_core::volume`]. Unlisted people are as they
     /// come.
@@ -1048,6 +1052,13 @@ fn choice<T: PartialEq>(choices: &[T], value: T) -> i32 {
         .iter()
         .position(|choice| *choice == value)
         .unwrap_or(0) as i32
+}
+
+/// Calls send the microphone and play at the volume sliders' values.
+fn play_call_volumes(window: &YapfastWindow) {
+    let gain = |value: i32| yapfast_core::volume::from_slider(value.clamp(0, 200) as f32);
+    yapfast_core::volume::set_microphone(gain(window.get_microphone_volume()));
+    yapfast_core::volume::set_speakers(gain(window.get_speaker_volume()));
 }
 
 /// The choice a setting shows at an index; the first if there's none.
@@ -1168,6 +1179,9 @@ impl Layout {
         );
         window.set_talk_delay(self.release_delay() as i32);
         yapfast_core::push_to_talk::set_release_delay(self.release_delay());
+        window.set_microphone_volume(self.microphone_volume.unwrap_or(100).into());
+        window.set_speaker_volume(self.speaker_volume.unwrap_or(100).into());
+        play_call_volumes(window);
         for (person, volume) in &self.volumes {
             yapfast_core::volume::set(yapfast_core::volume::Kind::Voice, person, *volume);
         }

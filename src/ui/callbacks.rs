@@ -1108,6 +1108,12 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
         }
     });
     let weak = window.as_weak();
+    window.on_call_volumes_changed(move || {
+        if let Some(window) = weak.upgrade() {
+            play_call_volumes(&window);
+        }
+    });
+    let weak = window.as_weak();
     window.on_record_talk_key(move |on| {
         if let Some(window) = weak.upgrade() {
             window.set_talk_recording(on);
@@ -1144,6 +1150,9 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
         yapfast_core::push_to_talk::set_on(layout.input_mode == InputMode::PushToTalk);
         layout.push_to_talk_release_delay = Some(window.get_talk_delay().max(0) as u32);
         yapfast_core::push_to_talk::set_release_delay(layout.release_delay());
+        layout.microphone_volume = Some(window.get_microphone_volume().clamp(0, 200) as u8);
+        layout.speaker_volume = Some(window.get_speaker_volume().clamp(0, 200) as u8);
+        play_call_volumes(&window);
         layout.share_typing = Some(window.get_share_typing());
         layout.notifications = Some(window.get_notifications());
         layout.notification_text = Some(window.get_notification_text());

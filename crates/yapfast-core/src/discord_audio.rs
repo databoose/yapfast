@@ -2,7 +2,8 @@
 //! its own calls, so Discord voice opens the chosen microphone and speakers
 //! itself, through [`crate::audio_io`]. The microphone goes through WebRTC's
 //! echo cancellation, DeepFilterNet's noise suppression (or RNNoise's), WebRTC's
-//! gain control and Yapfast's leveling, and a gate that speech opens.
+//! gain control, Yapfast's leveling and the microphone's volume, and a gate
+//! that speech opens.
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
@@ -460,8 +461,8 @@ pub fn speakers(
 
 /// The microphone's processing, block by block: WebRTC cancels echo and
 /// filters out rumble, the chosen suppressor takes out noise and hears
-/// speech, WebRTC controls the gain of what's left, and Yapfast levels it. The
-/// gate decides what's sent.
+/// speech, WebRTC controls the gain of what's left, and Yapfast levels it and
+/// sets its volume. The gate decides what's sent.
 struct Processing {
     echo: AudioProcessingModule,
     /// Takes out the room's reverb while asked to.
@@ -527,15 +528,20 @@ impl Processing {
             *sample = value.clamp(-32768.0, 32767.0) as i16;
         }
         let _ = self.gain.process_stream(block, SAMPLE_RATE as i32, 1);
-        // The gate hears the voice before leveling, which could lift
-        // noise past it.
-        let level = decibels(block);
+        // The gate hears the voice at its volume, as it's sent, but before
+        // leveling, which could lift noise past it.
+        let volume = crate::volume::microphone();
+        let level = decibels(block) + 20.0 * volume.log10();
         self.level = level;
         for (value, sample) in self.samples.iter_mut().zip(block.iter()) {
             *value = f32::from(*sample);
         }
-        self.leveler
-            .process(&mut self.samples, SAMPLE_RATE, crate::leveling::enabled());
+        self.leveler.process(
+            &mut self.samples,
+            SAMPLE_RATE,
+            crate::leveling::enabled(),
+            volume,
+        );
         for (sample, value) in block.iter_mut().zip(&self.samples) {
             *sample = value.clamp(-32768.0, 32767.0) as i16;
         }

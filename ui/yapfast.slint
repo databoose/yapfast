@@ -989,6 +989,10 @@ export component YapfastWindow inherits Window {
     in-out property <int> talk-delay: 20;
     in-out property <string> talk-note;
     callback record-talk-key(bool);
+    /// Calls' microphone and speakers volume: see VoiceSettings.
+    in-out property <int> microphone-volume: 100;
+    in-out property <int> speaker-volume: 100;
+    callback call-volumes-changed();
     in-out property <bool> share-typing: true;
     in-out property <bool> notifications: true;
     in-out property <bool> notification-text: true;
@@ -3213,6 +3217,8 @@ export component YapfastWindow inherits Window {
             sensitivity <=> root.sensitivity; gate-level: root.gate-level; gate-sending: root.gate-sending; gate-meter-note: root.gate-meter-note;
             input-mode <=> root.input-mode; talk-key: root.talk-key; talk-recording <=> root.talk-recording;
             talk-delay <=> root.talk-delay; talk-note: root.talk-note;
+            microphone-volume <=> root.microphone-volume; speaker-volume <=> root.speaker-volume;
+            call-volumes-changed => { root.call-volumes-changed(); }
             record-talk-key(on) => { root.record-talk-key(on); }
             select-microphone(index) => { root.select-microphone(index); }
             select-speaker(index) => { root.select-speaker(index); }

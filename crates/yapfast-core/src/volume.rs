@@ -3,10 +3,15 @@
 //! named as their network does, by Discord user id or Matrix user id. The UI
 //! remembers the choices and sets them here; the calls' audio reads them as
 //! it plays. Its sliders show them on Discord's scale; see [`from_slider`].
+//! The microphone's volume and the speakers' apply to every call on top:
+//! everyone plays at their own volume times the speakers'.
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{LazyLock, RwLock},
+    sync::{
+        LazyLock, RwLock,
+        atomic::{AtomicU32, Ordering},
+    },
 };
 
 use tokio::sync::watch;
@@ -65,6 +70,10 @@ static VOLUMES: LazyLock<[RwLock<HashMap<String, f32>>; 2]> = LazyLock::new(Defa
 static MUTED: LazyLock<RwLock<HashSet<String>>> = LazyLock::new(RwLock::default);
 static CHANGED: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(0).0);
 
+/// The microphone's and the speakers' gains in every call, as f32 bits.
+static MICROPHONE: AtomicU32 = AtomicU32::new(1f32.to_bits());
+static SPEAKERS: AtomicU32 = AtomicU32::new(1f32.to_bits());
+
 fn volumes(kind: Kind) -> &'static RwLock<HashMap<String, f32>> {
     &VOLUMES[kind as usize]
 }
@@ -114,13 +123,37 @@ pub fn muted(person: &str) -> bool {
     MUTED.read().unwrap().contains(person)
 }
 
-/// How loud `person` plays: as chosen, or silent while muted here.
+/// How loud `person` plays: as chosen, times the speakers' volume, or
+/// silent while muted here.
 pub fn heard(kind: Kind, person: &str) -> f32 {
     if kind == Kind::Voice && muted(person) {
         0.0
     } else {
-        get(kind, person)
+        get(kind, person) * speakers()
     }
+}
+
+/// Sets how loud the microphone sends in every call, from 0.0 to [`MAX`].
+pub fn set_microphone(gain: f32) {
+    MICROPHONE.store(gain.clamp(0.0, MAX).to_bits(), Ordering::Relaxed);
+}
+
+/// How loud the microphone sends; 1.0, as it comes, unless set.
+pub fn microphone() -> f32 {
+    f32::from_bits(MICROPHONE.load(Ordering::Relaxed))
+}
+
+/// Sets how loud every call plays, from 0.0 to [`MAX`].
+pub fn set_speakers(gain: f32) {
+    let gain = gain.clamp(0.0, MAX).to_bits();
+    if SPEAKERS.swap(gain, Ordering::Relaxed) != gain {
+        CHANGED.send_modify(|changes| *changes += 1);
+    }
+}
+
+/// How loud every call plays; 1.0 unless set.
+pub fn speakers() -> f32 {
+    f32::from_bits(SPEAKERS.load(Ordering::Relaxed))
 }
 
 /// Changes whenever a volume or a mute does.
@@ -131,6 +164,9 @@ pub fn changes() -> watch::Receiver<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Held by the tests that set the speakers' volume or depend on it.
+    static SPEAKERS_SET: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn remembers_each_persons_voice_and_stream() {
@@ -157,6 +193,7 @@ mod tests {
 
     #[test]
     fn a_local_mute_silences_the_voice_and_keeps_its_volume() {
+        let _speakers = SPEAKERS_SET.lock().unwrap();
         set(Kind::Voice, "volume-test-3", 0.5);
         let changes = changes();
         mute("volume-test-3", true);
@@ -175,6 +212,23 @@ mod tests {
         );
         mute("volume-test-3", false);
         assert_eq!(heard(Kind::Voice, "volume-test-3"), 0.5);
+    }
+
+    #[test]
+    fn the_speakers_volume_scales_everyone() {
+        let _speakers = SPEAKERS_SET.lock().unwrap();
+        set(Kind::Voice, "volume-test-5", 0.5);
+        let changes = changes();
+        set_speakers(1.5);
+        assert!(changes.has_changed().unwrap(), "calls play it at once");
+        assert_eq!(heard(Kind::Voice, "volume-test-5"), 0.75);
+        assert_eq!(
+            heard(Kind::Stream, "volume-test-5"),
+            Kind::Stream.default_gain() * 1.5,
+            "streams too"
+        );
+        assert_eq!(get(Kind::Voice, "volume-test-5"), 0.5, "their own stays");
+        set_speakers(1.0);
     }
 
     #[test]

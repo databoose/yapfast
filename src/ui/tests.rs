@@ -664,6 +664,44 @@ fn says_how_long_a_game_has_run() {
 }
 
 #[test]
+fn call_volumes_play_while_dragged_and_are_remembered() {
+    i_slint_backend_testing::init_no_event_loop();
+    let directory = tempfile::tempdir().unwrap();
+    let window = YapfastWindow::new().unwrap();
+    let adapter = Adapter::new(
+        Arc::new(BackgroundRuntime::new().unwrap()),
+        directory.path().into(),
+        &window,
+    )
+    .unwrap();
+    bind_callbacks(&window, &adapter);
+    assert_eq!(window.get_microphone_volume(), 100, "as it comes");
+    assert_eq!(window.get_speaker_volume(), 100);
+    window.set_microphone_volume(200);
+    window.set_speaker_volume(50);
+    window.invoke_call_volumes_changed();
+    assert!((yapfast_core::volume::microphone() - 1.995).abs() < 1e-3);
+    assert!((yapfast_core::volume::speakers() - 0.143).abs() < 1e-3);
+    assert_eq!(
+        Layout::read(directory.path()).microphone_volume,
+        None,
+        "a drag's steps aren't saved"
+    );
+    window.invoke_preferences_changed();
+    let read = Layout::read(directory.path());
+    assert_eq!(read.microphone_volume, Some(200));
+    assert_eq!(read.speaker_volume, Some(50));
+    let defaults: Layout = serde_json::from_str("{}").unwrap();
+    defaults.apply(&window);
+    assert_eq!(yapfast_core::volume::microphone(), 1.0);
+    assert_eq!(yapfast_core::volume::speakers(), 1.0);
+    read.apply(&window);
+    assert_eq!(window.get_microphone_volume(), 200);
+    assert_eq!(window.get_speaker_volume(), 50);
+    defaults.apply(&window);
+}
+
+#[test]
 fn sound_settings_are_remembered() {
     i_slint_backend_testing::init_no_event_loop();
     let directory = tempfile::tempdir().unwrap();

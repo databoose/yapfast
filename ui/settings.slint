@@ -467,6 +467,12 @@ export component VoiceSettings inherits VerticalLayout {
     in property <string> talk-note;
     /// Discord is linked, so its calls' noise suppression shows.
     in property <bool> discord;
+    /// How loud every call sends the microphone and plays, as sliders'
+    /// percentages from 0% to 200%. Dragging plays each step through
+    /// call-volumes-changed, and letting go saves the last.
+    in-out property <int> microphone-volume: 100;
+    in-out property <int> speaker-volume: 100;
+    callback call-volumes-changed;
     callback select-microphone(int);
     callback select-speaker(int);
     callback select-camera(int);
@@ -476,30 +482,43 @@ export component VoiceSettings inherits VerticalLayout {
     callback record-talk-key(bool);
     spacing: 16px;
     SettingsTitle { text: "Voice & video"; }
+    // Each row's two columns take half the width each, whatever is in them:
+    // a column starts at its least width and stretches from there, so none
+    // has one.
     HorizontalLayout {
         spacing: 16px;
         VerticalLayout {
-            spacing: 8px; horizontal-stretch: 1;
+            spacing: 8px; horizontal-stretch: 1; min-width: 0; preferred-width: 0;
             SettingsHeading { text: "MICROPHONE"; }
             ComboBox { model: root.microphones; current-index: root.microphone-index; enabled: root.microphones.length > 0; accessible-label: "Microphone device"; selected => { root.select-microphone(self.current-index); } }
+            VolumeSlider {
+                label: "Microphone volume"; value <=> root.microphone-volume;
+                changed => { root.call-volumes-changed(); }
+                committed => { root.preferences-changed(); }
+            }
         }
         VerticalLayout {
-            spacing: 8px; horizontal-stretch: 1;
+            spacing: 8px; horizontal-stretch: 1; min-width: 0; preferred-width: 0;
             SettingsHeading { text: "SPEAKERS"; }
             ComboBox { model: root.speakers; current-index: root.speaker-index; enabled: root.speakers.length > 0; accessible-label: "Speaker device"; selected => { root.select-speaker(self.current-index); } }
+            VolumeSlider {
+                label: "Speaker volume"; value <=> root.speaker-volume;
+                changed => { root.call-volumes-changed(); }
+                committed => { root.preferences-changed(); }
+            }
         }
     }
     if root.microphones.length == 0 && root.speakers.length == 0: Label { text: "No audio devices found. Connect one, then refresh."; }
     HorizontalLayout {
         spacing: 16px;
         VerticalLayout {
-            spacing: 8px; horizontal-stretch: 1; alignment: start;
+            spacing: 8px; horizontal-stretch: 1; min-width: 0; preferred-width: 0; alignment: start;
             SettingsHeading { text: "CAMERA"; }
             ComboBox { model: root.cameras; current-index: root.camera-index; enabled: root.cameras.length > 0; accessible-label: "Camera device"; selected => { root.select-camera(self.current-index); } }
             if root.cameras.length == 0: Label { text: "No camera found. Connect one, then refresh."; }
         }
         VerticalLayout {
-            spacing: 8px; horizontal-stretch: 1;
+            spacing: 8px; horizontal-stretch: 1; min-width: 0; preferred-width: 0;
             SettingsHeading { text: "PREVIEW"; }
             Rectangle {
                 height: self.width * 9 / 16; border-radius: 8px; background: #000000; clip: true;
@@ -630,7 +649,7 @@ export component VoiceSettings inherits VerticalLayout {
         }
         Label {
             text: root.gate-meter-note != "" ? root.gate-meter-note
-                : "Yapfast sends your voice when it's louder than the handle, and other sounds when they're 18 dB louder still. The bar is your microphone after noise suppression, as Yapfast hears it to decide.";
+                : "Yapfast sends your voice when it's louder than the handle, and other sounds when they're 18 dB louder still. The bar is your microphone after noise suppression and at its volume, as Yapfast hears it to decide.";
         }
     }
 }
