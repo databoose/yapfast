@@ -242,13 +242,16 @@ tract (crate `deep_filter`; the code and the model's weights are MIT or
 Apache-2.0). crates.io has only libDF 0.2.5, from before DeepFilterNet 3, so
 Yapfast takes the repository's last commit, `d375b2d`, and its `default-model`
 feature builds the 8 MB model into Yapfast. It runs both of its stages on every
-block but in a pause, as libDF's command line does on every block. The
-library's defaults skip deep filtering above 20 dB SNR, which dulled clean
-speech and took up to 5 dB off speech over a fan. A pause starts after 500 ms
-of blocks its SNR estimate puts below -10 dB, past the gate's 400 ms hold, and
-lasts until a block isn't: only its encoder runs, a third of its work, and the
-block's gains are zero, which leaves the strength's mix of the microphone.
-Skipping the decoders from the first such block dulled what the gate sent.
+block but in a pause or while push to talk sends nothing, as libDF's command
+line does on every block. The library's defaults skip deep filtering above
+20 dB SNR, which dulled clean speech and took up to 5 dB off speech over a
+fan. A pause starts after 500 ms of blocks its SNR estimate puts below -10 dB,
+past the gate's 400 ms hold, and lasts until a block isn't: only its encoder
+runs, a third of its work, and the block's gains are zero, which leaves the
+strength's mix of the microphone. Skipping the decoders from the first such
+block dulled what the gate sent. Push to talk sends pauses too while the key
+is down, so it runs in full then, and with the key up only its encoder runs,
+whatever the microphone hears.
 
 RNNoise, through `nnnoiseless` (BSD-3-Clause), lets keyboard clicks through,
 and they hold the gate open. Settings → Voice & video → "Noise suppression in
@@ -364,10 +367,11 @@ the microphone sends only while a key is held, and for a release delay after
 it comes up: 20 ms unless changed, from 0 to 2 s, Discord's default and its
 slider's range (`push_to_talk_release_delay`). As in Discord's client, the
 voice gate and its sensitivity don't apply then, so the sensitivity setting
-hides, and its meter doesn't run; noise suppression and the rest of the
-processing still do. With the key up nothing is sent and the track pauses,
-as when the gate shuts, so Discord, the call's speaking ring and the account
-panel's show the account not speaking. Muting still wins.
+hides, and its meter doesn't run; the rest of the processing still does,
+though with the key up DeepFilterNet runs only its encoder (see
+[Microphone](#microphone)). With the key up nothing is sent and the track
+pauses, as when the gate shuts, so Discord, the call's speaking ring and the
+account panel's show the account not speaking. Muting still wins.
 
 Discord has no default key, and neither does Yapfast. "Record keybind" takes
 the next key pressed, and Escape stops without changing it; until there's a

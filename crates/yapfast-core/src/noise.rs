@@ -126,7 +126,7 @@ pub(crate) fn declick() -> bool {
 }
 
 #[cfg(feature = "discord")]
-pub(crate) use denoise::{BLOCK, Denoiser};
+pub(crate) use denoise::{BLOCK, Denoiser, Sent};
 
 #[cfg(feature = "discord")]
 mod denoise {
@@ -150,8 +150,9 @@ mod denoise {
     const SPEECH_SNR: f32 = 5.0;
     /// DeepFilterNet's speech-to-noise estimate below which a block is only
     /// noise, in dB, and how many such blocks in a row make a pause. In a
-    /// pause its two decoders, two thirds of its work, don't run and the
-    /// block's gains are zero, until a block isn't noise. 500 ms is past the
+    /// pause, while the voice gate decides what's sent, its two decoders, two
+    /// thirds of its work, don't run and the block's gains are zero, until a
+    /// block isn't noise. 500 ms is past the
     /// voice gate's hold, so what the gate sends after speech is processed in
     /// full. Skipping them from the first such block took the wideband PESQ
     /// of what the gate sent over hiss from 3.00 to 2.62.
@@ -177,6 +178,20 @@ mod denoise {
         declicker: Option<crate::declick::Declicker>,
         /// How many blocks in a row DeepFilterNet took for noise alone.
         noise: u32,
+    }
+
+    /// What becomes of the blocks the denoiser puts out.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Sent {
+        /// The voice gate decides from their speech estimate, so in a pause
+        /// DeepFilterNet runs only its encoder.
+        Gated,
+        /// They're sent, pauses too, as while push-to-talk's key is down.
+        Always,
+        /// They aren't, as while the key is up: DeepFilterNet runs only its
+        /// encoder, which keeps its state and its speech estimate going, and
+        /// puts out the strength's mix of the microphone.
+        Never,
     }
 
     /// How far DeepFilterNet's output is behind its input, in samples.
@@ -248,7 +263,7 @@ mod denoise {
         /// Takes the noise out of 10 ms of mono, in 16-bit range, in place,
         /// and returns whether it's speech. DeepFilterNet's output is 30 ms
         /// behind its input, 31 with the declicker, RNNoise's 10 ms.
-        pub(crate) fn block(&mut self, block: &mut [f32]) -> bool {
+        pub(crate) fn block(&mut self, block: &mut [f32], sent: Sent) -> bool {
             match &mut self.network {
                 Network::DeepFilterNet(network) => {
                     if super::declick() {
@@ -266,10 +281,10 @@ mod denoise {
                     let noisy = ArrayView2::from_shape((1, BLOCK), &self.noisy).unwrap();
                     let clean = ArrayViewMut2::from_shape((1, BLOCK), &mut self.clean).unwrap();
                     // libDF skips its decoders below its lowest threshold.
-                    network.min_db_thresh = if self.noise >= PAUSE {
-                        NOISE_ONLY
-                    } else {
-                        f32::NEG_INFINITY
+                    network.min_db_thresh = match sent {
+                        Sent::Never => f32::INFINITY,
+                        Sent::Gated if self.noise >= PAUSE => NOISE_ONLY,
+                        Sent::Gated | Sent::Always => f32::NEG_INFINITY,
                     };
                     let snr = match network.process(noisy, clean) {
                         Ok(snr) => snr,
@@ -343,7 +358,7 @@ mod tests {
             if index >= 100 {
                 before += energy(&block);
             }
-            denoiser.block(&mut block);
+            denoiser.block(&mut block, Sent::Gated);
             if index >= 100 {
                 after += energy(&block);
             }
@@ -431,7 +446,7 @@ mod tests {
             for noisy in input.chunks_exact(BLOCK) {
                 let mut block = noisy.to_vec();
                 let started = Instant::now();
-                denoiser.block(&mut block);
+                denoiser.block(&mut block, Sent::Gated);
                 let took = started.elapsed().as_secs_f64() * 1e6;
                 times.push(took);
                 let scaled: Vec<f32> = noisy.iter().map(|sample| sample / 32768.0).collect();

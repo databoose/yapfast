@@ -22,7 +22,7 @@ use yapfast_discord::voice::{CHANNELS, FRAME, Listener, Microphone, SAMPLE_RATE,
 
 use crate::{
     audio_io::{LastingInput, LastingOutput},
-    noise::Denoiser,
+    noise::{Denoiser, Sent},
 };
 
 /// Whether Discord voice has audio on this platform yet.
@@ -519,7 +519,18 @@ impl Processing {
         } else {
             self.dereverb = None;
         }
-        let speech = self.denoiser.block(&mut self.samples);
+        let talking = crate::push_to_talk::on().then(|| {
+            self.talk.block(
+                crate::push_to_talk::held(),
+                crate::push_to_talk::release_delay_ms(),
+            )
+        });
+        let sent = match talking {
+            None => Sent::Gated,
+            Some(true) => Sent::Always,
+            Some(false) => Sent::Never,
+        };
+        let speech = self.denoiser.block(&mut self.samples, sent);
         for (sample, value) in block.iter_mut().zip(&self.samples) {
             *sample = value.clamp(-32768.0, 32767.0) as i16;
         }
@@ -544,11 +555,7 @@ impl Processing {
         for value in &mut self.samples {
             *value /= 32768.0;
         }
-        if crate::push_to_talk::on() {
-            let sending = self.talk.block(
-                crate::push_to_talk::held(),
-                crate::push_to_talk::release_delay_ms(),
-            );
+        if let Some(sending) = talking {
             return self.gate.pass(&self.samples, sending);
         }
         self.gate.sensitivity = crate::noise::sensitivity();
@@ -659,6 +666,8 @@ pub fn capture(
 /// for echo cancellation, given a 20 ms stereo frame at a time as a call
 /// gives it; then `YAPFAST_AUDIO_ECHOED` gets the microphone with only echo
 /// cancelled. `YAPFAST_LEVELING=off` turns off evening out the voice.
+/// `YAPFAST_PUSH_TO_TALK`, a byte for each block, not 0 while the key is
+/// down, puts the microphone in push-to-talk.
 #[test]
 #[ignore = "needs YAPFAST_AUDIO_IN and YAPFAST_AUDIO_OUT"]
 fn processes_a_recording() {
@@ -688,6 +697,10 @@ fn processes_a_recording() {
     let far = std::env::var("YAPFAST_AUDIO_FAR")
         .is_ok()
         .then(|| read("YAPFAST_AUDIO_FAR"));
+    let keys = std::env::var("YAPFAST_PUSH_TO_TALK")
+        .ok()
+        .map(|path| std::fs::read(path).unwrap());
+    crate::push_to_talk::set_on(keys.is_some());
     // The same echo cancellation alone, to hear what it leaves.
     let mut echo = AudioProcessingModule::new(true, false, true, false);
     let mut echoed = Vec::new();
@@ -718,6 +731,9 @@ fn processes_a_recording() {
             let mut alone = block.clone();
             let _ = echo.process_stream(&mut alone, SAMPLE_RATE as i32, 1);
             echoed.extend(alone);
+        }
+        if let Some(keys) = &keys {
+            crate::push_to_talk::hold(keys.get(blocks as usize).is_some_and(|key| *key != 0));
         }
         let was_open = processing.gate.is_open();
         let started = std::time::Instant::now();
