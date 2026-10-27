@@ -56,7 +56,7 @@ because it shows the messages it saved last time and catches up while you read.
   <tr><td>Idle</td><td>724 MB</td><td>30 MB (−96%)</td><td>0.11%</td><td>0.015% (−86%)</td></tr>
   <tr><td>Image-heavy channel</td><td>706 MB</td><td>41 MB (−94%)</td><td>0.17%</td><td>0.008% (−95%)</td></tr>
   <tr><td>In a call</td><td>888 MB</td><td>44 MB (−95%)</td><td>0.46%</td><td>0.33% (−28%)</td></tr>
-  <tr><td>Sharing your screen¹</td><td>1,013 MB</td><td>126 MB (−88%)</td><td>2.15%</td><td>2.5% (+14%)</td></tr>
+  <tr><td>Sharing your screen¹</td><td>1,013 MB</td><td>113 MB (−89%)</td><td>2.15%</td><td>1.1% (−48%)</td></tr>
   <tr><th></th><th colspan="2">Discord</th><th colspan="2">Yapfast</th></tr>
   <tr><td>Opening the app²</td><td colspan="2" align="center">8 s</td><td colspan="2" align="center">0.22 s (36× faster)</td></tr>
 </table>
@@ -71,17 +71,18 @@ Electron, with Vencord on top. So its numbers stand in for Discord's. CPU counts
 the whole processor as 100%.
 
 ¹ Sharing a 1920×1080 monitor at 30 frames a second, while in the call.
-Yapfast uses more CPU here than Vesktop, as it converts and encodes each frame
-on the processor.
+Yapfast encodes on the graphics card when it has an encoder, here an NVIDIA
+RTX 3090 sending H264. Encoding on the processor with x264 instead, it takes
+2.5%, a little more than Vesktop.
 
 ² From clicking the icon to reading your messages, against Discord's own app
 rather than Vesktop, timed on my Windows PC. Yapfast shows the messages it saved
 last time and catches up while you read.
 
-Memory and CPU measured on 25 October 2026, both on the same PC. The machine,
-what "memory" counts and how each scenario ran are in
-[the measurements](docs/measurements/README.md). Your numbers will depend on how
-many servers and DMs you have.
+Memory and CPU measured on 25 October 2026, and screen sharing on 27 October,
+all on the same PC. The machine, what "memory" counts and how each scenario ran
+are in [the measurements](docs/measurements/README.md). Your numbers will depend
+on how many servers and DMs you have.
 
 </details>
 
