@@ -4,7 +4,8 @@
 //! remembers the choices and sets them here; the calls' audio reads them as
 //! it plays. Its sliders show them on Discord's scale; see [`from_slider`].
 //! The microphone's volume and the speakers' apply to every call on top:
-//! everyone plays at their own volume times the speakers'.
+//! everyone plays at their own volume times the speakers'. Muting someone's
+//! soundboard here silences the sounds they play, not their voice.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -68,6 +69,8 @@ impl Kind {
 static VOLUMES: LazyLock<[RwLock<HashMap<String, f32>>; 2]> = LazyLock::new(Default::default);
 /// Those muted for this account alone, as Discord's local mute does.
 static MUTED: LazyLock<RwLock<HashSet<String>>> = LazyLock::new(RwLock::default);
+/// Those whose soundboard sounds this account doesn't hear.
+static SOUNDBOARD_MUTED: LazyLock<RwLock<HashSet<String>>> = LazyLock::new(RwLock::default);
 static CHANGED: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(0).0);
 
 /// The microphone's and the speakers' gains in every call, as f32 bits.
@@ -121,6 +124,22 @@ pub fn mute(person: &str, muted: bool) {
 /// Whether `person` is muted for this account alone.
 pub fn muted(person: &str) -> bool {
     MUTED.read().unwrap().contains(person)
+}
+
+/// Mutes the soundboard sounds `person` plays, for this account alone, or
+/// unmutes them; the sounds they play from then on.
+pub fn mute_soundboard(person: &str, muted: bool) {
+    let mut set = SOUNDBOARD_MUTED.write().unwrap();
+    if muted {
+        set.insert(person.to_owned());
+    } else {
+        set.remove(person);
+    }
+}
+
+/// Whether `person`'s soundboard sounds are muted for this account.
+pub fn soundboard_muted(person: &str) -> bool {
+    SOUNDBOARD_MUTED.read().unwrap().contains(person)
 }
 
 /// How loud `person` plays: as chosen, times the speakers' volume, or
@@ -212,6 +231,15 @@ mod tests {
         );
         mute("volume-test-3", false);
         assert_eq!(heard(Kind::Voice, "volume-test-3"), 0.5);
+    }
+
+    #[test]
+    fn muting_the_soundboard_leaves_the_voice() {
+        mute_soundboard("volume-test-6", true);
+        assert!(soundboard_muted("volume-test-6"));
+        assert!(!muted("volume-test-6"), "their voice plays");
+        mute_soundboard("volume-test-6", false);
+        assert!(!soundboard_muted("volume-test-6"));
     }
 
     #[test]

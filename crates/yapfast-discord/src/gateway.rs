@@ -59,6 +59,7 @@ const STREAM_CREATE: u64 = 18;
 const STREAM_DELETE: u64 = 19;
 const STREAM_WATCH: u64 = 20;
 const STREAM_SET_PAUSED: u64 = 22;
+const REQUEST_SOUNDBOARD_SOUNDS: u64 = 31;
 const GUILD_SUBSCRIPTIONS_BULK: u64 = 37;
 
 /// Discord closed the gateway, with its close code.
@@ -453,6 +454,13 @@ impl Gateway {
             json!({"stream_key": stream_key, "paused": paused}),
         )
         .await
+    }
+
+    /// Asks for these servers' soundboard sounds, which Discord sends as one
+    /// SOUNDBOARD_SOUNDS for each.
+    pub async fn request_soundboard_sounds(&mut self, guild_ids: &[String]) -> Result<()> {
+        self.send(REQUEST_SOUNDBOARD_SOUNDS, json!({"guild_ids": guild_ids}))
+            .await
     }
 
     /// Whether Discord asked Yapfast to wait before asking about `guild_id`'s
@@ -1292,12 +1300,12 @@ mod tests {
         assert_eq!(next(&mut gateway).await.unwrap().event, Event::TypingStart);
 
         // An event Yapfast doesn't know passes through by name, with its data.
-        peer.dispatch("GUILD_SOUNDBOARD_SOUND_CREATE", json!({"id": "7"}))
+        peer.dispatch("GUILD_SCHEDULED_EVENT_CREATE", json!({"id": "7"}))
             .await;
         let other = next(&mut gateway).await.unwrap();
         assert_eq!(
             other.event,
-            Event::Other("GUILD_SOUNDBOARD_SOUND_CREATE".into())
+            Event::Other("GUILD_SCHEDULED_EVENT_CREATE".into())
         );
         assert_eq!(other.data["id"], "7");
     }

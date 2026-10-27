@@ -227,6 +227,91 @@ fake server covers all of this. Message requests
 have no call until accepted. A DM call through real Discord, and Go Live in
 one, haven't been checked by hand yet.
 
+## Soundboard
+
+The soundboard button, before the camera in the dock and among the call's
+controls, opens Discord's sounds: the account's favourites first, then the
+call's server's, then with Nitro the account's other servers', then
+Discord's own, each with its emoji. A click plays one for everyone in the
+call. Hovering over one offers hearing it first, here only, and a star that
+adds it to the favourites or takes it out; a favourite's star stays lit. In
+a server's voice channel that takes Speak and Use Soundboard, as Discord's
+client checks, and other servers' sounds take Use External Sounds too; a DM
+call always has the soundboard. While deafened or muted by the server, it
+says so and plays nothing, as Discord's does. A sound the server can't keep
+without its boosts (`available: false`) doesn't show.
+
+Sounds don't go through the voice connection. Playing one posts
+`POST /channels/{id}/send-soundboard-sound` with its id and emoji, and for a
+server's sound `source_guild_id`, as Discord's client does. Discord sends
+VOICE_CHANNEL_EFFECT_SEND to everyone in the call, and each client
+downloads the sound from the CDN, `/soundboard-sounds/{id}`, MP3 or Ogg,
+and plays it at the sound's volume. Yapfast plays its own at once, as
+Discord's client does, and leaves out the effect that comes back for it.
+The sounds mix into the call's speakers in `Hearing`, at the sound's
+volume times the soundboard volume times the speakers', so echo
+cancellation takes them out of the microphone; eight play at once at
+most, and deafening stops them. libwebrtc's FFmpeg demuxes and decodes
+the file (`Video::open_sound`), resampled to 48 kHz stereo and cut at
+6 s, Discord's limit being 5.2 s. A call keeps the files it downloaded,
+up to 2 MiB, to play them again, and lets them go when it ends.
+
+As a call connects, Yapfast asks for Discord's own sounds with
+`GET /soundboard-default-sounds`, once a session, and for the server's with
+the gateway's op 31, REQUEST_SOUNDBOARD_SOUNDS, which SOUNDBOARD_SOUNDS
+answers; Discord's client asks for them then too. With Nitro it asks for
+every server's, as Discord's client does; without, only the call's server's,
+since no other's can be played. GUILD_SOUNDBOARD_SOUND_CREATE, _UPDATE and
+_DELETE, and GUILD_SOUNDBOARD_SOUNDS_UPDATE, keep the list current. The list
+lives in the call and goes with it.
+
+The favourites are Discord's, kept for every client of the account in the
+second settings, `FrecencyUserSettings`, as `favorite_soundboard_sounds`
+(field 8): the ids, and their order. A call reads them as it connects with
+`GET /users/@me/settings-proto/2`, and USER_SETTINGS_PROTO_UPDATE brings
+another client's changes; a star writes the whole list back with `PATCH`,
+250 at most, Discord's limit.
+
+Someone's menu in a voice channel has Mute Soundboard beside Mute (see
+[servers.md](servers.md#someones-menu-in-a-voice-channel)): the sounds they
+play from then on stay silent here. Discord's client keeps it locally, and
+so does Yapfast, in its layout.
+
+### Soundboard volume and entrance sounds
+
+Settings, Voice & video, has Discord's soundboard volume, a slider from 0%
+to 100%, and the account's entrance sounds, both kept by Discord for every
+client in the first settings, `PreloadedUserSettings`. The volume is
+`voice_and_video.soundboard_settings.volume` (fields 5, 9, 1), a float
+Discord stores on its slider's curve, (slider / 100)^2.8 × 100, the same
+curve as the volume sliders; sounds play at that over 100. Letting go of
+the slider writes it.
+
+An entrance sound, a join sound in Discord's code, plays to everyone in a
+voice channel as the account joins it, with Nitro. Each server's settings
+in `guilds` (field 3, a map by server id) may hold one, `join_sound` (field
+6): the sound's id and its own server's, 0 for Discord's own; the entry
+under server 0 is the one for every server. Settings chooses one for "All
+servers" or a server in the same picker as the call's, listing Discord's
+sounds and every server's, which it asks for with op 31 as it opens, and
+Remove takes it away. A `PATCH /users/@me/settings-proto/1` replaces each
+top-level field it sends whole, so Yapfast reads the settings with `GET`
+first and sends the whole of `voice_and_video` or `guilds` with the one
+value changed.
+
+As a call connects, with Nitro and outside a stage channel, Yapfast looks
+up the server's entrance sound, else the one for every server, as Discord's
+client does; a DM's call takes the one for every server. Once the sounds
+have come, within 10 s, and if the account may play that one there and
+isn't deafened or muted by the server, it plays it here and posts `POST
+/channels/{id}/custom-call-sounds` with one of Discord's emoji animations,
+`{"animation_type": 0, "animation_id": 10..15}`. Discord reads the sound
+from the settings and sends the others VOICE_CHANNEL_EFFECT_SEND.
+
+A server's sounds in its settings aren't there yet. `plays_the_soundboard`
+and `keeps_the_soundboards_settings` check the service against the fake,
+whose sounds are `testing/fixtures`' tones.
+
 ## Microphone
 
 Discord's own client suppresses noise with Krisp, a neural network, and

@@ -26,6 +26,7 @@ use crate::{
     ready::{self, PRIVATE, Server},
     search, server_settings,
     settings::{self, CustomStatus},
+    soundboard,
     stream::StreamServer,
 };
 
@@ -302,6 +303,14 @@ pub struct Snapshot {
     /// The game this account shows it plays now.
     #[serde(skip)]
     pub playing: Option<Arc<crate::own_activity::Playing>>,
+    /// The soundboard's volume, from 0 to 100 on the power curve of the
+    /// other volumes, and the sounds that play as this account joins
+    /// voice, as its settings keep them; the volume is none until they say,
+    /// which is [`soundboard::DEFAULT_VOLUME`].
+    #[serde(skip)]
+    pub soundboard_volume: Option<f32>,
+    #[serde(skip)]
+    pub join_sounds: Arc<[soundboard::JoinSound]>,
     /// Friend requests waiting for an answer: those sent to this account
     /// first, then those it sent, the newest first in each.
     pub friend_requests: Arc<[FriendRequest]>,
@@ -473,6 +482,25 @@ pub enum Live {
         guild: String,
         stickers: Vec<server_settings::GuildSticker>,
     },
+    /// A server's soundboard sounds, all of them: Discord's answer to
+    /// [`Discord::request_soundboard`], or GUILD_SOUNDBOARD_SOUNDS_UPDATE.
+    SoundboardSounds {
+        guild: String,
+        sounds: Vec<soundboard::Sound>,
+    },
+    /// A server's sound was added or changed.
+    SoundboardSound(soundboard::Sound),
+    /// A server's sound was deleted, by id.
+    SoundboardSoundDeleted {
+        guild: String,
+        sound: String,
+    },
+    /// Someone played a sound in a call this account is in, this account
+    /// among them.
+    SoundPlayed(soundboard::Played),
+    /// The account's favourite sounds, all of them in order, as another
+    /// client or this one changed them.
+    FavoriteSounds(Vec<String>),
 }
 
 /// What a call needs to open the voice connection Discord assigned.
@@ -573,6 +601,10 @@ enum Request {
     Inactive(Option<u64>, bool),
     /// This gateway session's id, from READY.
     Session(oneshot::Sender<Option<String>>),
+    /// Asks for these servers' soundboard sounds.
+    Soundboard {
+        guilds: Vec<String>,
+    },
     /// Channels and categories moved, shown before Discord confirms it;
     /// `reply` gives where they were.
     Place {
@@ -626,6 +658,9 @@ pub struct Discord {
     /// Requests held back for two-factor authentication, waiting for the
     /// person; see [`Self::stepping_up`].
     mfa: Arc<mfa::Prompts>,
+    /// Discord's own soundboard sounds, once a call asked for them: Discord's
+    /// client asks once a session too.
+    default_sounds: Arc<tokio::sync::Mutex<Option<Arc<[soundboard::Sound]>>>>,
 }
 
 /// Discord allows starting 10 new DMs with people in 10 minutes, and treats
@@ -717,6 +752,7 @@ impl Discord {
             new_dms: Arc::new(Mutex::new(limits::Window::new(NEW_DMS, NEW_DM_SPAN))),
             application_icons: Arc::default(),
             mfa: Arc::default(),
+            default_sounds: Arc::default(),
         })
     }
 
@@ -2890,7 +2926,87 @@ impl Discord {
             paused,
         });
     }
+
+    /// Asks for these servers' soundboard sounds, which come as
+    /// [`Live::SoundboardSounds`], one for each.
+    pub fn request_soundboard(&self, guilds: Vec<String>) {
+        if !guilds.is_empty() {
+            let _ = self.requests.send(Request::Soundboard { guilds });
+        }
+    }
+
+    /// Discord's own soundboard sounds, asked for the first time only.
+    pub async fn default_sounds(&self) -> Result<Arc<[soundboard::Sound]>> {
+        let mut kept = self.default_sounds.lock().await;
+        if let Some(sounds) = kept.as_ref() {
+            return Ok(sounds.clone());
+        }
+        let sounds: Arc<[soundboard::Sound]> = self.api.default_soundboard_sounds().await?.into();
+        *kept = Some(sounds.clone());
+        Ok(sounds)
+    }
+
+    /// Plays `sound` for everyone in the call `channel`; see
+    /// [`Api::send_soundboard_sound`].
+    pub async fn send_sound(&self, channel: &str, sound: &soundboard::Sound) -> Result<()> {
+        self.api.send_soundboard_sound(channel, sound).await
+    }
+
+    /// The account's favourite sounds, in the order the picker shows them.
+    pub async fn favorite_sounds(&self) -> Result<Vec<String>> {
+        let settings = self.api.frecency_settings().await?;
+        Ok(soundboard::read_favorites(&settings).unwrap_or_default())
+    }
+
+    /// Keeps `favorites` as the account's favourite sounds, in place of
+    /// the old.
+    pub async fn set_favorite_sounds(&self, favorites: &[String]) -> Result<()> {
+        self.api
+            .set_frecency_settings(&soundboard::write_favorites(favorites))
+            .await
+    }
+
+    /// Sets how loud the soundboard plays, from 0 to 100, for every client
+    /// of the account. The settings come back in USER_SETTINGS_PROTO_UPDATE.
+    pub async fn set_soundboard_volume(&self, volume: f32) -> Result<()> {
+        let current = self.api.user_settings().await?;
+        self.api
+            .set_user_settings(&soundboard::write_volume(&current, volume))
+            .await
+    }
+
+    /// Sets the sound that plays as this account joins a voice channel of
+    /// `server`, or of any server without one of its own, or takes it away.
+    /// `sound` is its id and its own server's, none for Discord's own.
+    pub async fn set_join_sound(
+        &self,
+        server: Option<&str>,
+        sound: Option<(&str, Option<&str>)>,
+    ) -> Result<()> {
+        let current = self.api.user_settings().await?;
+        self.api
+            .set_user_settings(&soundboard::write_join_sound(&current, server, sound))
+            .await
+    }
+
+    /// Has Discord play this account's join sound for the others in the
+    /// call `channel`; see [`Api::custom_call_sound`].
+    pub async fn play_join_sound(&self, channel: &str) -> Result<()> {
+        let animation = rand::random_range(10..=15);
+        self.api.custom_call_sound(channel, animation).await
+    }
+
+    /// A sound's file, MP3 or Ogg, at once rather than behind the pictures
+    /// queued: it plays as soon as it's here.
+    pub async fn sound_file(&self, id: &str) -> Result<Vec<u8>> {
+        self.api
+            .download_now(&soundboard::file(id), SOUND_FILE_LIMIT)
+            .await
+    }
 }
+
+/// Discord takes sounds up to 512 KiB.
+const SOUND_FILE_LIMIT: usize = 1 << 20;
 
 /// The server a channel is in, or none for DMs.
 fn server(guild: &str) -> Option<&str> {

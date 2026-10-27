@@ -4,6 +4,7 @@ import { Theme, Middle, Label, Tip, Popup } from "theme.slint";
 import { ActionButton, IconButton, Avatar, SensitivitySlider, VolumeSlider, TextField, StatusText } from "controls.slint";
 import { DiscordLinkPanel } from "discord.slint";
 import { ChannelRow } from "rail.slint";
+import { Soundboard, SoundRow } from "voice.slint";
 
 // Settings: a section's title, a group's heading, a switch with what it does, and
 // a row of exclusive choices with the current one raised.
@@ -475,6 +476,24 @@ export component VoiceSettings inherits VerticalLayout {
     /// call-volumes-changed, and letting go saves the last.
     in-out property <int> microphone-volume: 100;
     in-out property <int> speaker-volume: 100;
+    /// How loud the Discord soundboard plays, on its slider from 0% to
+    /// 100%, for every client of the account.
+    in-out property <int> soundboard-volume: 100;
+    /// Entrance sounds: the servers to choose one for, "All servers" first,
+    /// the one chosen, its sound's name or empty, and the sounds to choose
+    /// from, which need Nitro.
+    in property <[string]> entrance-servers;
+    in-out property <int> entrance-server;
+    in property <string> entrance-sound;
+    in property <[SoundRow]> entrance-rows;
+    in property <bool> nitro;
+    in property <string> emoji-font;
+    callback soundboard-volume-committed(int);
+    /// The entrance sounds' names and choices are wanted.
+    callback entrance-sounds-wanted;
+    callback entrance-server-chosen(int);
+    /// Sets the chosen server's entrance sound, or takes it away with "".
+    callback choose-entrance-sound(string);
     callback call-volumes-changed;
     callback select-microphone(int);
     callback select-speaker(int);
@@ -582,6 +601,61 @@ export component VoiceSettings inherits VerticalLayout {
             chosen => { root.preferences-changed(); }
         }
         Label { text: "Full takes out the most noise, but can cut off giggles and breathy laughs. Medium and Light leave a little of the room's sound in, which can sound more natural, and let a little more noise through."; }
+    }
+    if root.discord: VerticalLayout {
+        spacing: 8px;
+        SettingsHeading { text: "SOUNDBOARD VOLUME"; }
+        VolumeSlider {
+            label: "Soundboard volume"; value <=> root.soundboard-volume; maximum: 100;
+            committed(value) => { root.soundboard-volume-committed(value); }
+        }
+        Label { text: "How loud soundboard sounds play in Discord calls, yours and everyone else's. Discord keeps it for all your devices."; }
+    }
+    if root.discord: VerticalLayout {
+        spacing: 8px;
+        init => { root.entrance-sounds-wanted(); }
+        SettingsHeading { text: "ENTRANCE SOUNDS"; }
+        HorizontalLayout {
+            spacing: 8px;
+            Picker {
+                width: 200px; model: root.entrance-servers; chosen: root.entrance-server;
+                accessible-label: "Entrance sound for";
+                selected => { root.entrance-server = self.current-index; root.entrance-server-chosen(self.current-index); }
+            }
+            Rectangle {
+                horizontal-stretch: 1; min-width: 0; height: 36px; border-radius: 8px; background: Theme.sunken;
+                accessible-role: text; accessible-label: "Entrance sound";
+                accessible-value: root.entrance-sound != "" ? root.entrance-sound : "None";
+                Text {
+                    x: 12px; width: parent.width - 24px; overflow: elide; font-size: 14px;
+                    text: root.entrance-sound != "" ? root.entrance-sound : "None";
+                    color: root.entrance-sound != "" ? Theme.text : Theme.muted;
+                }
+            }
+            choose := ActionButton {
+                text: "Choose"; enabled: root.nitro;
+                clicked => { chooser.show(); }
+            }
+            if root.entrance-sound != "": ActionButton {
+                text: "Remove"; ghost: true;
+                clicked => { root.choose-entrance-sound(""); }
+            }
+        }
+        Label {
+            text: root.nitro ? "Plays to everyone in a voice channel or DM call as you join it, outside stage channels. A server's own comes before the one for all servers."
+                : "Entrance sounds play to everyone as you join a voice channel. They need Nitro.";
+        }
+        chooser := PopupWindow {
+            x: choose.x + choose.width - self.width; y: choose.y + choose.height + 6px;
+            width: board.width; height: board.height;
+            close-policy: PopupClosePolicy.close-on-click-outside;
+            board := Soundboard {
+                title: "Choose an entrance sound"; extras: false; verb: "Choose";
+                rows: root.entrance-rows; emoji-font: root.emoji-font;
+                play(id) => { root.choose-entrance-sound(id); chooser.close(); }
+                close => { chooser.close(); }
+            }
+        }
     }
     if root.discord: SettingsSwitch {
         text: "Take out your room's echo in Discord calls";

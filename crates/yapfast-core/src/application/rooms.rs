@@ -64,6 +64,9 @@ pub enum MenuChoice {
     // A member's in a voice channel, as its menu there offers them.
     /// Mute someone for this account alone, as a box to tick.
     LocalMute,
+    /// Mute the soundboard sounds someone plays, for this account alone,
+    /// as a box to tick.
+    SoundboardMute,
     /// This account's own mute and deafen in the call it's in here.
     SelfMute,
     SelfDeafen,

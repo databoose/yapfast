@@ -13,7 +13,7 @@ use crate::{
     discord,
     mention::{self, Candidate, Target},
     network::Network,
-    voice::{self, Phase},
+    voice::{self, JoinSound, Phase},
 };
 
 mod arrange;
@@ -437,6 +437,15 @@ pub struct AppState {
     /// it shows.
     pub discord_show_game: bool,
     pub discord_playing: Option<chat::Playing>,
+    /// How loud the Discord account's soundboard plays, as Discord keeps
+    /// it: from 0 to 100, on its slider's curve.
+    pub soundboard_volume: f32,
+    /// The Discord account's join sounds: each one's server, none for
+    /// every server without its own, then its sound's id and its sound's
+    /// own server.
+    pub join_sounds: Vec<JoinSound>,
+    /// Every sound a join sound may be, once Settings asked for them.
+    pub sound_catalog: Option<Arc<[voice::SoundGroup]>>,
     /// A Discord account is linked on this device, whether or not it's
     /// connected, and linking one, while that's under way.
     pub discord_linked: bool,
@@ -1703,6 +1712,17 @@ pub enum Action {
     SetStatus(String),
     /// Share the game the Discord account plays, or stop.
     ShowGame(bool),
+    /// Set how loud the Discord account's soundboard plays, on its slider
+    /// from 0 to 100.
+    SoundboardVolume(f32),
+    /// List the sounds the Discord account may join calls with.
+    LoadSoundCatalog,
+    /// Set the Discord account's join sound for `server`, or for every
+    /// server, to the sound with this id, or take it away.
+    SetJoinSound {
+        server: Option<String>,
+        sound: Option<String>,
+    },
     /// Nobody has used Yapfast since then, in Unix milliseconds, or someone is
     /// using it again; and whether that may show Discord idle.
     Inactive {
@@ -2858,6 +2878,60 @@ impl Application {
                     shown,
                 )))]
             }
+            Action::SoundboardVolume(slider) => {
+                // Discord keeps the volume on its slider's curve.
+                let volume = crate::volume::from_slider(slider.clamp(0.0, 100.0)) * 100.0;
+                if self.state.preview
+                    || self.state.discord_user.is_none()
+                    || (self.state.soundboard_volume - volume).abs() < 0.01
+                {
+                    return vec![];
+                }
+                self.state.soundboard_volume = volume;
+                vec![Effect::Backend(Command::Discord(
+                    DiscordCommand::SoundboardVolume(volume),
+                ))]
+            }
+            Action::LoadSoundCatalog => {
+                if self.state.preview || self.state.discord_user.is_none() {
+                    return vec![];
+                }
+                vec![Effect::Backend(Command::Discord(
+                    DiscordCommand::SoundCatalog,
+                ))]
+            }
+            Action::SetJoinSound { server, sound } => {
+                if self.state.preview || self.state.discord_user.is_none() {
+                    return vec![];
+                }
+                // The sound's own server, from the sounds Settings offered.
+                let sound = match sound {
+                    None => None,
+                    Some(id) => {
+                        let found = self
+                            .state
+                            .sound_catalog
+                            .iter()
+                            .flat_map(|groups| groups.iter())
+                            .flat_map(|group| &group.sounds)
+                            .find(|sound| sound.id == id);
+                        let Some(found) = found else { return vec![] };
+                        Some((id, found.guild.clone()))
+                    }
+                };
+                // Shown at once; the settings Discord sends back confirm it.
+                self.state.join_sounds.retain(|join| join.server != server);
+                if let Some((id, guild)) = &sound {
+                    self.state.join_sounds.push(JoinSound {
+                        server: server.clone(),
+                        sound: id.clone(),
+                        guild: guild.clone(),
+                    });
+                }
+                vec![Effect::Backend(Command::Discord(
+                    DiscordCommand::SetJoinSound { server, sound },
+                ))]
+            }
             Action::Inactive { since, show_idle } => {
                 // Discord keeps it through reconnecting, so it goes even
                 // before Discord connects. On the sign-in screen nothing
@@ -3344,6 +3418,29 @@ impl Application {
                     self.state.notice = Some(format!("Couldn't change your status: {error}"));
                 }
             }
+            Event::SoundboardVolumeSet(Err(error)) => {
+                self.state.notice = Some(format!("Couldn't change the soundboard volume: {error}"));
+            }
+            Event::JoinSoundSet(Err(error)) => {
+                self.state.notice = Some(format!("Couldn't change your entrance sound: {error}"));
+            }
+            Event::SoundboardVolumeSet(Ok(())) | Event::JoinSoundSet(Ok(())) => {}
+            Event::SoundCatalog(result) => match result {
+                Ok(groups) => {
+                    // The sounds' custom emoji, for the chooser.
+                    let pictures = groups
+                        .iter()
+                        .flat_map(|group| &group.sounds)
+                        .filter_map(|sound| sound.picture.clone())
+                        .collect();
+                    self.state.sound_catalog = Some(groups);
+                    return self.load_pictures(pictures);
+                }
+                Err(error) => {
+                    self.state.notice =
+                        Some(format!("Couldn't list the soundboard's sounds: {error}"));
+                }
+            },
             Event::ShowGameSet(result) => {
                 if let Err(error) = result {
                     self.state.discord_show_game = !self.state.discord_show_game;
@@ -3503,6 +3600,18 @@ impl Application {
             "Connecting to Discord...".into()
         });
         vec![Effect::Start(start)]
+    }
+
+    /// Whether the Discord account has Nitro, which join sounds need.
+    pub fn discord_nitro(&self) -> bool {
+        #[cfg(feature = "discord")]
+        if let Some(snapshot) = &self.discord {
+            return snapshot
+                .account
+                .as_ref()
+                .is_some_and(|account| account.premium_type > 0);
+        }
+        false
     }
 
     /// The custom emoji this account may use in the selected room, by server, the

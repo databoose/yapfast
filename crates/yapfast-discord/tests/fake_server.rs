@@ -2676,6 +2676,172 @@ async fn follows_the_call_across_rooms_and_clients() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn plays_the_soundboard() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        snapshot,
+        guild,
+        lounge,
+        bob,
+        ..
+    } = Fixture::start("plays_the_soundboard").await;
+    let mut live = discord.live();
+    let me = snapshot.user_id.clone().unwrap();
+    // Discord's own sounds, asked for once, and the server's, with op 31.
+    let defaults = discord.default_sounds().await.unwrap();
+    assert_eq!(defaults.len(), 6);
+    assert!(defaults.iter().all(|sound| sound.guild.is_none()));
+    assert!(Arc::ptr_eq(
+        &defaults,
+        &discord.default_sounds().await.unwrap()
+    ));
+    discord.request_soundboard(vec![guild.clone()]);
+    let sounds = live_where(&mut live, |event| match event {
+        Live::SoundboardSounds { guild: of, sounds } if of == guild => Some(sounds),
+        _ => None,
+    })
+    .await;
+    let names: Vec<&str> = sounds.iter().map(|sound| sound.name.as_str()).collect();
+    assert_eq!(names, ["Bob's laugh", "Applause"]);
+    assert_eq!(sounds[0].emoji_id.as_deref(), Some("1400000000000000300"));
+
+    // Playing one takes being in the call; then everyone there hears of
+    // it, Alice too, with the sound's volume.
+    let quack = defaults.iter().find(|sound| sound.name == "quack").unwrap();
+    assert!(discord.send_sound(&lounge, quack).await.is_err());
+    discord.join(&guild, &lounge).await.unwrap();
+    discord.send_sound(&lounge, quack).await.unwrap();
+    discord.send_sound(&lounge, &sounds[0]).await.unwrap();
+    let played = |user: String| {
+        move |event| match event {
+            Live::SoundPlayed(played) if played.user == user => Some(played),
+            _ => None,
+        }
+    };
+    let heard = live_where(&mut live, played(me.clone())).await;
+    assert_eq!(
+        (heard.channel.as_str(), heard.sound.as_str()),
+        (lounge.as_str(), "1")
+    );
+    let heard = live_where(&mut live, played(me.clone())).await;
+    assert_eq!(
+        (heard.sound.as_str(), heard.volume),
+        (sounds[0].id.as_str(), 0.8)
+    );
+    // As Discord's client sends them: the server only for a server's sound.
+    let sent: serde_json::Value =
+        serde_json::from_str(&control(server, "GET", "/_control/soundboard-sends", "")).unwrap();
+    assert_eq!(sent[1]["sound_id"], "1");
+    assert_eq!(sent[1]["emoji_name"], "🦆");
+    assert!(sent[1].get("source_guild_id").is_none(), "{sent}");
+    assert_eq!(sent[2]["source_guild_id"], guild.as_str());
+    assert_eq!(sent[2]["emoji_id"], "1400000000000000300");
+
+    // Bob plays one; its file comes from the CDN, Ogg for the server's.
+    post_control(server, "/_control/soundboard-play?user=bob", "");
+    let heard = live_where(&mut live, played(bob.clone())).await;
+    let file = discord.sound_file(&heard.sound).await.unwrap();
+    assert!(file.starts_with(b"OggS"));
+    assert!(discord.sound_file(&quack.id).await.unwrap().len() > 1000);
+
+    // A sound added to the server arrives on its own.
+    let added = control(server, "POST", "/_control/soundboard-add?name=Bell", "");
+    let sound = live_where(&mut live, |event| match event {
+        Live::SoundboardSound(sound) => Some(sound),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        (sound.id.as_str(), sound.name.as_str()),
+        (added.trim(), "Bell")
+    );
+    assert_eq!(sound.guild.as_deref(), Some(guild.as_str()));
+    discord.leave(&guild);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn keeps_the_soundboards_settings() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        snapshot,
+        guild,
+        lounge,
+        ..
+    } = Fixture::start("keeps_the_soundboards_settings").await;
+    let mut live = discord.live();
+    let me = snapshot.user_id.clone().unwrap();
+    assert_eq!(snapshot.soundboard_volume, None);
+    assert!(snapshot.join_sounds.is_empty());
+
+    // The favourites, in their order, and changed, which every session
+    // hears of.
+    assert_eq!(
+        discord.favorite_sounds().await.unwrap(),
+        ["1400000000000000321", "2"]
+    );
+    discord
+        .set_favorite_sounds(&["2".to_owned(), "1".to_owned()])
+        .await
+        .unwrap();
+    let favorites = live_where(&mut live, |event| match event {
+        Live::FavoriteSounds(favorites) => Some(favorites),
+        _ => None,
+    })
+    .await;
+    assert_eq!(favorites, ["2", "1"]);
+    assert_eq!(discord.favorite_sounds().await.unwrap(), ["2", "1"]);
+
+    // The volume, and a join sound for the server and one for every
+    // server, keeping the custom status beside them.
+    discord.set_soundboard_volume(42.5).await.unwrap();
+    discord
+        .set_join_sound(Some(&guild), Some(("1400000000000000320", Some(&guild))))
+        .await
+        .unwrap();
+    discord
+        .set_join_sound(None, Some(("2", None)))
+        .await
+        .unwrap();
+    let snapshot = snapshot_where(&discord, |snapshot| snapshot.join_sounds.len() == 2).await;
+    assert_eq!(snapshot.soundboard_volume, Some(42.5));
+    assert_eq!(
+        snapshot
+            .custom_status
+            .as_ref()
+            .map(|custom| custom.text.as_str()),
+        Some("Testing Yapfast")
+    );
+
+    // Joining with Nitro, the server's own plays for the others.
+    post_control(server, "/_control/nitro", "");
+    discord.join(&guild, &lounge).await.unwrap();
+    discord.play_join_sound(&lounge).await.unwrap();
+    let played = live_where(&mut live, |event| match event {
+        Live::SoundPlayed(played) if played.user == me => Some(played),
+        _ => None,
+    })
+    .await;
+    assert_eq!(played.sound, "1400000000000000320");
+    let asked: serde_json::Value =
+        serde_json::from_str(&control(server, "GET", "/_control/custom-call-sounds", "")).unwrap();
+    let animation = asked[0]["animation_id"].as_u64().unwrap();
+    assert!((10..=15).contains(&animation), "{asked}");
+
+    // Taken away, the one for every server is left.
+    discord.set_join_sound(Some(&guild), None).await.unwrap();
+    let snapshot = snapshot_where(&discord, |snapshot| snapshot.join_sounds.len() == 1).await;
+    assert_eq!(snapshot.join_sounds[0].server, None);
+    assert_eq!(snapshot.join_sounds[0].sound, "2");
+    discord.leave(&guild);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
 async fn moderates_voice() {
     let Fixture {
         _fake,

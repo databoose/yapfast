@@ -504,6 +504,7 @@ impl Session<'_> {
                 let _ = reply.send(self.tracker.session.clone());
                 Ok(())
             }
+            Request::Soundboard { guilds } => gateway.request_soundboard_sounds(&guilds).await,
             Request::Search {
                 guild,
                 query,

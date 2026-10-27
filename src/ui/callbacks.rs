@@ -2277,6 +2277,92 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     });
     let state = adapter.clone();
     let weak = window.as_weak();
+    window.on_play_soundboard(move |id| {
+        let Some(window) = weak.upgrade() else { return };
+        state.borrow_mut().action(
+            &window,
+            Action::Voice(voice::Command::Soundboard(id.into())),
+        );
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_preview_soundboard(move |id| {
+        let Some(window) = weak.upgrade() else { return };
+        state.borrow_mut().action(
+            &window,
+            Action::Voice(voice::Command::PreviewSound(id.into())),
+        );
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_favorite_soundboard(move |id, favorite| {
+        let Some(window) = weak.upgrade() else { return };
+        state.borrow_mut().action(
+            &window,
+            Action::Voice(voice::Command::FavoriteSound(id.into(), favorite)),
+        );
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_soundboard_volume_committed(move |volume| {
+        let Some(window) = weak.upgrade() else { return };
+        state
+            .borrow_mut()
+            .action(&window, Action::SoundboardVolume(volume as f32));
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_entrance_sounds_wanted(move || {
+        let Some(window) = weak.upgrade() else { return };
+        state.borrow_mut().action(&window, Action::LoadSoundCatalog);
+    });
+    // Another server's entrance sound shows.
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_entrance_server_chosen(move |_| {
+        let Some(window) = weak.upgrade() else { return };
+        state.borrow_mut().refresh(&window);
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_choose_entrance_sound(move |id| {
+        let Some(window) = weak.upgrade() else { return };
+        let server = {
+            let adapter = state.borrow();
+            usize::try_from(window.get_entrance_server())
+                .ok()
+                .and_then(|index| adapter.entrance_servers.get(index).cloned())
+                .flatten()
+        };
+        let sound = (!id.is_empty()).then(|| id.to_string());
+        state
+            .borrow_mut()
+            .action(&window, Action::SetJoinSound { server, sound });
+    });
+    // The sounds' custom emoji come once the soundboard shows.
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_soundboard_opened(move || {
+        let Some(window) = weak.upgrade() else { return };
+        let pictures: Vec<String> = state
+            .borrow()
+            .app
+            .state
+            .voice
+            .soundboard
+            .iter()
+            .flat_map(|groups| groups.iter())
+            .flat_map(|group| &group.sounds)
+            .filter_map(|sound| sound.picture.clone())
+            .collect();
+        if !pictures.is_empty() {
+            state
+                .borrow_mut()
+                .action(&window, Action::LoadPictures(pictures));
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
     window.on_toggle_camera(move || {
         let Some(window) = weak.upgrade() else { return };
         // A click while the camera starts cancels it.

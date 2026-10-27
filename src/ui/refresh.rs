@@ -3113,6 +3113,8 @@ impl Adapter {
             frames.push(slint::Image::default());
         }
         self.show_stage(window);
+        self.show_soundboard(window);
+        self.show_soundboard_settings(window);
         let state = &self.app.state;
         let voice = &state.voice;
         window.set_can_film(voice.can_film);
@@ -3171,6 +3173,122 @@ impl Adapter {
         let (rows, index) = device_rows(&voice.cameras, voice.camera.as_deref(), names);
         update_model(&self.models.cameras, rows);
         window.set_camera_index(index);
+    }
+
+    /// The call's soundboard, its rows made again only when its sounds
+    /// change or pictures arrive, and why it can't play, as Discord says.
+    fn show_soundboard(&mut self, window: &YapfastWindow) {
+        let state = &self.app.state;
+        let voice = &state.voice;
+        let groups = voice.soundboard.as_ref().filter(|_| voice.active());
+        window.set_can_soundboard(groups.is_some());
+        let server_muted = voice
+            .participants
+            .iter()
+            .any(|person| person.local && person.server_muted);
+        window.set_soundboard_note(
+            if voice.deafened {
+                "Soundboard disabled when deafened"
+            } else if server_muted {
+                "Soundboard disabled when server muted"
+            } else {
+                ""
+            }
+            .into(),
+        );
+        let Some(groups) = groups else {
+            self.soundboard_shown = None;
+            if self.models.soundboard_rows.row_count() > 0 {
+                self.models.soundboard_rows.set_vec(vec![]);
+            }
+            return;
+        };
+        let shown = self.soundboard_shown.as_ref();
+        if shown.is_some_and(|(kept, revision)| {
+            Arc::ptr_eq(kept, groups) && *revision == state.picture_changes
+        }) {
+            return;
+        }
+        self.soundboard_shown = Some((groups.clone(), state.picture_changes));
+        let rows = sound_rows(groups, &mut self.pictures, state);
+        self.models.soundboard_rows.set_vec(rows);
+    }
+
+    /// Settings' soundboard volume and entrance sounds, while Voice & video
+    /// shows them.
+    fn show_soundboard_settings(&mut self, window: &YapfastWindow) {
+        if !window.get_settings_open() || window.get_settings_section() != 1 {
+            return;
+        }
+        let state = &self.app.state;
+        window.set_discord_nitro(self.app.discord_nitro());
+        if self.soundboard_volume_shown != Some(state.soundboard_volume) {
+            self.soundboard_volume_shown = Some(state.soundboard_volume);
+            let slider = yapfast_core::volume::to_slider(state.soundboard_volume / 100.0);
+            window.set_soundboard_volume(slider.round() as i32);
+        }
+        // Discord's servers by their own ids, which the app's carry after
+        // a prefix.
+        let discord_servers = || {
+            state.servers.iter().filter_map(|server| {
+                Some((yapfast_core::discord::parse_server(&server.id)?, server))
+            })
+        };
+        let same = self.entrance_servers.len() == discord_servers().count() + 1
+            && discord_servers()
+                .zip(self.entrance_servers.iter().skip(1))
+                .all(|((guild, _), kept)| kept.as_deref() == Some(guild));
+        if !same {
+            let servers: Vec<Option<String>> = std::iter::once(None)
+                .chain(discord_servers().map(|(guild, _)| Some(guild.to_owned())))
+                .collect();
+            let names: Vec<SharedString> = std::iter::once("All servers".into())
+                .chain(discord_servers().map(|(_, server)| server.name.as_str().into()))
+                .collect();
+            self.models.entrance_servers.set_vec(names);
+            let chosen = usize::try_from(window.get_entrance_server())
+                .ok()
+                .and_then(|index| self.entrance_servers.get(index).cloned())
+                .flatten();
+            let index = servers
+                .iter()
+                .position(|server| *server == chosen)
+                .unwrap_or(0);
+            window.set_entrance_server(index as i32);
+            self.entrance_servers = servers;
+        }
+        let server = usize::try_from(window.get_entrance_server())
+            .ok()
+            .and_then(|index| self.entrance_servers.get(index).cloned())
+            .flatten();
+        let catalog = state.sound_catalog.as_ref();
+        let sound = state
+            .join_sounds
+            .iter()
+            .find(|join| join.server == server)
+            .map(|join| {
+                let named = catalog
+                    .iter()
+                    .flat_map(|groups| groups.iter())
+                    .flat_map(|group| &group.sounds)
+                    .find(|sound| sound.id == join.sound && sound.guild == join.guild);
+                match (named, catalog) {
+                    (Some(sound), _) => sound.name.as_str(),
+                    (None, None) => "Loading...",
+                    (None, Some(_)) => "A sound that's gone",
+                }
+            });
+        window.set_entrance_sound(sound.unwrap_or_default().into());
+        let Some(groups) = catalog else { return };
+        let shown = self.entrance_shown.as_ref();
+        if shown.is_some_and(|(kept, revision)| {
+            Arc::ptr_eq(kept, groups) && *revision == state.picture_changes
+        }) {
+            return;
+        }
+        self.entrance_shown = Some((groups.clone(), state.picture_changes));
+        let rows = sound_rows(groups, &mut self.pictures, state);
+        self.models.entrance_rows.set_vec(rows);
     }
 
     /// The open profile card, and the profile beside a one-to-one DM, with
@@ -4103,4 +4221,47 @@ struct MentionSources {
     found: usize,
     groups: usize,
     color: u32,
+}
+
+/// A soundboard's groups as its rows show them: each group's heading, then
+/// its sounds three to a row.
+fn sound_rows(
+    groups: &[voice::SoundGroup],
+    pictures: &mut HashMap<String, slint::Image>,
+    state: &AppState,
+) -> Vec<SoundRow> {
+    let mut rows = Vec::new();
+    for group in groups {
+        rows.push(SoundRow {
+            heading: group.name.to_uppercase().into(),
+            sounds: ModelRc::default(),
+        });
+        for chunk in group.sounds.chunks(3) {
+            let cells: Vec<SoundCell> = chunk
+                .iter()
+                .map(|sound| SoundCell {
+                    id: sound.id.as_str().into(),
+                    name: sound.name.as_str().into(),
+                    emoji: EmojiCell {
+                        // A custom emoji waits as a quiet square until its
+                        // picture comes.
+                        glyph: if sound.picture.is_some() {
+                            sound.name.as_str().into()
+                        } else {
+                            sound.emoji.as_str().into()
+                        },
+                        name: sound.name.as_str().into(),
+                        key: SharedString::new(),
+                        picture: cached_picture(pictures, state, sound.picture.as_deref()),
+                    },
+                    favorite: sound.favorite,
+                })
+                .collect();
+            rows.push(SoundRow {
+                heading: SharedString::new(),
+                sounds: ModelRc::new(VecModel::from(cells)),
+            });
+        }
+    }
+    rows
 }

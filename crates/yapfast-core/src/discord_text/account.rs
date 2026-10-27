@@ -291,6 +291,81 @@ pub(super) fn command(
         }
         return None;
     }
+    if let Command::Discord(DiscordCommand::SoundboardVolume(volume)) = command {
+        match discord {
+            Ok(discord) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = discord
+                        .set_soundboard_volume(volume)
+                        .await
+                        .map_err(|error| {
+                            tracing::warn!(
+                                error = format!("{error:#}"),
+                                "could not change the soundboard volume"
+                            );
+                            error.to_string()
+                        });
+                    let _ = events.send(Event::SoundboardVolumeSet(result));
+                });
+            }
+            Err(why) => {
+                let _ = events.send(Event::SoundboardVolumeSet(Err(why.into())));
+            }
+        }
+        return None;
+    }
+    if let Command::Discord(DiscordCommand::SoundCatalog) = command {
+        match discord {
+            Ok(discord) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let result = match crate::soundboard::Catalog::load(&discord).await {
+                        Ok(catalog) => Ok(catalog.groups(&discord.snapshots().borrow()).into()),
+                        Err(error) => {
+                            tracing::warn!(
+                                error = format!("{error:#}"),
+                                "could not list the soundboard's sounds"
+                            );
+                            Err(error.to_string())
+                        }
+                    };
+                    let _ = events.send(Event::SoundCatalog(result));
+                });
+            }
+            Err(why) => {
+                let _ = events.send(Event::SoundCatalog(Err(why.into())));
+            }
+        }
+        return None;
+    }
+    if let Command::Discord(DiscordCommand::SetJoinSound { server, sound }) = command {
+        match discord {
+            Ok(discord) => {
+                let (discord, events) = (discord.clone(), events.clone());
+                tokio::spawn(async move {
+                    let sound = sound
+                        .as_ref()
+                        .map(|(id, guild)| (id.as_str(), guild.as_deref()));
+                    let result = discord
+                        .set_join_sound(server.as_deref(), sound)
+                        .await
+                        .map_err(|error| {
+                            tracing::warn!(
+                                error = format!("{error:#}"),
+                                "could not change the join sound"
+                            );
+                            error.to_string()
+                        });
+                    let _ = events.send(Event::JoinSoundSet(result));
+                });
+            }
+            Err(why) => {
+                let _ = events.send(Event::JoinSoundSet(Err(why.into())));
+            }
+        }
+        return None;
+    }
     if let Command::Discord(DiscordCommand::ShowGame(shown)) = command {
         match discord {
             Ok(discord) => {

@@ -2203,6 +2203,20 @@ pub enum DiscordCommand {
     /// Share the game the Discord account plays, or stop;
     /// [`Event::ShowGameSet`] follows.
     ShowGame(bool),
+    /// Set how loud the soundboard plays, as Discord keeps it, from 0 to
+    /// 100; [`Event::SoundboardVolumeSet`] follows.
+    SoundboardVolume(f32),
+    /// List every sound the account may join calls with;
+    /// [`Event::SoundCatalog`] follows.
+    SoundCatalog,
+    /// Set the sound that plays as the account joins a voice channel of
+    /// `server`, or of every server without one of its own, or take it
+    /// away; `sound` is its id and its own server's, none for Discord's
+    /// own. [`Event::JoinSoundSet`] follows.
+    SetJoinSound {
+        server: Option<String>,
+        sound: Option<(String, Option<String>)>,
+    },
     /// Nobody has used Yapfast since then, in Unix milliseconds, or someone is
     /// using it again; Discord goes AFK, and idle if `show_idle`, as its web
     /// client does.
@@ -3122,6 +3136,13 @@ pub enum Event {
     StatusSet(Result<(), String>),
     /// Whether [`DiscordCommand::ShowGame`] changed it, or why not.
     ShowGameSet(Result<(), String>),
+    /// Whether [`DiscordCommand::SoundboardVolume`] changed it, or why not.
+    SoundboardVolumeSet(Result<(), String>),
+    /// [`DiscordCommand::SoundCatalog`]'s sounds, in groups as the
+    /// soundboard shows them, or why they didn't come.
+    SoundCatalog(Result<Arc<[crate::voice::SoundGroup]>, String>),
+    /// Whether [`DiscordCommand::SetJoinSound`] changed it, or why not.
+    JoinSoundSet(Result<(), String>),
     /// [`DiscordCommand::Unlink`] forgot the account.
     DiscordUnlinked,
     /// [`DiscordCommand::Pins`]'s messages, the latest pinned first, or why

@@ -160,6 +160,9 @@ pub(super) struct Tracker {
     /// the game it shows.
     pub(super) show_game: bool,
     pub(super) playing: Option<Arc<crate::own_activity::Playing>>,
+    /// The soundboard's volume and join sounds, from the settings.
+    soundboard_volume: Option<f32>,
+    join_sounds: Arc<[crate::soundboard::JoinSound]>,
     /// Friend requests by user id: whether each came to this account, whether
     /// Discord took it for spam, and when it was sent.
     requests: HashMap<String, (bool, bool, String)>,
@@ -214,6 +217,8 @@ impl Tracker {
             // As in Discord's apps, until the settings say otherwise.
             show_game: true,
             playing: None,
+            soundboard_volume: None,
+            join_sounds: Arc::from([]),
             requests: HashMap::new(),
             previews: HashMap::new(),
             previews_asked: HashSet::new(),
@@ -1166,6 +1171,13 @@ impl Tracker {
         if let Some(shown) = read.show_game {
             self.show_game = shown;
         }
+        let soundboard = crate::soundboard::read_settings(encoded);
+        if let Some(volume) = soundboard.volume {
+            self.soundboard_volume = Some(volume);
+        }
+        if let Some(join_sounds) = soundboard.join_sounds {
+            self.join_sounds = join_sounds.into();
+        }
         if let Some(list) = settings::server_list(encoded) {
             self.order = list.order;
             self.folders = list.folders;
@@ -1765,6 +1777,8 @@ impl Tracker {
                 .clone()
                 .filter(|custom| !custom.expired(now_ms())),
             show_game: self.show_game,
+            soundboard_volume: self.soundboard_volume,
+            join_sounds: self.join_sounds.clone(),
             playing: self.playing.clone(),
             friend_requests: people.friend_requests,
             voice,

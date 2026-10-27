@@ -1068,6 +1068,26 @@ impl Api {
             .await
     }
 
+    /// The account's settings, `PreloadedUserSettings`, in base64.
+    pub async fn user_settings(&self) -> Result<String> {
+        let answer = self
+            .json(self.request(Method::GET, "/users/@me/settings-proto/1"))
+            .await?;
+        Ok(answer["settings"].as_str().unwrap_or_default().to_owned())
+    }
+
+    /// Replaces the top-level fields `settings`, base64
+    /// `PreloadedUserSettings`, holds, each whole.
+    pub async fn set_user_settings(&self, settings: &str) -> Result<()> {
+        let body = json!({"settings": settings});
+        self.json(with_json(
+            self.request(Method::PATCH, "/users/@me/settings-proto/1"),
+            &body,
+        ))
+        .await
+        .map(drop)
+    }
+
     /// The account's second settings, `FrecencyUserSettings`, in base64.
     pub async fn frecency_settings(&self) -> Result<String> {
         let answer = self
@@ -1826,6 +1846,46 @@ impl Api {
     pub async fn stream_preview(&self, stream_key: &str, thumbnail: &str) -> Result<()> {
         let path = format!("/streams/{stream_key}/preview");
         let body = json!({"thumbnail": thumbnail});
+        self.empty(with_json(self.request(Method::POST, &path), &body))
+            .await
+    }
+
+    /// Discord's own soundboard sounds, which every account may play.
+    pub async fn default_soundboard_sounds(&self) -> Result<Vec<crate::soundboard::Sound>> {
+        let sounds = self
+            .json(self.request(Method::GET, "/soundboard-default-sounds"))
+            .await?;
+        Ok(crate::soundboard::parse_all(&sounds))
+    }
+
+    /// Plays `sound` in the call `channel`, as Discord's client does: with
+    /// its emoji, and its server unless it's one of Discord's own. Discord
+    /// sends everyone there VOICE_CHANNEL_EFFECT_SEND, and plays nothing
+    /// itself.
+    pub async fn send_soundboard_sound(
+        &self,
+        channel: &str,
+        sound: &crate::soundboard::Sound,
+    ) -> Result<()> {
+        let path = format!("/channels/{channel}/send-soundboard-sound");
+        let mut body = json!({
+            "sound_id": sound.id,
+            "emoji_id": sound.emoji_id,
+            "emoji_name": sound.emoji_name,
+        });
+        if let Some(guild) = &sound.guild {
+            body["source_guild_id"] = json!(guild);
+        }
+        self.empty(with_json(self.request(Method::POST, &path), &body))
+            .await
+    }
+
+    /// Plays this account's join sound, which its settings name, for the
+    /// call `channel` it just joined, with one of Discord's emoji
+    /// animations, as Discord's client does: premium animations 10 to 15.
+    pub async fn custom_call_sound(&self, channel: &str, animation: u32) -> Result<()> {
+        let path = format!("/channels/{channel}/custom-call-sounds");
+        let body = json!({"animation_type": 0, "animation_id": animation});
         self.empty(with_json(self.request(Method::POST, &path), &body))
             .await
     }

@@ -101,8 +101,8 @@ GOATed GIF loads.
 Voice channels and DM calls, with mute, deafen, a volume for each person,
 noise suppression, echo removal, and a voice gate you can tune, or
 push-to-talk on any key you like, held in any app. Go Live, watch other
-people's streams and turn on your camera. The call stays up while you read
-other channels.
+people's streams, turn on your camera and play the soundboard. The call
+stays up while you read other channels.
 
 The noise suppression could be better, though. Know an open source one that
 does a better job? PLEASE tell me.
@@ -179,7 +179,6 @@ they do in Discord.
 ### Not there yet
 
 - Media channels.
-- The soundboard.
 - Activities.
 - Making and changing server folders.
 - A server's form for new members, such as its rules, when you join. Yapfast
@@ -371,7 +370,7 @@ Serein draws with wgpu, which costs more memory before you've opened a single
 channel. Yapfast draws with Slint, on the processor by default (WAY lighter) or
 the GPU if you ask. It also does Matrix (from source, for now), DeepFilterNet
 noise suppression on top of RNNoise, voice gates, and the cached GIF picker.
-It's still missing a few things, like media channels and the soundboard.
+It's still missing a few things, like media channels and activities.
 
 </details>
 

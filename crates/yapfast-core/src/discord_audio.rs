@@ -33,13 +33,26 @@ const SPEAKING_HOLD: Duration = Duration::from_millis(300);
 /// Frames quieter than this, in RMS dBFS, don't count as speech.
 const SPEAKING_FLOOR: f32 = -50.0;
 
-/// Hears a Discord call: mixes everyone into the speakers and notes who spoke.
+/// Hears a Discord call: mixes everyone into the speakers, with the
+/// soundboard's sounds, and notes who spoke.
 pub struct Hearing {
     output: Mutex<Option<SyncSender<Vec<i16>>>>,
     deafened: AtomicBool,
     heard: Mutex<HashMap<u64, Instant>>,
+    sounds: Mutex<Vec<Playing>>,
     ended: UnboundedSender<String>,
 }
+
+/// A soundboard sound playing: 48 kHz interleaved stereo, how far it has
+/// played, and its own volume.
+struct Playing {
+    samples: Vec<i16>,
+    at: usize,
+    volume: f32,
+}
+
+/// Sounds playing at once at most; another stops the oldest.
+const SOUNDS_AT_ONCE: usize = 8;
 
 impl Hearing {
     pub fn new(ended: UnboundedSender<String>) -> Self {
@@ -47,6 +60,7 @@ impl Hearing {
             output: Mutex::default(),
             deafened: AtomicBool::new(false),
             heard: Mutex::default(),
+            sounds: Mutex::default(),
             ended,
         }
     }
@@ -55,8 +69,29 @@ impl Hearing {
         *self.output.lock().unwrap() = output;
     }
 
+    /// Deafening stops the sounds playing, as in Discord.
     pub fn set_deafened(&self, deafened: bool) {
         self.deafened.store(deafened, Ordering::Relaxed);
+        if deafened {
+            self.sounds.lock().unwrap().clear();
+        }
+    }
+
+    /// Plays a soundboard sound, 48 kHz interleaved stereo, at its own
+    /// `volume` times the speakers'; not while deafened.
+    pub fn play(&self, samples: Vec<i16>, volume: f32) {
+        if self.deafened.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut sounds = self.sounds.lock().unwrap();
+        if sounds.len() == SOUNDS_AT_ONCE {
+            sounds.remove(0);
+        }
+        sounds.push(Playing {
+            samples,
+            at: 0,
+            volume,
+        });
     }
 
     /// The Discord users heard speaking just now.
@@ -89,7 +124,15 @@ impl Listener for Hearing {
         let volume =
             |user: u64| crate::volume::heard(crate::volume::Kind::Voice, &user.to_string());
         let mut frame = spare_frame();
-        mix(voices, volume, &mut frame);
+        let mut sounds = self.sounds.lock().unwrap();
+        mix(
+            voices,
+            volume,
+            &mut sounds,
+            crate::volume::speakers(),
+            &mut frame,
+        );
+        drop(sounds);
         // A full queue means the speakers are behind; dropping a frame keeps
         // the delay from growing.
         match output.try_send(frame) {
@@ -130,8 +173,15 @@ fn recycle(frame: Vec<i16>) {
 }
 
 /// Sums everyone's 20 ms of interleaved stereo into `out`, each at the volume
-/// chosen for them, clipping at full scale.
-fn mix(voices: &[(u64, &[i16])], volume: impl Fn(u64) -> f32, out: &mut [i16]) {
+/// chosen for them, and the next 20 ms of each sound at its own volume times
+/// the `speakers'`, clipping at full scale. Sounds that ended go.
+fn mix(
+    voices: &[(u64, &[i16])],
+    volume: impl Fn(u64) -> f32,
+    sounds: &mut Vec<Playing>,
+    speakers: f32,
+    out: &mut [i16],
+) {
     let mut sum = [0f32; FRAME_SAMPLES];
     for (user, samples) in voices {
         let gain = volume(*user);
@@ -142,6 +192,15 @@ fn mix(voices: &[(u64, &[i16])], volume: impl Fn(u64) -> f32, out: &mut [i16]) {
             *total += f32::from(*sample) * gain;
         }
     }
+    for sound in sounds.iter_mut() {
+        let gain = sound.volume * speakers;
+        let next = &sound.samples[sound.at.min(sound.samples.len())..];
+        for (total, sample) in sum.iter_mut().zip(next) {
+            *total += f32::from(*sample) * gain;
+        }
+        sound.at += FRAME_SAMPLES;
+    }
+    sounds.retain(|sound| sound.at < sound.samples.len());
     for (sample, total) in out.iter_mut().zip(sum) {
         *sample = total
             .round()
@@ -863,7 +922,7 @@ mod tests {
         let as_they_come = |_| 1.0;
         let mixed = |voices: &[(u64, &[i16])], volume: &dyn Fn(u64) -> f32| {
             let mut out = vec![1i16; FRAME * 2];
-            mix(voices, volume, &mut out);
+            mix(voices, volume, &mut Vec::new(), 1.0, &mut out);
             out
         };
         assert_eq!(
@@ -875,6 +934,25 @@ mod tests {
         // Each voice at its own volume.
         let chosen = |user| if user == 3 { 1.5 } else { 0.0 };
         assert_eq!(mixed(&[(1, &loud), (3, &quiet)], &chosen)[0], 150);
+    }
+
+    #[test]
+    fn sounds_play_into_the_mix_until_they_end() {
+        // A sound a frame and a half long, at half its volume and the
+        // speakers' half.
+        let mut sounds = vec![Playing {
+            samples: vec![4000; FRAME_SAMPLES * 3 / 2],
+            at: 0,
+            volume: 0.5,
+        }];
+        let quiet = vec![100i16; FRAME_SAMPLES];
+        let mut out = vec![0i16; FRAME_SAMPLES];
+        mix(&[(3, &quiet)], |_| 1.0, &mut sounds, 0.5, &mut out);
+        assert!(out.iter().all(|sample| *sample == 1100));
+        mix(&[], |_| 1.0, &mut sounds, 0.5, &mut out);
+        assert_eq!(out[FRAME_SAMPLES / 2 - 1], 1000);
+        assert_eq!(out[FRAME_SAMPLES / 2], 0);
+        assert!(sounds.is_empty(), "the sound ended");
     }
 
     #[test]

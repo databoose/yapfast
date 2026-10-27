@@ -25,7 +25,7 @@ import { Theme, Tip, ReactionHover, Middle, Popup, PopupMotion } from "theme.sli
 import { TitleBar, ResizeEdges } from "title_bar.slint";
 import { GifPicker, GifTile, PickerTab } from "gifs.slint";
 import { ActionButton, IconButton, PingToggle, DeviceToggle, Avatar, TextField, MessagesSkeleton, ContextMenu, MenuItem, MenuRow, DeviceMenu, HeaderToggle, Banner, StatusText } from "controls.slint";
-import { PersonRow, CallLink, CallLinkCard, LinkTouch, SignalIcon, VoiceDock, StreamPip, CallInvite, JoinVoice, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, ShareScreen, VolumeMenu } from "voice.slint";
+import { PersonRow, CallLink, CallLinkCard, LinkTouch, SignalIcon, VoiceDock, StreamPip, CallInvite, JoinVoice, ParticipantGrid, CallControls, IncomingCall, SwitchDialog, InputLevel, ShareMenu, ShareScreen, VolumeMenu, Soundboard, SoundRow } from "voice.slint";
 import { ServerRow, RoomRow, StatusDot, ServerRail, ServerHeader, RoomList } from "rail.slint";
 import { StagedFile, StagedTile, Composer, MentionRow, MentionList, EmojiSuggestions, RequestBar } from "composer.slint";
 import { EmojiCell, EmojiRow, EmojiSection, MessageRow, ReactionToggle, EmojiButton, EmojiPicker, MessageMenu, MessageGallery, MessageStickers, FileCard, MessageContent, EmbedView, BotTag, NoConversation, ConversationStart, HistoryEdge, UnreadBar, PresentBar, ImageViewer, VideoViewer, VideoPlayer, Polls } from "messages.slint";
@@ -673,6 +673,31 @@ export component YapfastWindow inherits Window {
     /// This account's camera is on its way, until its first picture.
     in property <bool> camera-starting;
     in property <bool> call-video;
+    /// The call has Discord's soundboard: its sounds, and why none can be
+    /// played now, when that's so.
+    in property <bool> can-soundboard;
+    in property <[SoundRow]> soundboard-rows;
+    in property <string> soundboard-note;
+    /// The soundboard opened, so its emoji's pictures are wanted.
+    callback soundboard-opened;
+    /// Play the soundboard sound with this id for everyone in the call.
+    callback play-soundboard(string);
+    /// Hear the soundboard sound with this id here only.
+    callback preview-soundboard(string);
+    /// Add the soundboard sound with this id to the favourites, or take it out.
+    callback favorite-soundboard(string, bool);
+    /// The Discord soundboard's volume and entrance sounds, as Voice &
+    /// video in Settings shows them; see VoiceSettings.
+    in-out property <int> soundboard-volume: 100;
+    in property <[string]> entrance-servers;
+    in-out property <int> entrance-server;
+    in property <string> entrance-sound;
+    in property <[SoundRow]> entrance-rows;
+    in property <bool> discord-nitro;
+    callback soundboard-volume-committed(int);
+    callback entrance-sounds-wanted;
+    callback entrance-server-chosen(int);
+    callback choose-entrance-sound(string);
     /// The call's grid of tiles is on screen, in its conversation or over
     /// the whole window.
     out property <bool> grid-shown: root.stage-full || (root.voice-here && (root.voice-panel || root.call-shown));
@@ -1491,6 +1516,24 @@ export component YapfastWindow inherits Window {
             share-menu.show();
         }
     }
+    function open-soundboard(x: length, y: length) {
+        root.menu-x = x; root.menu-y = y;
+        root.soundboard-opened();
+        soundboard-menu.show();
+    }
+    soundboard-menu := PopupWindow {
+        x: max(8px, min(root.width - self.width - 8px, root.menu-x - 6px));
+        y: max(8px, root.menu-y - self.height - 6px);
+        width: board.width; height: board.height;
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        board := Soundboard {
+            rows: root.soundboard-rows; note: root.soundboard-note; emoji-font: root.emoji-font;
+            play(id) => { root.play-soundboard(id); }
+            preview(id) => { root.preview-soundboard(id); }
+            favorite(id, on) => { root.favorite-soundboard(id, on); }
+            close => { soundboard-menu.close(); }
+        }
+    }
     share-menu := PopupWindow {
         x: max(8px, min(root.width - self.width - 8px, root.menu-x - 6px));
         y: max(8px, root.menu-y - self.height - 6px);
@@ -1972,11 +2015,13 @@ export component YapfastWindow inherits Window {
                     can-share: root.can-share; sharing: root.sharing; share-live: root.share-live; share-status: root.share-status;
                     share-watchers: root.share-viewers.length;
                     can-film: root.can-film; camera-on: root.camera-on; camera-starting: root.camera-starting;
+                    can-soundboard: root.can-soundboard;
                     leave-voice => { root.leave-voice(); }
                     dismiss-voice-error => { root.dismiss-voice-error(); }
                     toggle-camera => { root.toggle-camera(); }
                     toggle-share => { root.toggle-share(); }
                     open-share-menu(x, y) => { root.open-share-menu(x, y); }
+                    open-soundboard(x, y) => { root.open-soundboard(x, y); }
                     open-call-link(x, y, width, height) => { root.open-call-link(x, y, width, height); }
                 }
                 // Account panel.
@@ -2369,11 +2414,13 @@ export component YapfastWindow inherits Window {
                                     muted: root.muted; deafened: root.deafened; voice-ready: root.voice-ready; voice-leaving: root.voice-leaving;
                                     can-share: root.can-share; sharing: root.sharing;
                                     can-film: root.can-film; camera-on: root.camera-on; camera-starting: root.camera-starting;
+                                    can-soundboard: root.can-soundboard;
                                     toggle-camera => { root.toggle-camera(); }
                                     toggle-mute => { root.toggle-mute(); }
                                     toggle-deafen => { root.toggle-deafen(); }
                                     toggle-share => { root.toggle-share(); }
                                     open-share-menu(x, y) => { root.open-share-menu(x, y); }
+                                    open-soundboard(x, y) => { root.open-soundboard(x, y); }
                                     leave-voice => { root.leave-voice(); }
                                 }
                             }
@@ -3218,6 +3265,13 @@ export component YapfastWindow inherits Window {
             input-mode <=> root.input-mode; talk-key: root.talk-key; talk-recording <=> root.talk-recording;
             talk-delay <=> root.talk-delay; talk-note: root.talk-note;
             microphone-volume <=> root.microphone-volume; speaker-volume <=> root.speaker-volume;
+            soundboard-volume <=> root.soundboard-volume; entrance-servers: root.entrance-servers;
+            entrance-server <=> root.entrance-server; entrance-sound: root.entrance-sound;
+            entrance-rows: root.entrance-rows; nitro: root.discord-nitro; emoji-font: root.emoji-font;
+            soundboard-volume-committed(value) => { root.soundboard-volume-committed(value); }
+            entrance-sounds-wanted => { root.entrance-sounds-wanted(); }
+            entrance-server-chosen(index) => { root.entrance-server-chosen(index); }
+            choose-entrance-sound(id) => { root.choose-entrance-sound(id); }
             call-volumes-changed => { root.call-volumes-changed(); }
             record-talk-key(on) => { root.record-talk-key(on); }
             select-microphone(index) => { root.select-microphone(index); }

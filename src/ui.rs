@@ -945,6 +945,9 @@ struct Layout {
     stream_volumes: std::collections::BTreeMap<String, f32>,
     /// Those muted for this account alone, from their menu in a call.
     muted_people: std::collections::BTreeSet<String>,
+    /// Those whose soundboard sounds this account doesn't hear, from the
+    /// same menu.
+    soundboard_muted_people: std::collections::BTreeSet<String>,
     /// Others see when this account is typing; on unless turned off.
     share_typing: Option<bool>,
     /// Desktop notifications, and whether they say what messages say; on unless
@@ -1191,6 +1194,9 @@ impl Layout {
         for person in &self.muted_people {
             yapfast_core::volume::mute(person, true);
         }
+        for person in &self.soundboard_muted_people {
+            yapfast_core::volume::mute_soundboard(person, true);
+        }
         window.set_share_typing(self.share_typing.unwrap_or(true));
         window.set_notifications(self.notifications.unwrap_or(true));
         window.set_notification_text(self.notification_text.unwrap_or(true));
@@ -1322,6 +1328,12 @@ struct Models {
     stream_tiles: Rc<VecModel<i32>>,
     /// Who is in the open DM's call, shown above its messages.
     call_people: Rc<VecModel<PersonRow>>,
+    /// The call's soundboard: headings and rows of sounds.
+    soundboard_rows: Rc<VecModel<SoundRow>>,
+    /// The sounds Settings offers as an entrance sound, likewise, and the
+    /// servers to choose one for.
+    entrance_rows: Rc<VecModel<SoundRow>>,
+    entrance_servers: Rc<VecModel<SharedString>>,
     /// Discord friends: all of them, and those around.
     friends: Rc<VecModel<FriendRow>>,
     friends_online: Rc<VecModel<FriendRow>>,
@@ -1375,6 +1387,9 @@ impl Models {
         window.set_participant_frames(ModelRc::from(self.participant_frames.clone()));
         window.set_stream_tiles(ModelRc::from(self.stream_tiles.clone()));
         window.set_call_people(ModelRc::from(self.call_people.clone()));
+        window.set_soundboard_rows(ModelRc::from(self.soundboard_rows.clone()));
+        window.set_entrance_rows(ModelRc::from(self.entrance_rows.clone()));
+        window.set_entrance_servers(ModelRc::from(self.entrance_servers.clone()));
         window.set_friends(ModelRc::from(self.friends.clone()));
         window.set_friends_online(ModelRc::from(self.friends_online.clone()));
         window.set_blocked_people(ModelRc::from(self.blocked.clone()));
@@ -1436,6 +1451,7 @@ struct Icons {
     leave: slint::Image,
     // Someone's menu in a voice channel.
     mic_off: slint::Image,
+    soundboard: slint::Image,
     deafen: slint::Image,
     move_to: slint::Image,
     disconnect: slint::Image,
@@ -1562,6 +1578,15 @@ struct Adapter {
     preview_camera: Option<yapfast_core::camera::Camera>,
     /// Whose camera picture each place in the call's grid holds.
     frame_ids: Vec<String>,
+    /// The soundboard's sounds as its rows show them, and the pictures'
+    /// revision then, so the rows are made again only when either changes.
+    soundboard_shown: Option<(Arc<[voice::SoundGroup]>, u64)>,
+    /// The same for the entrance sounds Settings offers; the servers it
+    /// offers them for, "All servers" first as none; and the soundboard
+    /// volume shown, so the slider moves only when Discord's does.
+    entrance_shown: Option<(Arc<[voice::SoundGroup]>, u64)>,
+    entrance_servers: Vec<Option<String>>,
+    soundboard_volume_shown: Option<f32>,
     /// Where the call's tiles are, as the grid last said.
     tiles: Option<Tiles>,
     /// The call's tile shown large, and whose stream was watched when the
@@ -1663,6 +1688,9 @@ impl Adapter {
             delete: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/trash-2.svg"))?,
             leave: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/log-out.svg"))?,
             mic_off: slint::Image::load_from_svg_data(include_bytes!("../ui/icons/mic-off.svg"))?,
+            soundboard: slint::Image::load_from_svg_data(include_bytes!(
+                "../ui/icons/soundboard.svg"
+            ))?,
             deafen: slint::Image::load_from_svg_data(include_bytes!(
                 "../ui/icons/headphone-off.svg"
             ))?,
@@ -1748,6 +1776,10 @@ impl Adapter {
                 camera_test: None,
                 preview_camera: None,
                 frame_ids: vec![],
+                soundboard_shown: None,
+                entrance_shown: None,
+                entrance_servers: vec![],
+                soundboard_volume_shown: None,
                 tiles: None,
                 call_focus: None,
                 watched: None,

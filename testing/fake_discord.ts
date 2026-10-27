@@ -131,6 +131,23 @@
 // a moment later in a MESSAGE_UPDATE as Discord's does, a YouTube link and a
 // GIF link, and a bot post a card with fields; their pictures come from
 // /external/, standing in for Discord's media proxy.
+// The soundboard: GET /soundboard-default-sounds gives six of Discord's own,
+// and op 31 "Server"'s two, Bob's laugh with :talk: and Carol's applause.
+// POST /channels/{id}/send-soundboard-sound plays one in the call Alice is in,
+// as Discord checks (not deafened or server muted, a server's sound only in
+// its channels without Nitro), sending everyone VOICE_CHANNEL_EFFECT_SEND; GET
+// /_control/soundboard-sends lists what she sent. The CDN's
+// /soundboard-sounds/ serves Discord's as testing/fixtures' MP3 tone and the
+// server's as its Ogg one. POST /_control/soundboard-play?user=bob&sound=ID
+// has someone play one where they are in voice, the applause unless named,
+// and POST /_control/soundboard-add?name=Bell adds a sound to "Server", with
+// GUILD_SOUNDBOARD_SOUND_CREATE. Alice's favourite sounds, the applause and
+// the airhorn, are in /users/@me/settings-proto/2; her soundboard volume and
+// join sounds in GET /users/@me/settings-proto/1, none set to start with. POST
+// /channels/{id}/custom-call-sounds, as she joins a call with Nitro, plays
+// the join sound her settings give for its server, or for every server, to
+// the others there; GET /_control/custom-call-sounds lists those she asked
+// for.
 // The server has two custom emoji, :talk: and the animated :party:, served
 // from /emojis/, and a sticker from /stickers/. `--nitro` gives Alice Nitro,
 // so every server's emoji are hers to use, and `--cdn-delay MS` makes each
@@ -145,8 +162,8 @@
 // page unfurls into a gifv embed a moment later, a direct link to a GIF's
 // file into an image embed.
 // Alice's custom status, "Testing Yapfast", is in her settings; PATCH
-// /users/@me/settings-proto/1 replaces them, and GET /_control/presence shows the
-// presence her session last sent with op 3. POST /users/@me/relationships sends
+// /users/@me/settings-proto/1 replaces each top-level field it sends, and GET
+// /_control/presence shows the presence her session last sent with op 3. POST /users/@me/relationships sends
 // a friend request by username: Frank takes none, and unknown names fail.
 // From a DM's menu, PUT /users/@me/relationships/{id} with type 2 blocks,
 // DELETE ends a friendship or block, PUT and DELETE .../{id}/ignore ignore and
@@ -408,7 +425,8 @@ const wireGuildSettings = (guild: string) => {
 };
 
 // Alice's settings as Discord keeps them: a protobuf message in base64, of
-// which the fake knows only the status, field 11, holding the custom status.
+// which the fake knows the status, field 11, holding the custom status, and
+// reads the join sounds.
 const protoBytes = (field: number, bytes: Uint8Array) => {
   const out = [field << 3 | 2];
   for (let length = bytes.length; ; length >>= 7) {
@@ -424,6 +442,84 @@ const protoFixed64 = (field: number, value: bigint) => {
   new DataView(out.buffer).setBigUint64(1, value, true);
   return out;
 };
+/** A protobuf message's fields, each its number and, for a length or a
+ *  fixed64, its bytes, else its varint. */
+function protoFields(bytes: Uint8Array): [number, Uint8Array | bigint][] {
+  const fields: [number, Uint8Array | bigint][] = [];
+  let at = 0;
+  const varint = () => {
+    let value = 0n;
+    for (let shift = 0n; ; shift += 7n) {
+      const byte = bytes[at++]!;
+      value |= BigInt(byte & 0x7f) << shift;
+      if (byte < 0x80) return value;
+    }
+  };
+  while (at < bytes.length) {
+    const key = Number(varint());
+    const size = [0, 8, Number.NaN, 0, 0, 4][key & 7];
+    const length = (key & 7) === 2 ? Number(varint()) : size!;
+    if (length === 0) fields.push([key >> 3, varint()]);
+    else fields.push([key >> 3, bytes.slice(at, at += length)]);
+  }
+  return fields;
+}
+/** `patch`'s top-level fields in place of `current`'s of the same
+ *  numbers, as Discord applies a settings PATCH; the rest stay. */
+function mergeSettings(current: string, patch: string): string {
+  const spans = (bytes: Uint8Array) => {
+    const out: [number, Uint8Array][] = [];
+    let at = 0;
+    const varint = () => {
+      let value = 0;
+      for (let shift = 0; ; shift += 7) {
+        const byte = bytes[at++]!;
+        value += (byte & 0x7f) * 2 ** shift;
+        if (byte < 0x80) return value;
+      }
+    };
+    while (at < bytes.length) {
+      const start = at;
+      const key = varint();
+      const wire = key & 7;
+      if (wire === 0) varint();
+      else if (wire === 1) at += 8;
+      else if (wire === 5) at += 4;
+      else { const length = varint(); at += length; }
+      out.push([Math.floor(key / 8), bytes.slice(start, at)]);
+    }
+    return out;
+  };
+  const patched = spans(Buffer.from(patch, "base64"));
+  const replaced = new Set(patched.map(([number]) => number));
+  const kept = spans(Buffer.from(current, "base64")).filter(([number]) => !replaced.has(number));
+  return Buffer.concat([...kept, ...patched].map(([, raw]) => raw)).toString("base64");
+}
+const fixed64 = (bytes: Uint8Array) => new DataView(bytes.buffer, bytes.byteOffset).getBigUint64(0, true);
+
+/** The sound Alice's settings have join `guild`'s calls, the one for every
+ *  server if it has none: [sound, its server or 0n for Discord's own]. */
+function joinSound(guild: string | null): [string, bigint] | undefined {
+  const found = new Map<string, [string, bigint]>();
+  for (const [number, guilds] of protoFields(Buffer.from(settings, "base64"))) {
+    if (number !== 3 || typeof guilds === "bigint") continue;
+    for (const [, entry] of protoFields(guilds).filter(([n]) => n === 1)) {
+      const parts = protoFields(entry as Uint8Array);
+      const key = parts.find(([n]) => n === 1)?.[1];
+      const value = parts.find(([n]) => n === 2)?.[1];
+      if (typeof key === "bigint" || !key || !value || typeof value === "bigint") continue;
+      const sound = protoFields(value).find(([n]) => n === 6)?.[1];
+      if (!sound || typeof sound === "bigint") continue;
+      const ids = protoFields(sound);
+      const id = ids.find(([n]) => n === 1)?.[1];
+      const from = ids.find(([n]) => n === 2)?.[1];
+      if (id instanceof Uint8Array) {
+        found.set(String(fixed64(key)), [String(fixed64(id)), from instanceof Uint8Array ? fixed64(from) : 0n]);
+      }
+    }
+  }
+  return (guild ? found.get(guild) : undefined) ?? found.get("0");
+}
 let settings = Buffer.from(
   protoBytes(11, protoBytes(2, new Uint8Array([...protoBytes(1, text("Testing Yapfast")), ...protoBytes(3, text("🧪"))]))),
 ).toString("base64");
@@ -436,7 +532,9 @@ const bit = (n: number) => 2 ** n;
 // Invite, view, send, embed, attach, read history, react, connect, speak,
 // voice activity, change one's own nickname, make public and private threads
 // and write in them, and post polls: Discord's defaults for @everyone.
-const EVERYONE = [0, 10, 11, 14, 15, 16, 6, 20, 21, 25, 26, 35, 36, 38, 49].reduce((sum, n) => sum + bit(n), 0);
+// Discord's defaults for @everyone, among them using the soundboard (42) and
+// other servers' sounds (45).
+const EVERYONE = [0, 10, 11, 14, 15, 16, 6, 20, 21, 25, 26, 35, 36, 38, 42, 45, 49].reduce((sum, n) => sum + bit(n), 0);
 // Kick, ban, view the audit log, manage nicknames, manage roles, moderate
 // members, and mute, deafen and move members in voice.
 const MODERATION = [1, 2, 7, 27, 28, 40, 22, 23, 24].reduce((sum, n) => sum + bit(n), 0);
@@ -2806,6 +2904,12 @@ function gatewayMessage(ws: Socket, text: string) {
       });
       break;
     }
+    case 31:
+      // Request soundboard sounds: one SOUNDBOARD_SOUNDS for each server.
+      for (const id of d.guild_ids ?? []) {
+        send(ws, 0, { guild_id: id, soundboard_sounds: id === GUILD ? serverSounds : [] }, "SOUNDBOARD_SOUNDS");
+      }
+      break;
     case 37: {
       // Guild subscriptions: messages are sent anyway; a channel's member
       // list is sent when asked for. The list subscribed to before stops,
@@ -3144,6 +3248,50 @@ function annexB(file: Buffer, hevc = false): { units: Buffer[]; keyframe: boolea
 }
 
 const voiceTone = oggPackets(readFileSync(new URL("voice-tone.ogg", fixtures)));
+
+// --- Soundboard ---------------------------------------------------------------
+
+type SoundboardSound = {
+  sound_id: string; name: string; volume: number; emoji_id: string | null; emoji_name: string | null;
+  guild_id?: string; user_id: string; available: boolean;
+};
+/** Discord's own sounds, as GET /soundboard-default-sounds gives them. */
+const DEFAULT_SOUNDS: SoundboardSound[] = [
+  ["1", "quack", "🦆"], ["2", "airhorn", "🔊"], ["3", "cricket", "🦗"],
+  ["4", "golf clap", "⛳"], ["5", "sad horn", "🎺"], ["7", "ba dum tss", "🥁"],
+].map(([sound_id, name, emoji_name]) => ({
+  sound_id: sound_id!, name: name!, volume: 1, emoji_id: null, emoji_name: emoji_name!, user_id: "0", available: true,
+}));
+const SOUND_LAUGH = "1400000000000000320";
+const SOUND_APPLAUSE = "1400000000000000321";
+/** "Server"'s sounds: Bob's laugh, with :talk:, and Carol's applause. */
+const serverSounds: SoundboardSound[] = [
+  { sound_id: SOUND_LAUGH, name: "Bob's laugh", volume: 0.8, emoji_id: EMOJI_TALK, emoji_name: "talk", guild_id: GUILD, user_id: users.bob.id, available: true },
+  { sound_id: SOUND_APPLAUSE, name: "Applause", volume: 1, emoji_id: null, emoji_name: "👏", guild_id: GUILD, user_id: users.carol.id, available: true },
+];
+/** What the CDN serves for a sound: Discord's as MP3, the server's as Ogg. */
+const soundFiles = {
+  mp3: readFileSync(new URL("soundboard-tone.mp3", fixtures)),
+  ogg: readFileSync(new URL("voice-tone.ogg", fixtures)),
+};
+/** Sounds Alice played, as she sent them. */
+const soundboardSends: unknown[] = [];
+/** Join sounds Alice asked for: the channel and what she sent. */
+const customCallSounds: unknown[] = [];
+
+/** `user` plays `sound` in the voice channel or DM call they're in, which
+ *  everyone there hears of, as Discord does. */
+function playSound(user: string, sound: SoundboardSound) {
+  const state = voice.get(user);
+  if (!state) return false;
+  dispatch("VOICE_CHANNEL_EFFECT_SEND", {
+    channel_id: state.channel, guild_id: state.guild ?? undefined, user_id: user,
+    sound_id: sound.sound_id, sound_volume: sound.volume,
+    emoji: sound.emoji_name ? { id: sound.emoji_id, name: sound.emoji_name } : null,
+    animation_type: null, animation_id: 0,
+  });
+  return true;
+}
 
 /** Bob says the tone in Alice's call on `ws`, 20 ms a packet, then five
  *  silent frames, marking himself speaking with op 5 first. */
@@ -4048,7 +4196,8 @@ function gifsFor(query: string) {
 
 // Alice's second settings, FrecencyUserSettings: her favourite GIFs, two
 // added on another client: one by its page, whose picture is a .gif, and one
-// by a direct link to its file, an animated WebP. PATCH replaces them.
+// by a direct link to its file, an animated WebP, and her favourite sounds.
+// PATCH replaces them.
 function protoNumber(field: number, value: number): Uint8Array {
   const out = [field << 3];
   for (; ; value >>= 7) {
@@ -4071,7 +4220,16 @@ function favoriteGifs(origin: string): string {
       ...entry("https://klipy.com/gifs/hello-9000", `${origin}/_gifs/hello.gif`, 220, 165, 1),
       ...entry(linkedGif("wave", "webp"), `${origin}/_gifs/wave.webp`, 220, 165, 2),
     ]);
-  return Buffer.from(new Uint8Array([...protoBytes(2, gifs), ...placesUsed()])).toString("base64");
+  return Buffer.from(new Uint8Array([...protoBytes(2, gifs), ...placesUsed(), ...favoriteSounds()])).toString("base64");
+}
+
+// Alice's favourite sounds, favorite_soundboard_sounds: the applause, then
+// the airhorn, in the order the picker shows them.
+function favoriteSounds(): Uint8Array {
+  const ids = [SOUND_APPLAUSE, "2"];
+  const packed = new Uint8Array(ids.length * 8);
+  ids.forEach((id, i) => new DataView(packed.buffer).setBigUint64(i * 8, BigInt(id), true));
+  return protoBytes(8, new Uint8Array([...protoBytes(1, packed), ...protoBytes(2, packed)]));
 }
 
 // Alice's guild_and_channel_frecency, which ranks where the Forward To
@@ -4705,6 +4863,50 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return new Response(null, { status: 204 });
   }
 
+  if (method === "GET" && path === "/soundboard-default-sounds") return json(DEFAULT_SOUNDS);
+
+  // Playing a sound: only in the call Alice is in, neither deafened nor
+  // muted by the server; a server's sound only in its own channels, unless
+  // she has Nitro and may use other servers' sounds there.
+  if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/send-soundboard-sound$/))) {
+    const body: any = await req.json();
+    soundboardSends.push({ channel: m[1], ...body });
+    const state = voice.get(ALICE);
+    if (state?.channel !== m[1] || state.self_deaf || state.deaf || state.mute) {
+      return json({ message: "Missing Permissions", code: 50013 }, 403);
+    }
+    const own = DEFAULT_SOUNDS.find((sound) => sound.sound_id === body.sound_id && body.source_guild_id === undefined);
+    const server = serverSounds.find((sound) => sound.sound_id === body.sound_id && sound.guild_id === body.source_guild_id);
+    if (!own && !server) return notFound("Unknown Sound", 10097);
+    if (server && server.guild_id !== state.guild && !nitro) return json({ message: "Missing Permissions", code: 50013 }, 403);
+    const channel = state.guild ? guild().channels.find((found: any) => found.id === m![1]) : undefined;
+    const needed = (1n << 21n) | (1n << 42n);
+    if (channel && (alicePermissionsIn(channel) & needed) !== needed) return json({ message: "Missing Permissions", code: 50013 }, 403);
+    playSound(ALICE, (own ?? server)!);
+    return new Response(null, { status: 204 });
+  }
+
+  // A join sound: Alice's, from her settings, played to the call she has
+  // just joined, which needs Nitro and isn't a stage's.
+  if (method === "POST" && (m = path.match(/^\/channels\/(\d+)\/custom-call-sounds$/))) {
+    const body: any = await req.json();
+    customCallSounds.push({ channel: m[1], ...body });
+    const state = voice.get(ALICE);
+    if (state?.channel !== m[1] || !nitro) return json({ message: "Missing Permissions", code: 50013 }, 403);
+    const [id, from] = joinSound(state.guild ?? null) ?? [];
+    const sound = [...DEFAULT_SOUNDS, ...serverSounds]
+      .find((found) => found.sound_id === id && BigInt(found.guild_id ?? 0) === from);
+    if (sound) {
+      dispatch("VOICE_CHANNEL_EFFECT_SEND", {
+        channel_id: state.channel, guild_id: state.guild ?? undefined, user_id: ALICE,
+        sound_id: sound.sound_id, sound_volume: sound.volume,
+        emoji: sound.emoji_name ? { id: sound.emoji_id, name: sound.emoji_name } : null,
+        animation_type: body.animation_type, animation_id: body.animation_id,
+      });
+    }
+    return new Response(null, { status: 204 });
+  }
+
   if (method === "GET" && (m = path.match(/^\/users\/(\d+|@me)\/profile$/))) {
     const user = userById.get(m[1] === "@me" ? ALICE : m[1]!);
     if (!user) return notFound("Unknown User", 10013);
@@ -5335,17 +5537,19 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return empty();
   }
 
-  // Alice's settings: Yapfast changes the status or the custom status, which
-  // every session hears of. The fake keeps only the latest change.
+  // Alice's settings: Yapfast changes the status, the custom status, the
+  // soundboard's volume or the join sounds, which every session hears of.
+  // Each top-level field sent replaces hers whole, as on Discord.
+  if (method === "GET" && path === "/users/@me/settings-proto/1") return json({ settings });
   if (method === "PATCH" && path === "/users/@me/settings-proto/1") {
     const body: any = await req.json().catch(() => ({}));
     if (typeof body.settings !== "string") return json({ message: "Invalid Form Body", code: 50035 }, 400);
-    settings = body.settings;
-    dispatch("USER_SETTINGS_PROTO_UPDATE", { settings: { type: 1, proto: settings }, partial: true });
+    settings = mergeSettings(settings, body.settings);
+    dispatch("USER_SETTINGS_PROTO_UPDATE", { settings: { type: 1, proto: body.settings }, partial: true });
     return json({ settings });
   }
 
-  // The second settings: favourite GIFs.
+  // The second settings: favourite GIFs and sounds.
   if (method === "GET" && path === "/users/@me/settings-proto/2") {
     return json({ settings: frecencySettings ??= favoriteGifs(origin) });
   }
@@ -6466,7 +6670,7 @@ const GENERIC_CONTROLS = new Set([
   "stream-move", "sessions", "cookies", "list-requests", "audit-log", "slow", "gateway-reconnect", "qr-scan",
   "qr-confirm", "qr-captcha", "qr-cancel", "qr-expire", "voice-audio", "video", "stream-codec", "reactor-pages",
   "reactor-removals", "thread-searches", "thread-creates", "thread-members", "typed", "acks", "invites",
-  "invite-joins", "invite-captcha", "invite-form", "mfa",
+  "invite-joins", "invite-captcha", "invite-form", "mfa", "soundboard-sends", "custom-call-sounds",
 ]);
 
 /** A status's emoji as the env gives it, Unicode or `<:name:id>`, as Discord sends it. */
@@ -7073,6 +7277,27 @@ const server = Bun.serve<SocketData>({
       }
       return new Response(`${name}'s camera is ${state.self_video ? "on" : "off"} in ${calls.length} call(s)\n`);
     }
+    if (path === "/_control/soundboard-sends") return Response.json(soundboardSends);
+    if (path === "/_control/custom-call-sounds") return Response.json(customCallSounds);
+    if (req.method === "POST" && path === "/_control/soundboard-play") {
+      const who = url.searchParams.get("user") ?? "bob";
+      const user = Object.values(users).find((found) => found.username === who);
+      const id = url.searchParams.get("sound") ?? SOUND_APPLAUSE;
+      const sound = [...DEFAULT_SOUNDS, ...serverSounds].find((found) => found.sound_id === id);
+      if (!user || !sound) return new Response("no such person or sound\n", { status: 400 });
+      return playSound(user.id, sound)
+        ? new Response(`${user.username} played ${sound.name}\n`)
+        : new Response(`${user.username} isn't in voice\n`, { status: 409 });
+    }
+    if (req.method === "POST" && path === "/_control/soundboard-add") {
+      const added: SoundboardSound = {
+        sound_id: snowflake(Date.now(), serverSounds.length), name: url.searchParams.get("name") ?? "New sound",
+        volume: 1, emoji_id: null, emoji_name: "🔔", guild_id: GUILD, user_id: users.bob.id, available: true,
+      };
+      serverSounds.push(added);
+      dispatch("GUILD_SOUNDBOARD_SOUND_CREATE", added);
+      return new Response(`${added.sound_id}\n`);
+    }
     if (req.method === "POST" && path === "/_control/bob-speak") {
       const calls = [...voiceSockets].filter((ws) => !ws.data.stream && ws.data.callKey);
       const spoke = calls.filter((ws) => bobSpeaks(ws)).length;
@@ -7275,6 +7500,17 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "GET" && path.startsWith("/external/")) {
       return serveExternal(path, url) ?? notFound();
+    }
+    // Discord's CDN: soundboard sounds.
+    const sound = req.method === "GET" ? path.match(/^\/soundboard-sounds\/(\d+)$/) : null;
+    if (sound) {
+      if (DEFAULT_SOUNDS.some((found) => found.sound_id === sound[1])) {
+        return new Response(soundFiles.mp3, { headers: { "content-type": "audio/mpeg" } });
+      }
+      if (serverSounds.some((found) => found.sound_id === sound[1])) {
+        return new Response(soundFiles.ogg, { headers: { "content-type": "audio/ogg" } });
+      }
+      return notFound();
     }
     // Discord's CDN: custom emoji and stickers.
     const emoji = req.method === "GET" ? path.match(/^\/(emojis|stickers)\/(\d+)\.(png|gif|webp)$/) : null;

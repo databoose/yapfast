@@ -77,7 +77,9 @@ channel list, opens their volumes above their menu as a member
 of the server, with what Discord's client adds there, in its order:
 
 - After Add note: Mute, a box that mutes them for this account alone and
-  keeps their volume for when it's unticked, which Yapfast remembers. One's own
+  keeps their volume for when it's unticked, and Mute Soundboard, a box
+  that silences the soundboard sounds they play, for this account alone;
+  Yapfast remembers both, as Discord's client keeps them locally. One's own
   entry, in the call Yapfast is in there, has Mute and Deafen boxes for this
   account's own instead, and no volume.
 - After Roles: Move to, a submenu of the server's other voice channels.
@@ -95,7 +97,7 @@ of the server, with what Discord's client adds there, in its order:
 The tracker keeps a voice state's own `self_mute` and `self_deaf` apart from
 the server's `mute` and `deaf`, so the channel list and the call show a
 server mute or deafen in red, as Discord's client does. Discord's Disable
-Video, Mute Soundboard and Apps aren't offered yet. In a DM's call or a
+Video and Apps aren't offered yet. In a DM's call or a
 Matrix room's, the right click still sets only the volume.
 
 Discord answers each change with GUILD_MEMBER_UPDATE, or for a kick with
