@@ -16,7 +16,8 @@ Live](go-live.md), [channels and messages](messages.md), [servers](servers.md)
 with their menus, invites, channels, threads and forums, [server
 settings](server-settings.md) with channel settings and two-factor
 authentication, and [DMs, friends and profiles](people.md) with presence and
-game detection. The [later list](#later) has what's left to do.
+game detection. The [later list](#later) has what's left to do, and
+[adding a feature](adding-a-feature.md) walks a new one through each layer.
 
 Yapfast connects to Discord directly, so a person who links their Discord account
 doesn't need the Discord desktop app. Yapfast joins Discord voice as that person,

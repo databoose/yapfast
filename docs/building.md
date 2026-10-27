@@ -322,7 +322,10 @@ scripts/ui-session stop
 
 `start --discord` builds with the release's features (see
 [Networks](#networks)) into the same `target/fast/yapfast` as a default build
-(`build()` in `scripts/ui-session`), so switching between the two recompiles.
+(`build()` in `scripts/ui-session`). Slint and the UI crate resolve the same
+for both, so switching between the two rebuilds only `yapfast-core`, the
+Discord crate and the app, about 5 to 15 seconds; `--live` changes Slint's
+features and recompiles it.
 Screenshots go to `.local/ui-session/shots/`, and `scripts/ui-session --help`
 lists every option and command. `start --tray` adds a stand-in tray on the
 session's bus; see [the tray](tray.md#testing). The scripted probes are in

@@ -25,7 +25,8 @@
 - Discord's API, as its own apps use it: https://docs.discord.food. Look up
   an endpoint, payload or gateway event there before adding or changing one,
   and give the fake the same shape. How Yapfast does each Discord feature,
-  one doc per area: `docs/discord/`.
+  one doc per area: `docs/discord/`; adding a feature, layer by layer:
+  `docs/discord/adding-a-feature.md`.
 - Discord service tests: `scripts/test-fake-discord [FILTER]`. While
   working, run the tests of the area you changed by name (`forum`,
   `calls_in_dms`), a second or so each. Run the whole suite, about 30 s, once
