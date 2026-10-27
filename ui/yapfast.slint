@@ -1058,14 +1058,14 @@ export component YapfastWindow inherits Window {
     in property <[string]> microphones;
     in property <[string]> speakers;
     in property <[string]> cameras;
-    in property <int> camera-index;
+    in-out property <int> camera-index;
     /// Trying the camera in settings: what it films, refreshed by
     /// stream-tick, or why it can't.
     in-out property <bool> camera-testing;
     in-out property <image> camera-preview;
     in property <string> camera-note;
-    in property <int> microphone-index;
-    in property <int> speaker-index;
+    in-out property <int> microphone-index;
+    in-out property <int> speaker-index;
     /// The microphone level from 0 to 1, refreshed by meter-tick while the input menu is open.
     in-out property <float> input-level;
     /// Why the level can't be shown, if it can't.
@@ -3208,9 +3208,9 @@ export component YapfastWindow inherits Window {
             delete-theme => { root.delete-theme(); }
         }
         if root.settings-section == 1: VoiceSettings {
-            microphones: root.microphones; microphone-index: root.microphone-index;
-            speakers: root.speakers; speaker-index: root.speaker-index;
-            cameras: root.cameras; camera-index: root.camera-index;
+            microphones: root.microphones; microphone-index <=> root.microphone-index;
+            speakers: root.speakers; speaker-index <=> root.speaker-index;
+            cameras: root.cameras; camera-index <=> root.camera-index;
             camera-testing <=> root.camera-testing; camera-preview: root.camera-preview; camera-note: root.camera-note;
             unmute-on-join <=> root.unmute-on-join; level-voice <=> root.level-voice;
             noise-suppression <=> root.noise-suppression; noise-strength <=> root.noise-strength; dereverb <=> root.dereverb; discord: root.discord-linked;

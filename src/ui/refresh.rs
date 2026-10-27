@@ -3161,36 +3161,16 @@ impl Adapter {
             }
         });
         window.set_switch_prompt(prompt.unwrap_or_default().into());
-        update_model(
-            &self.models.microphones,
-            voice
-                .microphones
-                .iter()
-                .map(|device| device_label(&device.name))
-                .collect(),
-        );
-        update_model(
-            &self.models.speakers,
-            voice
-                .speakers
-                .iter()
-                .map(|device| device_label(&device.name))
-                .collect(),
-        );
-        window.set_microphone_index(device_index(
-            &voice.microphones,
-            voice.microphone.as_deref(),
-        ));
-        window.set_speaker_index(device_index(&voice.speakers, voice.speaker.as_deref()));
-        update_model(
-            &self.models.cameras,
-            voice
-                .cameras
-                .iter()
-                .map(|device| device_label(&device.name))
-                .collect(),
-        );
-        window.set_camera_index(device_index(&voice.cameras, voice.camera.as_deref()));
+        let names = &mut self.models.device_names;
+        let (rows, index) = device_rows(&voice.microphones, voice.microphone.as_deref(), names);
+        update_model(&self.models.microphones, rows);
+        window.set_microphone_index(index);
+        let (rows, index) = device_rows(&voice.speakers, voice.speaker.as_deref(), names);
+        update_model(&self.models.speakers, rows);
+        window.set_speaker_index(index);
+        let (rows, index) = device_rows(&voice.cameras, voice.camera.as_deref(), names);
+        update_model(&self.models.cameras, rows);
+        window.set_camera_index(index);
     }
 
     /// The open profile card, and the profile beside a one-to-one DM, with

@@ -664,6 +664,47 @@ fn says_how_long_a_game_has_run() {
 }
 
 #[test]
+fn a_chosen_device_that_went_away_shows_as_not_connected() {
+    let device = |id: &str, name: &str| voice::Device {
+        id: id.into(),
+        name: name.into(),
+    };
+    let mut names = HashMap::new();
+    let both = [
+        device("{speakers}", "Speakers"),
+        device("{headphones}", "Headphones"),
+    ];
+    let (rows, index) = device_rows(&both, Some("{headphones}"), &mut names);
+    assert_eq!(rows, ["Speakers", "Headphones"]);
+    assert_eq!(index, 1);
+    // They go away: still chosen, by the name they had, not another device.
+    let (rows, index) = device_rows(&both[..1], Some("{headphones}"), &mut names);
+    assert_eq!(rows, ["Speakers", "Headphones (not connected)"]);
+    assert_eq!(index, 1);
+    // A device known by its name, as on PulseAudio, has it in its id.
+    let (rows, index) = device_rows(&both[..1], Some("name:USB headset"), &mut HashMap::new());
+    assert_eq!(rows, ["Speakers", "USB headset (not connected)"]);
+    assert_eq!(index, 1);
+    // The default entry's id names the default it had; it stays the default.
+    let pulse = [
+        device("name:default: Headset", "default: Headset"),
+        device("name:Headset", "Headset"),
+        device("name:Built-in", "Built-in"),
+    ];
+    let (rows, index) = device_rows(&pulse, Some("name:default: Built-in"), &mut names);
+    assert_eq!(rows.len(), 3);
+    assert_eq!(index, 0);
+    let (rows, index) = device_rows(&[], None, &mut names);
+    assert!(rows.is_empty());
+    assert_eq!(index, -1, "nothing to choose");
+    assert_eq!(
+        device_rows(&both, None, &mut names).1,
+        0,
+        "the default, listed first"
+    );
+}
+
+#[test]
 fn call_volumes_play_while_dragged_and_are_remembered() {
     i_slint_backend_testing::init_no_event_loop();
     let directory = tempfile::tempdir().unwrap();

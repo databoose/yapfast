@@ -1332,6 +1332,9 @@ struct Models {
     microphones: Rc<VecModel<SharedString>>,
     speakers: Rc<VecModel<SharedString>>,
     cameras: Rc<VecModel<SharedString>>,
+    /// Each device's name as last listed, by id, for a chosen device that
+    /// isn't connected; see [`device_rows`].
+    device_names: HashMap<String, SharedString>,
     staged: Rc<VecModel<StagedFile>>,
     aside_staged: Rc<VecModel<StagedFile>>,
 }
@@ -2456,6 +2459,10 @@ fn initial(text: &str) -> SharedString {
 }
 
 /// WebRTC names its default entry "default: Device"; show it as "Default (Device)".
+/// How a PulseAudio device list's default entry's id starts: the default
+/// device's name, as WebRTC lists it, after `default: `.
+const DEFAULT_DEVICE: &str = "name:default: ";
+
 fn device_label(name: &str) -> SharedString {
     match name.strip_prefix("default: ") {
         Some(device) => format!("Default ({device})").into(),
@@ -2463,15 +2470,54 @@ fn device_label(name: &str) -> SharedString {
     }
 }
 
-/// Without a choice, voice uses WebRTC's default device, which it lists first.
-fn device_index(devices: &[voice::Device], selected: Option<&str>) -> i32 {
-    let index = match selected {
-        Some(selected) => devices.iter().position(|device| device.id == selected),
+/// A device picker's rows, and the chosen one's index. Without a choice,
+/// voice uses WebRTC's default device, which it lists first. A chosen device
+/// that isn't connected, such as Bluetooth headphones that went away, shows
+/// last as not connected, by the name it was last listed with, rather than
+/// as no device or as another one. `names` keeps those names. The default
+/// entry's id names the device that was the default, and the default it
+/// plays on may have changed since, so it stays the default entry.
+fn device_rows(
+    devices: &[voice::Device],
+    chosen: Option<&str>,
+    names: &mut HashMap<String, SharedString>,
+) -> (Vec<SharedString>, i32) {
+    let mut rows: Vec<SharedString> = devices
+        .iter()
+        .map(|device| device_label(&device.name))
+        .collect();
+    for (device, row) in devices.iter().zip(&rows) {
+        if names.get(&device.id) != Some(row) {
+            names.insert(device.id.clone(), row.clone());
+        }
+    }
+    let index = match chosen {
         None => (!devices.is_empty()).then_some(0),
+        Some(chosen) => Some(
+            devices
+                .iter()
+                .position(|device| device.id == chosen)
+                .or_else(|| {
+                    let default = |id: &str| id.starts_with(DEFAULT_DEVICE);
+                    default(chosen)
+                        .then(|| devices.iter().position(|device| default(&device.id)))
+                        .flatten()
+                })
+                .unwrap_or_else(|| {
+                    let name = names
+                        .get(chosen)
+                        .cloned()
+                        .or_else(|| chosen.strip_prefix(voice::NAMED).map(device_label))
+                        .unwrap_or_else(|| "Chosen device".into());
+                    rows.push(format!("{name} (not connected)").into());
+                    rows.len() - 1
+                }),
+        ),
     };
-    index
+    let index = index
         .and_then(|index| i32::try_from(index).ok())
-        .unwrap_or(-1)
+        .unwrap_or(-1);
+    (rows, index)
 }
 
 fn update_model<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {

@@ -21,7 +21,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use yapfast_discord::voice::{CHANNELS, FRAME, Listener, Microphone, SAMPLE_RATE, Surplus, Track};
 
 use crate::{
-    audio_io::{Input, Output},
+    audio_io::{LastingInput, LastingOutput},
     noise::Denoiser,
 };
 
@@ -390,7 +390,9 @@ pub fn speakers(
     thread::Builder::new()
         .name("yapfast-discord-out".into())
         .spawn(move || {
-            let stream = Output::<i16>::open(
+            // Speakers that go away, such as Bluetooth headphones, open
+            // again when they come back.
+            let stream = LastingOutput::<i16>::open(
                 speaker.as_deref(),
                 "Discord voice",
                 SAMPLE_RATE,
@@ -436,20 +438,14 @@ pub fn speakers(
                     recycle(frame);
                     continue;
                 }
-                if let Err(error) = stream.write(&frame) {
-                    tracing::warn!(
-                        error = format!("{error:#}"),
-                        "Discord speakers stopped playing"
-                    );
-                    break;
-                }
+                stream.write(&frame);
                 if let Err(TrySendError::Full(frame) | TrySendError::Disconnected(frame)) =
                     reverse.try_send(frame)
                 {
                     recycle(frame);
                 }
             }
-            let _ = stream.drain();
+            stream.drain();
         })
         .context("could not start Discord speakers")?;
     result
@@ -569,7 +565,7 @@ fn measure(microphone: Option<&str>, shared: &MeterShared) -> Result<()> {
     let mut block = [0i16; BLOCK];
     let mut shown = f32::NEG_INFINITY;
     while !shared.stop.load(Ordering::Relaxed) {
-        stream.read(&mut block).context("the microphone stopped")?;
+        stream.read(&mut block);
         processing.block(&mut block);
         shown = processing.level.max(shown - 0.9);
         shared.level.store(shown.to_bits(), Ordering::Relaxed);
@@ -617,10 +613,7 @@ pub fn capture(
             }
             let mut block = [0i16; BLOCK];
             while !stopped.load(Ordering::Relaxed) {
-                if let Err(error) = stream.read(&mut block) {
-                    tracing::warn!(error = format!("{error:#}"), "Discord microphone stopped");
-                    break;
-                }
+                stream.read(&mut block);
                 while let Ok(mut played) = reverse.try_recv() {
                     processing.played(&mut played);
                     recycle(played);
@@ -769,9 +762,10 @@ fn processes_a_recording() {
     }
 }
 
-/// Opens the microphone, mono in 10 ms blocks.
-fn open_microphone(microphone: Option<&str>) -> Result<Input<i16>> {
-    Input::open(
+/// Opens the microphone, mono in 10 ms blocks, to open again if it goes
+/// away and comes back.
+fn open_microphone(microphone: Option<&str>) -> Result<LastingInput<i16>> {
+    LastingInput::open(
         microphone,
         "Discord microphone",
         SAMPLE_RATE,
@@ -1044,7 +1038,7 @@ mod tests {
 
     /// Two seconds of beeps on the default speakers.
     fn beep() {
-        let mut output = Output::<i16>::open(
+        let mut output = crate::audio_io::Output::<i16>::open(
             None,
             "Test beeps",
             SAMPLE_RATE,

@@ -660,7 +660,7 @@ pub(crate) fn device_id(guid: &str, name: &str) -> String {
 }
 
 /// Marks a device id made from the device's name.
-pub(crate) const NAMED: &str = "name:";
+pub const NAMED: &str = "name:";
 
 #[cfg(test)]
 mod tests {

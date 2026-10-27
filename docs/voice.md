@@ -171,6 +171,25 @@ GUID, which would always choose the first device. Yapfast names such devices
 `name:` and their reported name, and selects them by their current index
 instead.
 
+A call's own speakers and microphone, and a watched stream's sound, outlast
+their device (`audio_io::LastingOutput` and `LastingInput`). Bluetooth
+headphones that drop out end the stream on Windows, and on PulseAudio the
+server moves it to another device and leaves it there when they return.
+So a stream that fails opens again, on its device or on the default while
+that's gone, and every 2 s it checks which endpoint it would open now and
+moves there if that's another one. On PulseAudio that endpoint is the
+sink's or source's name with its index, which a device gets anew each time
+it comes back, so even a short gap brings the stream back. On Windows it's
+the endpoint id, the default's while the chosen device is gone, so the
+default also follows Windows when it changes. While nothing opens, the
+stream keeps time with silence and tries again every half second. Settings
+show a chosen device that isn't connected last in its list, as "(not
+connected)", by the name it was last listed with; the call plays on the
+default meanwhile. Each picker's selection is bound both ways, since a
+ComboBox sets its own index as it's used, which undoes a one-way binding
+and left it showing another device once the list changed. Yapfast calls'
+own audio goes through WebRTC's device module, which these don't cover.
+
 Right-clicking someone in a call, in the sidebar or on their tile, sets how
 loud they sound from 0% to 200%, and their stream's sound too while they're
 live. A drag snaps to 100% near it. The sliders follow Discord's, read from its

@@ -432,9 +432,12 @@ export component VoiceSettings inherits VerticalLayout {
     in property <[string]> microphones;
     in property <[string]> speakers;
     in property <[string]> cameras;
-    in property <int> microphone-index;
-    in property <int> speaker-index;
-    in property <int> camera-index;
+    /// The chosen devices, bound both ways: a ComboBox sets its own index
+    /// as it's used, which would undo a one-way binding and leave it
+    /// showing another device once the list changes.
+    in-out property <int> microphone-index;
+    in-out property <int> speaker-index;
+    in-out property <int> camera-index;
     /// Filming to try the camera, and what it films; and why it can't, if
     /// it couldn't start.
     in-out property <bool> camera-testing;
@@ -490,7 +493,7 @@ export component VoiceSettings inherits VerticalLayout {
         VerticalLayout {
             spacing: 8px; horizontal-stretch: 1; min-width: 0; preferred-width: 0;
             SettingsHeading { text: "MICROPHONE"; }
-            ComboBox { model: root.microphones; current-index: root.microphone-index; enabled: root.microphones.length > 0; accessible-label: "Microphone device"; selected => { root.select-microphone(self.current-index); } }
+            ComboBox { model: root.microphones; current-index <=> root.microphone-index; enabled: root.microphones.length > 0; accessible-label: "Microphone device"; selected => { root.select-microphone(self.current-index); } }
             VolumeSlider {
                 label: "Microphone volume"; value <=> root.microphone-volume;
                 changed => { root.call-volumes-changed(); }
@@ -500,7 +503,7 @@ export component VoiceSettings inherits VerticalLayout {
         VerticalLayout {
             spacing: 8px; horizontal-stretch: 1; min-width: 0; preferred-width: 0;
             SettingsHeading { text: "SPEAKERS"; }
-            ComboBox { model: root.speakers; current-index: root.speaker-index; enabled: root.speakers.length > 0; accessible-label: "Speaker device"; selected => { root.select-speaker(self.current-index); } }
+            ComboBox { model: root.speakers; current-index <=> root.speaker-index; enabled: root.speakers.length > 0; accessible-label: "Speaker device"; selected => { root.select-speaker(self.current-index); } }
             VolumeSlider {
                 label: "Speaker volume"; value <=> root.speaker-volume;
                 changed => { root.call-volumes-changed(); }
@@ -514,7 +517,7 @@ export component VoiceSettings inherits VerticalLayout {
         VerticalLayout {
             spacing: 8px; horizontal-stretch: 1; min-width: 0; preferred-width: 0; alignment: start;
             SettingsHeading { text: "CAMERA"; }
-            ComboBox { model: root.cameras; current-index: root.camera-index; enabled: root.cameras.length > 0; accessible-label: "Camera device"; selected => { root.select-camera(self.current-index); } }
+            ComboBox { model: root.cameras; current-index <=> root.camera-index; enabled: root.cameras.length > 0; accessible-label: "Camera device"; selected => { root.select-camera(self.current-index); } }
             if root.cameras.length == 0: Label { text: "No camera found. Connect one, then refresh."; }
         }
         VerticalLayout {
