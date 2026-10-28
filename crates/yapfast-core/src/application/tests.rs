@@ -5059,6 +5059,68 @@ fn the_new_divider_marks_the_first_unread_message_until_the_channel_is_left() {
 
 #[test]
 #[cfg(feature = "discord")]
+fn a_channel_whose_new_messages_dont_show_reads_once_its_newest_came() {
+    let general = "discord:10:21";
+    let latest = |history| Event::HistoryLoaded {
+        room: general.into(),
+        direction: chat::Direction::Latest,
+        history,
+    };
+    let reads = |effects: &[Effect]| {
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Backend(Command::MarkRead { room, .. }) if room == general))
+    };
+    let mut app = connected();
+    // Discord's newest message is 104, deleted, of a kind Yapfast doesn't
+    // show or hidden as blocked.
+    app.apply(unread_channel(true, 103));
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    app.dispatch(Action::SelectRoom(general.into()));
+    app.dispatch(Action::Reading(true));
+    // What was kept on disk shows first; newer messages may come with the
+    // newest page.
+    let effects = app.apply(Event::Timeline {
+        room: general.into(),
+        messages: timeline(discord_messages(95..=103, &[])),
+    });
+    assert!(!reads(&effects));
+    assert!(!reads(&app.apply(latest(chat::History::Failed))));
+    assert!(!reads(&app.dispatch(Action::Reading(true))));
+
+    // The newest page came with nothing new: no divider, and the channel reads.
+    app.apply(Event::Timeline {
+        room: general.into(),
+        messages: timeline(discord_messages(95..=103, &[])),
+    });
+    let effects = app.apply(latest(chat::History::Loaded {
+        start: false,
+        present: true,
+    }));
+    assert!(reads(&effects));
+    assert_eq!(app.state.first_unread, None);
+    assert!(app.state.caught_up);
+
+    // When it brings new messages, the divider goes above them as before,
+    // and the view goes there first.
+    app.dispatch(Action::SelectRoom("discord:10:22".into()));
+    app.apply(unread_channel(true, 103));
+    app.dispatch(Action::SelectRoom(general.into()));
+    app.dispatch(Action::Reading(true));
+    app.apply(Event::Timeline {
+        room: general.into(),
+        messages: timeline(discord_messages(95..=106, &[])),
+    });
+    let effects = app.apply(latest(chat::History::Loaded {
+        start: false,
+        present: true,
+    }));
+    assert!(!reads(&effects));
+    assert_eq!(app.state.first_unread.as_deref(), Some("d:104"));
+}
+
+#[test]
+#[cfg(feature = "discord")]
 fn opening_a_channel_shows_the_messages_around_its_last_read_one() {
     let general = "discord:10:21";
     let around = |effects: &[Effect]| {

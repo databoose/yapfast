@@ -1554,6 +1554,9 @@ pub enum Direction {
     Later,
     /// [`Command::Around`].
     Around,
+    /// The newest page of a Discord channel, as it opens or loads again:
+    /// what shows of it by then is all there is.
+    Latest,
 }
 
 pub enum Start {
@@ -3475,8 +3478,8 @@ pub enum Event {
         message: String,
     },
     /// A page of history [`Command::Earlier`], [`Command::Later`] or
-    /// [`Command::Around`] asked for is in the room's timeline, or why
-    /// there's none.
+    /// [`Command::Around`] asked for, or a Discord channel's newest, is in
+    /// the room's timeline, or why there's none.
     HistoryLoaded {
         room: String,
         direction: Direction,

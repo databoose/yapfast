@@ -646,6 +646,7 @@ impl Application {
         history: chat::History,
     ) -> Vec<Effect> {
         match direction {
+            chat::Direction::Latest => return self.latest_loaded(history),
             chat::Direction::Earlier => self.state.loading_history = false,
             chat::Direction::Later => self.state.loading_later = false,
             // The window comes next, as a timeline.
@@ -661,6 +662,7 @@ impl Application {
                 chat::Direction::Earlier => self.state.history_failed = true,
                 chat::Direction::Later => self.state.later_failed = true,
                 chat::Direction::Around => self.seeking = None,
+                chat::Direction::Latest => {}
             },
         }
         // What the window shows is said when it comes.
@@ -670,6 +672,23 @@ impl Application {
         let mut effects = self.place_unread();
         effects.extend(self.seek());
         effects
+    }
+
+    /// The newest messages came. When none after the last read one shows,
+    /// as when they were deleted, are of a kind Yapfast doesn't show or are
+    /// hidden as blocked, there's no divider to wait for: the channel
+    /// reads like any other once its newest message is in view, as in
+    /// Discord's client.
+    fn latest_loaded(&mut self, history: chat::History) -> Vec<Effect> {
+        if history == chat::History::Failed
+            || self.state.detached
+            || self.focusing
+            || self.read_marker.is_none()
+        {
+            return vec![];
+        }
+        self.read_marker = None;
+        self.read_latest()
     }
 
     /// Brings the message being sought into view once the timeline has it.

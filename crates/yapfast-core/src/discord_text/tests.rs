@@ -812,7 +812,11 @@ async fn earlier_history_loads_a_page_at_a_time_until_the_first_message() {
             &mut finished,
             &mut received,
             |event| match event {
-                Event::HistoryLoaded { history, .. } => Some(*history),
+                Event::HistoryLoaded {
+                    direction: Direction::Earlier,
+                    history,
+                    ..
+                } => Some(*history),
                 _ => None,
             },
         )
