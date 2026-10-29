@@ -409,6 +409,17 @@ nix develop path:./nix#windows --command scripts/build-windows
 scripts/check --fast
 ```
 
+### Without Nix
+
+On Linux, `cargo run --locked` works without Nix too, with rustup, which
+installs Rust 1.97.1 from `rust-toolchain.toml`, and the tools and libraries
+the Arch package builds with, in `packaging/arch/PKGBUILD`. Cargo downloads
+the same libwebrtc and Skia archives the Nix shell pins, except that the
+Nix shell renames one libjpeg table in Skia's (`nix/prepare-skia-native.py`).
+Without that, libwebrtc and Skia both define `jpeg_natural_order`, so
+`build.rs` links such a build with `--allow-multiple-definition`; the two
+tables are the same.
+
 | Read this | For |
 | --- | --- |
 | [Development](docs/development.md) | Day-to-day work: the preview, local Matrix and LiveKit servers, voice tests |

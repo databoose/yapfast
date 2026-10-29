@@ -102,8 +102,14 @@ Skia 0.153.3 archive. Windows builds the same pinned Skia source and
 dependencies with `/MT`, matching WebRTC's static release runtime; the [Windows
 guide](windows-beta.md) covers that build. Both libraries define
 `jpeg_natural_order`, so the Skia archive preparation privately renames that
-one table and its references (`nix/prepare-skia-native.py`). Production Cargo
-disables implicit Skia source compilation.
+one table and its references (`nix/prepare-skia-native.py`). libwebrtc's
+libjpeg-turbo prefixes its functions with `chromium_`, but not that table:
+Chromium lists only functions to prefix. A Linux build without the Nix shell,
+which leaves `SKIA_BINARIES_URL` unset and gets rust-skia's own archive, links
+with `--allow-multiple-definition` instead (`build.rs`); the two tables hold
+the same 320 bytes. Every build with the prepared archive links without that
+flag, so a new clash still fails there. Production Cargo disables implicit
+Skia source compilation.
 
 The Windows package includes the Slint UI build sources and Skia notices.
 `run-yapfast.cmd --renderer software` selects the CPU mode.
