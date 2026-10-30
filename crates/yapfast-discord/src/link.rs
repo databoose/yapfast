@@ -78,7 +78,7 @@ pub fn parse(link: &str) -> Option<Route> {
 
 /// A link's path parts, with one trailing slash left off. An empty part
 /// anywhere else makes it no route of Discord's.
-fn segments<'a>(url: &'a Url) -> Option<Vec<&'a str>> {
+fn segments(url: &Url) -> Option<Vec<&str>> {
     let mut segments: Vec<_> = url.path_segments()?.collect();
     if segments.last() == Some(&"") {
         segments.pop();
