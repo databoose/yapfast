@@ -3741,6 +3741,83 @@ fn discord_dms_list_with_their_pictures_and_read_once_read() {
 }
 
 #[test]
+#[cfg(feature = "discord")]
+fn a_linked_discord_profile_loads_for_someone_not_listed() {
+    let mut app = discord_server();
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    app.dispatch(Action::Open("discord:10:11".into()));
+
+    let effects = app.dispatch(Action::ShowProfile {
+        user: "4242".into(),
+        large: true,
+    });
+    assert!(
+        effects.iter().any(|effect| matches!(
+            effect,
+            Effect::Backend(Command::Discord(DiscordCommand::Profile { room, user }))
+                if room == "discord:10:11" && user == "4242"
+        )),
+        "Discord's profile is fetched"
+    );
+    let view = app.state.profile.as_ref().unwrap();
+    assert!(view.large && view.loading);
+    assert_eq!(view.profile.id, "4242");
+    assert_eq!(view.profile.name, "4242", "the id stands in while it loads");
+
+    app.apply(Event::Profile {
+        user: "4242".into(),
+        result: Ok(Profile {
+            id: "4242".into(),
+            name: "Nia".into(),
+            handle: "nia".into(),
+            ..Default::default()
+        }),
+    });
+    let view = app.state.profile.as_ref().unwrap();
+    assert!(!view.loading);
+    assert_eq!(view.profile.name, "Nia");
+    assert_eq!(view.profile.handle, "nia");
+}
+
+#[test]
+#[cfg(feature = "discord")]
+fn discord_links_yapfast_cant_show_are_left_to_the_browser() {
+    use discord::DiscordRoute;
+    let channel = |guild: &str, channel: &str| DiscordRoute::Channel {
+        guild: guild.into(),
+        channel: channel.into(),
+    };
+    let user = DiscordRoute::User {
+        user: "4242".into(),
+    };
+    let mut app = discord_server();
+    let state = &app.state;
+    assert!(state.opens_discord_route(&DiscordRoute::Server { guild: "10".into() }));
+    assert!(state.opens_discord_route(&channel("10", "11")));
+    assert!(
+        state.opens_discord_route(&channel("10", "77")),
+        "a thread, which opening asks for"
+    );
+    assert!(state.opens_discord_route(&user));
+    assert!(
+        !state.opens_discord_route(&DiscordRoute::Server { guild: "50".into() }),
+        "a server the account isn't in"
+    );
+    assert!(!state.opens_discord_route(&channel("50", "51")));
+    assert!(
+        !state.opens_discord_route(&channel("@me", "77")),
+        "an unknown DM"
+    );
+
+    app.state.discord_online = false;
+    let state = &app.state;
+    assert!(state.opens_discord_route(&channel("10", "11")), "listed");
+    assert!(!state.opens_discord_route(&channel("10", "77")));
+    assert!(!state.opens_discord_route(&user));
+    assert!(!state.opens_discord_route(&DiscordRoute::Invite { code: "abc".into() }));
+}
+
+#[test]
 fn matrix_profiles_show_what_the_member_list_knows() {
     let mut app = connected();
     app.dispatch(Action::Navigate(Navigation::Server("friends".into())));

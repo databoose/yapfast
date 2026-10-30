@@ -21,6 +21,7 @@ pub mod gateway;
 pub mod gifs;
 pub mod invite;
 pub mod limits;
+pub mod link;
 pub mod marked;
 pub mod member_list;
 pub mod message;

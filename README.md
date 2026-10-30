@@ -165,6 +165,8 @@ they do in Discord.
   message requests.
 - **Messages** you can send, reply to, edit, react to, pin, forward and attach
   files to, with Markdown, embeds, custom emoji, stickers and spoilers.
+  Discord's own links to servers, channels, messages and profiles open in
+  Yapfast.
 - **Threads**: start one from a message, browse a channel's threads, join or
   leave one, and read it beside its channel.
 - **Search** a whole server with Discord's filters, and browse a channel's pins.

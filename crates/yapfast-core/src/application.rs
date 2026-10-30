@@ -639,6 +639,38 @@ impl AppState {
             .find(|room| Some(&room.id) == self.selected.as_ref())
     }
 
+    /// Whether Yapfast can show the place one of Discord's links names, as
+    /// the action it maps to would; the browser opens the rest, such as a
+    /// server the account isn't in, or any link while Discord is offline.
+    #[cfg(feature = "discord")]
+    pub fn opens_discord_route(&self, route: &discord::DiscordRoute) -> bool {
+        use discord::DiscordRoute;
+        let server = |guild: &str| {
+            let id = discord::server_id(guild);
+            self.servers.iter().any(|server| server.id == id)
+        };
+        match route {
+            DiscordRoute::Invite { .. } => self.discord_online || self.preview,
+            DiscordRoute::DirectMessages => self.discord_linked,
+            DiscordRoute::Server { guild } => server(guild),
+            DiscordRoute::Channel { guild, channel }
+            | DiscordRoute::Message { guild, channel, .. } => {
+                let room = discord::room_id(guild, channel);
+                self.rooms.iter().any(|known| known.id == room)
+                    // One not listed may be a thread, which opening asks for.
+                    || (self.discord_online
+                        && !self.preview
+                        && guild != discord::DM_GUILD
+                        && server(guild))
+            }
+            DiscordRoute::User { user } => {
+                self.discord_online
+                    || self.friends.iter().any(|friend| &friend.id == user)
+                    || (self.selected_room().is_some() && self.person(user).is_some())
+            }
+        }
+    }
+
     pub fn draft(&self) -> &str {
         self.selected
             .as_ref()

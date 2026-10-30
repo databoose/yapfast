@@ -121,11 +121,14 @@ pub fn parse_room(id: &str) -> Option<(&str, &str)> {
     id.strip_prefix(PREFIX)?.split_once(':')
 }
 
-/// The code of an invite link to a Discord server, as Discord's client
-/// finds them in messages.
+/// A place in Discord named by one of Discord's own links.
 #[cfg(feature = "discord")]
-pub fn invite_code(link: &str) -> Option<&str> {
-    yapfast_discord::invite::link_code(link)
+pub use yapfast_discord::link::Route as DiscordRoute;
+
+/// The Discord route a link names, when Yapfast can open it itself.
+#[cfg(feature = "discord")]
+pub fn discord_route(link: &str) -> Option<DiscordRoute> {
+    yapfast_discord::link::parse(link)
 }
 
 /// The Discord server a server id names, as [`server_id`] makes it.
