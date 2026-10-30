@@ -3741,6 +3741,45 @@ fn discord_dms_list_with_their_pictures_and_read_once_read() {
 }
 
 #[test]
+#[cfg(feature = "discord")]
+fn a_linked_discord_profile_loads_for_someone_not_listed() {
+    let mut app = discord_server();
+    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    app.dispatch(Action::Open("discord:10:11".into()));
+
+    let effects = app.dispatch(Action::ShowProfile {
+        user: "4242".into(),
+        large: true,
+    });
+    assert!(
+        effects.iter().any(|effect| matches!(
+            effect,
+            Effect::Backend(Command::Discord(DiscordCommand::Profile { room, user }))
+                if room == "discord:10:11" && user == "4242"
+        )),
+        "Discord's profile is fetched"
+    );
+    let view = app.state.profile.as_ref().unwrap();
+    assert!(view.large && view.loading);
+    assert_eq!(view.profile.id, "4242");
+    assert_eq!(view.profile.name, "4242", "the id stands in while it loads");
+
+    app.apply(Event::Profile {
+        user: "4242".into(),
+        result: Ok(Profile {
+            id: "4242".into(),
+            name: "Nia".into(),
+            handle: "nia".into(),
+            ..Default::default()
+        }),
+    });
+    let view = app.state.profile.as_ref().unwrap();
+    assert!(!view.loading);
+    assert_eq!(view.profile.name, "Nia");
+    assert_eq!(view.profile.handle, "nia");
+}
+
+#[test]
 fn matrix_profiles_show_what_the_member_list_knows() {
     let mut app = connected();
     app.dispatch(Action::Navigate(Navigation::Server("friends".into())));

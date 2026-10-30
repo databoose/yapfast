@@ -1010,16 +1010,16 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
             state.borrow_mut().action(&window, action);
             return;
         }
-        // An invite to a Discord server shows the server, and joins only
-        // when asked, whatever the link's text says.
+        // Discord's own links open their place here. An invite shows its
+        // server first and joins only when asked, whatever the text says.
         #[cfg(feature = "discord")]
-        if let Some(code) =
-            yapfast_core::discord::invite_code(links::masked(&link).unwrap_or(&link))
+        if let Some(route) =
+            yapfast_core::discord::discord_route(links::masked(&link).unwrap_or(&link))
         {
             if let Some(window) = weak.upgrade() {
                 state
                     .borrow_mut()
-                    .action(&window, Action::OpenInviteLink(code.to_owned()));
+                    .action(&window, discord_link_action(&window, route));
             }
             return;
         }
@@ -2566,6 +2566,42 @@ const PIP_HEIGHT: f32 = 180.0;
 pub(super) fn web_address(link: &str) -> Option<&str> {
     let link = links::masked(link).unwrap_or(link);
     (links::openable(link) && mention::target(link).is_none()).then_some(link)
+}
+
+/// What opening one of Discord's own links does. A profile link anchors
+/// its card to the clicked words, as a mention does.
+#[cfg(feature = "discord")]
+fn discord_link_action(window: &YapfastWindow, route: discord::DiscordRoute) -> Action {
+    match route {
+        discord::DiscordRoute::Invite { code } => Action::OpenInviteLink(code),
+        discord::DiscordRoute::DirectMessages => Action::Navigate(Navigation::DirectMessages),
+        discord::DiscordRoute::Server { guild } => {
+            Action::Navigate(Navigation::Server(discord::server_id(&guild)))
+        }
+        discord::DiscordRoute::Channel { guild, channel } => {
+            Action::Open(discord::room_id(&guild, &channel))
+        }
+        discord::DiscordRoute::Message {
+            guild,
+            channel,
+            message,
+        } => Action::JumpInRoom {
+            room: discord::room_id(&guild, &channel),
+            item: format!("d:{message}"),
+        },
+        discord::DiscordRoute::User { user } => {
+            if let Some(rect) = i_slint_core::yapfast_selection::clicked_link() {
+                window.invoke_anchor_link(
+                    rect.origin.x,
+                    rect.origin.y,
+                    rect.size.width,
+                    rect.size.height,
+                );
+                window.set_profile_at_pointer(true);
+            }
+            Action::ShowProfile { user, large: false }
+        }
+    }
 }
 
 fn open_web_page(link: &str) {

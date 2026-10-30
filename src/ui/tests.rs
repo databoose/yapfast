@@ -6113,6 +6113,49 @@ fn join_a_server_shows_the_invites_server_and_a_link_opens_it() {
 }
 
 #[test]
+#[cfg(feature = "discord")]
+fn discord_links_open_channels_messages_and_profiles_here() {
+    let (window, adapter, _directory) = discord_server_window();
+    adapter.borrow_mut().refresh(&window);
+
+    window.invoke_open_link("https://discord.com/channels/10/11".into());
+    {
+        let adapter = adapter.borrow();
+        assert_eq!(
+            adapter.app.state.navigation,
+            Navigation::Server("discord:10".into())
+        );
+        assert_eq!(adapter.app.state.selected.as_deref(), Some("discord:10:11"));
+    }
+
+    adapter.borrow_mut().app.state.messages = Arc::new(vec![Arc::new(ChatMessage {
+        item: "d:42".into(),
+        body: "Linked".into(),
+        ..Default::default()
+    })]);
+    window.invoke_open_link("https://discord.com/channels/10/11/42".into());
+    assert_eq!(
+        adapter
+            .borrow()
+            .app
+            .state
+            .jump
+            .as_ref()
+            .map(|(item, _)| item.as_str()),
+        Some("d:42")
+    );
+
+    window.invoke_open_link("https://discord.com/users/4242".into());
+    {
+        let adapter = adapter.borrow();
+        let view = adapter.app.state.profile.as_ref().unwrap();
+        assert_eq!(view.profile.id, "4242");
+        assert!(view.loading);
+    }
+    assert!(window.get_profile_open());
+}
+
+#[test]
 fn a_card_of_components_shows_headings_files_and_only_link_buttons_working() {
     use yapfast_core::chat::{
         Attachment, ButtonStyle, Card, CardButton as Button, CardRow as Row, Placement,

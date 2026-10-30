@@ -128,6 +128,16 @@ pub fn invite_code(link: &str) -> Option<&str> {
     yapfast_discord::invite::link_code(link)
 }
 
+/// A place in Discord named by one of Discord's own links.
+#[cfg(feature = "discord")]
+pub use yapfast_discord::link::Route as DiscordRoute;
+
+/// The Discord route a link names, when Yapfast can open it itself.
+#[cfg(feature = "discord")]
+pub fn discord_route(link: &str) -> Option<DiscordRoute> {
+    yapfast_discord::link::parse(link)
+}
+
 /// The Discord server a server id names, as [`server_id`] makes it.
 pub fn parse_server(id: &str) -> Option<&str> {
     id.strip_prefix(PREFIX).filter(|guild| !guild.contains(':'))
