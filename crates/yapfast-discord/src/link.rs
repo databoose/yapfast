@@ -2,11 +2,10 @@
 
 use url::Url;
 
-/// Discord's web hosts whose channel, invite and profile paths name the
-/// same places in every client. A subdomain or a look-alike host is not
-/// Discord for this purpose.
-const WEB_HOSTS: [&str; 6] = [
-    "discord.gg",
+/// Discord's web hosts besides `discord.gg` whose channel, invite and
+/// profile paths name the same places in every client. A subdomain or a
+/// look-alike host is not Discord for this purpose.
+const WEB_HOSTS: [&str; 5] = [
     "discord.com",
     "discordapp.com",
     "canary.discord.com",

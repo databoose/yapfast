@@ -1010,11 +1010,13 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
             state.borrow_mut().action(&window, action);
             return;
         }
-        // Discord's own links open their place here. An invite shows its
-        // server first and joins only when asked, whatever the text says.
+        // Discord's own links open their place here, when Yapfast can show
+        // it, and in the browser otherwise. An invite shows its server
+        // first and joins only when asked, whatever the text says.
         #[cfg(feature = "discord")]
         if let Some(route) =
             yapfast_core::discord::discord_route(links::masked(&link).unwrap_or(&link))
+                .filter(|route| state.borrow().app.state.opens_discord_route(route))
         {
             if let Some(window) = weak.upgrade() {
                 state
@@ -2569,7 +2571,7 @@ pub(super) fn web_address(link: &str) -> Option<&str> {
 }
 
 /// What opening one of Discord's own links does. A profile link anchors
-/// its card to the clicked words, as a mention does.
+/// its card to the clicked words, or the pointer, as a mention does.
 #[cfg(feature = "discord")]
 fn discord_link_action(window: &YapfastWindow, route: discord::DiscordRoute) -> Action {
     match route {
@@ -2597,8 +2599,8 @@ fn discord_link_action(window: &YapfastWindow, route: discord::DiscordRoute) -> 
                     rect.size.width,
                     rect.size.height,
                 );
-                window.set_profile_at_pointer(true);
             }
+            window.set_profile_at_pointer(true);
             Action::ShowProfile { user, large: false }
         }
     }
