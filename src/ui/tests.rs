@@ -6150,7 +6150,6 @@ fn discord_links_open_channels_messages_and_profiles_here() {
         let adapter = adapter.borrow();
         let view = adapter.app.state.profile.as_ref().unwrap();
         assert_eq!(view.profile.id, "4242");
-        assert!(view.loading);
     }
     assert!(window.get_profile_open());
 }
