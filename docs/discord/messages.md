@@ -30,8 +30,12 @@ authors' member profiles.
 Yapfast keeps the open channel's messages in memory, and those of the 40
 channels open before it, so going back to one shows it at once. A closed
 channel keeps its newest 200 messages as metadata and follows new messages,
-edits, deletions and reactions while it's kept. Opening it again loads the
-latest page in the background and fits it in: messages kept within the page's
+edits, deletions and reactions while it's kept. Opening it again shows those
+without asking Discord, as long as it kept up: its latest page came, and no
+live event went by without it since, as when the connection drops for a new
+session (a resume replays what was missed) or Yapfast falls behind on
+events. Otherwise it loads the latest page in the background and fits it
+in: messages kept within the page's
 span that it lacks were deleted meanwhile, and when a full page starts after
 everything kept, more came than a page holds, so only the page stays. The UI
 keeps the same 40 channels' last timeline and member list, so going back shows

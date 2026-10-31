@@ -604,7 +604,9 @@ fn a_window_of_older_messages_shows_in_place_of_the_newest_until_it_reaches_them
             .map(|latest| latest.messages.keys().copied().collect())
             .unwrap_or_default()
     };
+    assert!(!open.synced);
     open.loaded(Load::Latest, shown(page(1000..1050)));
+    assert!(open.synced, "the latest page came");
     // Around a message among the newest shown, they're what shows around
     // it, without asking.
     assert!(open.reaches(1020) && open.reaches(1000));
@@ -900,6 +902,81 @@ async fn earlier_history_loads_a_page_at_a_time_until_the_first_message() {
     assert!(matches!(
         received.try_recv(),
         Ok(Event::HistoryLoaded { history, .. }) if history == start
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs testing/fake_discord.ts and YAPFAST_DISCORD_TEST_SERVER"]
+async fn a_channel_reopened_in_step_with_live_events_asks_for_nothing() {
+    let discord = fake_discord().await;
+    let (done, mut finished) = tokio::sync::mpsc::unbounded_channel();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let mut channels = Channels::default();
+    let room = discord::room_id(FAKE_GUILD, FAKE_GENERAL);
+    let run = |command: Command, channels: &mut Channels| {
+        super::command(command, Ok(&discord), channels, &done, &events);
+    };
+    run(Command::Open(room.clone()), &mut channels);
+    until(
+        &discord,
+        &mut channels,
+        &done,
+        &mut finished,
+        &mut received,
+        |event| match event {
+            Event::HistoryLoaded {
+                direction: Direction::Latest,
+                ..
+            } => Some(()),
+            _ => None,
+        },
+    )
+    .await;
+    // Closed and opened again, it shows what it kept and says its newest
+    // messages are in, without asking Discord.
+    let reopen = |channels: &mut Channels, received: &mut UnboundedReceiver<Event>| {
+        run(Command::CloseRoom, channels);
+        while received.try_recv().is_ok() {}
+        run(Command::Open(room.clone()), channels);
+        std::iter::from_fn(|| received.try_recv().ok()).any(|event| {
+            matches!(
+                event,
+                Event::HistoryLoaded {
+                    direction: Direction::Latest,
+                    history: History::Loaded { present: true, .. },
+                    ..
+                }
+            )
+        })
+    };
+    assert!(reopen(&mut channels, &mut received), "said at once");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while let Ok(work) = finished.try_recv() {
+        assert!(
+            !matches!(
+                work,
+                Done::History {
+                    load: Load::Latest,
+                    ..
+                }
+            ),
+            "the latest page wasn't asked for again"
+        );
+    }
+    // Once live events may have gone by without it, it asks again.
+    run(Command::CloseRoom, &mut channels);
+    channels.missed();
+    assert!(!reopen(&mut channels, &mut received), "not until it came");
+    let work = tokio::time::timeout(Duration::from_secs(5), finished.recv())
+        .await
+        .expect("the latest page loads")
+        .unwrap();
+    assert!(matches!(
+        work,
+        Done::History {
+            load: Load::Latest,
+            ..
+        }
     ));
 }
 

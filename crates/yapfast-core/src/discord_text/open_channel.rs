@@ -171,6 +171,10 @@ pub struct OpenChannel {
     /// A page of messages arrived, or was kept on disk, so there's something
     /// to show.
     pub(super) loaded: bool,
+    /// Its newest messages are as Discord has them: the latest page came,
+    /// and every live event since went in. Reopened while it is, it shows
+    /// what it kept without asking again.
+    pub(super) synced: bool,
     /// Its messages changed since they last went to disk.
     dirty: bool,
     pub(super) pictures: HashMap<String, Option<Arc<Picture>>>,
@@ -246,6 +250,7 @@ impl OpenChannel {
             focusing: false,
             generation: 0,
             loaded: false,
+            synced: false,
             dirty: false,
             pictures: HashMap::new(),
             requested: HashSet::new(),
@@ -275,6 +280,12 @@ impl OpenChannel {
     /// Loads the latest page again, after missing live events.
     pub fn refresh(&mut self, discord: &Discord, done: &UnboundedSender<Done>) {
         self.load(discord, done, Load::Latest);
+    }
+
+    /// Live events may have gone by without it: offline, or behind on
+    /// them. It loads its latest page again when it next opens.
+    pub(super) fn missed(&mut self) {
+        self.synced = false;
     }
 
     /// Loads the page before the oldest shown message, unless one is on
@@ -397,6 +408,7 @@ impl OpenChannel {
         self.dirty = true;
         match load {
             Load::Latest => {
+                self.synced = true;
                 let run = self.latest.as_mut().unwrap_or(&mut self.shown);
                 run.fit(&page);
                 // Only a page that's the whole channel says where it starts:

@@ -164,12 +164,22 @@ pub fn command(
             tokio::time::sleep(MEMBERS_WAIT).await;
             let _ = waiting.send(Done::MembersLate { room: late });
         });
-        // Shown at once as it was kept, while the latest page loads.
+        // Shown at once as it was kept. Its latest page loads again only
+        // when it may have missed live events since it closed.
         if let Some(mut channel) = channels.reopen(&room) {
             discord.view(&channel.guild, Some(&channel.channel));
-            channel.refresh(discord, done);
+            if !channel.synced {
+                channel.refresh(discord, done);
+            }
             if channel.loaded {
                 publish(&mut channel, discord, done, events);
+            }
+            if channel.synced {
+                let _ = events.send(Event::HistoryLoaded {
+                    room: room.clone(),
+                    direction: Direction::Latest,
+                    history: channel.history(),
+                });
             }
             send_topic(&mut channel, discord, events, true);
             channels.open = Some(channel);
@@ -361,11 +371,14 @@ fn aside(
     let (Some(room), Ok(discord)) = (room, discord) else {
         return;
     };
-    // Shown at once as it was kept, while the latest page loads.
+    // Shown at once as it was kept, while the latest page loads, unless
+    // it kept up with live events since it closed.
     let channel = match channels.reopen(&room) {
         Some(mut channel) => {
             discord.beside(&channel.guild, Some(&channel.channel));
-            channel.refresh(discord, done);
+            if !channel.synced {
+                channel.refresh(discord, done);
+            }
             Some(channel)
         }
         None => OpenChannel::open(discord, &room, true, done, channels.previews.clone()),
@@ -596,7 +609,7 @@ pub fn finished(
 }
 
 /// Applies a gateway event to the open channel and those kept. Missed
-/// events reload the open one; the others load again when opened.
+/// events reload the open one; the others load again when next opened.
 pub fn live(
     event: Result<Live, RecvError>,
     discord: &Discord,
@@ -718,8 +731,10 @@ pub fn live(
             channels.typing_changed(&room, events);
         }
     }
-    if let Ok(event) = &event {
-        channels.follow(event);
+    match &event {
+        Ok(event) => channels.follow(event),
+        // Behind on live events, the kept channels load again when opened.
+        Err(_) => channels.missed(),
     }
     // The thread beside the open channel follows as it does.
     if let Some(aside) = channels.aside.as_mut() {

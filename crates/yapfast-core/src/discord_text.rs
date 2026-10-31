@@ -343,7 +343,12 @@ impl Chat {
         match wake {
             Wake::Snapshot(Some(snapshot)) => {
                 let online = snapshot.status == Status::Online;
-                // Messages sent while disconnected arrive with the latest page.
+                // Live events stop with the connection: kept channels load
+                // their latest page again when opened, and messages sent
+                // while disconnected arrive with the open one's.
+                if !online && self.online {
+                    self.channels.missed();
+                }
                 if online
                     && !self.online
                     && let Some(channel) = &mut self.channels.open
