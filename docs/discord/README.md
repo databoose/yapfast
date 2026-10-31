@@ -94,9 +94,14 @@ Yapfast follows the rules Discord documents for every client:
   challenge or captcha, so it never has a `cf_clearance` cookie.
 - **Downloads.** Pictures and files from Discord's CDN download eight at a
   time, over one HTTP/2 connection, as a browser's requests to one host go.
-  Opening the emoji picker queues its pictures in the picker's order instead
-  of asking for hundreds at once. A file someone asked for, such as the
-  image the viewer shows or one they save or copy, skips the queue. A
+  Avatars, server icons, banners, emoji and stickers have eight turns of
+  their own, apart from previews and files, so neither waits behind the
+  other. Their newest batch goes first, in its order: rows on screen now
+  come before rows scrolled past, and opening the emoji picker queues its
+  pictures in the picker's order instead of asking for hundreds at once.
+  One kept on disk shows without waiting for a turn. A file someone asked
+  for, such as the image the viewer shows or one they save or copy, skips
+  the queue. A
   download that gets nothing from Discord for 20 seconds gives up, so a
   connection lost to a network change or sleep doesn't hold the queue; while
   requests wait, an HTTP/2 ping that goes unanswered closes that connection.

@@ -2647,9 +2647,16 @@ impl Discord {
     }
 
     /// Downloads a file as [`Self::download`] does, without waiting behind
-    /// the pictures downloading: one someone opened, saved or copied.
+    /// the pictures downloading: one someone opened, saved or copied, or
+    /// one whose caller keeps turns of its own, as avatars and icons do.
     pub async fn download_now(&self, url: &str, limit: usize) -> Result<Vec<u8>> {
         self.fetch(url, limit, false).await
+    }
+
+    /// The picture at `url` as it was kept on disk, if it was and it's
+    /// within `limit`: what [`Self::download`] finds without downloading.
+    pub async fn kept_picture(&self, url: &str, limit: usize) -> Option<Vec<u8>> {
+        cache::picture(url).await.filter(|kept| kept.len() <= limit)
     }
 
     async fn fetch(&self, url: &str, limit: usize, queued: bool) -> Result<Vec<u8>> {
