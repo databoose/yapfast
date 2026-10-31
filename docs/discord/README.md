@@ -199,6 +199,15 @@ In rough order. The browser covers these until then.
 - A custom status's end while Yapfast is closed, or set from a device whose
   clock is off: Yapfast trusts the time Discord gives.
 - Opening embed pictures from a card in the viewer with their neighbours.
+- A smaller READY. Yapfast identifies with an empty
+  `client_state.guild_versions`, so every connect brings every server in full.
+  Discord's web client, when it has a local cache, sends each server's
+  version from its last READY, with `highest_last_message_id`,
+  `read_state_version`, `user_guild_settings_version`,
+  `user_settings_version`, `private_channels_version` and `api_code_version`,
+  and Discord leaves out what hasn't changed. Yapfast would keep those versions
+  beside its saved snapshot, fill in what READY leaves out from it, and the
+  fake would answer the same way.
 
 ## Mirroring into Matrix
 
