@@ -800,17 +800,24 @@ impl Discord {
                 .iter()
                 .filter_map(|value| value["id"].as_str()?.parse::<u64>().ok())
         };
-        let full = match around {
-            // Discord sends up to half a page from before the snowflake,
-            // and its client takes fewer than that, less one, as the
-            // channel's start.
-            Some(around) => ids().filter(|&id| id < around).count() + 1 >= PAGE.div_ceil(2),
-            None => values.len() >= PAGE,
+        // Discord sends up to half a page from before the snowflake and
+        // half from it on. Its client takes fewer than that before it, less
+        // one, as the channel's start, and fewer from it on as its newest.
+        let (full, newest) = match around {
+            Some(around) => {
+                let before = ids().filter(|&id| id < around).count();
+                (
+                    before + 1 >= PAGE.div_ceil(2),
+                    values.len() - before < PAGE / 2,
+                )
+            }
+            None => (values.len() >= PAGE, false),
         };
         Ok(Page {
             messages,
             oldest: ids().min(),
             full,
+            newest,
         })
     }
 

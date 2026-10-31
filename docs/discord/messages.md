@@ -85,6 +85,13 @@ divider finds its place even when the last read message was deleted. When
 every loaded message is unread, the 50 around the last read one load in
 place of the newest, as a window of older messages that opens at the
 divider; when even those are all newer, the divider goes above the oldest.
+An unread channel that shows nothing yet, neither kept in memory nor on
+disk, asks for the 50 around the last read one together with the newest 50,
+so it opens at the divider after one round trip rather than two. When the
+messages kept on disk reach back to the last read one, they're what shows
+around it, and only the newest page is asked for. A page around it with
+fewer than half a page from it on reaches the newest message, as Discord's
+client takes it, so it shows as the newest rather than as a window.
 The open text channel lists its members on the right as Discord's sidebar
 does: under hoisted roles, then online, then offline, with offline members
 faded. Each shows a status dot for online, idle or do not disturb, their name

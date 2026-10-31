@@ -1413,8 +1413,11 @@ export component YapfastWindow inherits Window {
     // And newer ones as a window of older messages nears its end.
     property <bool> wants-later: root.detached && root.room-ready && !root.preview && !root.busy
         && root.messages.length > 0 && !root.loading-later && !root.later-failed
+        && (root.jump-item == "" || root.jump-placed)
         && timeline.content-y - min(0px, timeline.height - timeline.content-height) < timeline.height;
-    changed wants-later => { if self.wants-later { root.later(); } }
+    // As for earlier ones: a window shows its list at the top until its jump
+    // places it, near its end when it's short.
+    Timer { interval: 50ms; running: root.wants-later; triggered => { root.later(); } }
     // Formatted messages are not selectable, so Copy goes through a hidden text field.
     public function copy-text(text: string) { clipboard.text = text; clipboard.select-all(); clipboard.copy(); clipboard.text = ""; }
     clipboard := TextInput { visible: false; width: 0px; height: 0px; }

@@ -137,6 +137,7 @@ fn shown(messages: Vec<Message>) -> Page {
     Page {
         oldest: messages.first().map(Message::order),
         full: messages.len() >= yapfast_discord::api::PAGE,
+        newest: false,
         messages,
     }
 }
@@ -192,6 +193,7 @@ fn messages_yapfast_does_not_show_still_fill_a_page() {
         messages,
         oldest: Some(1050),
         full: true,
+        newest: false,
     };
     open.loaded(Load::Latest, boosted(page(1051..1100)));
     assert!(
@@ -211,6 +213,7 @@ fn messages_yapfast_does_not_show_still_fill_a_page() {
             messages: vec![],
             oldest: Some(1000),
             full: true,
+            newest: false,
         },
     );
     assert!(!open.shown.complete);
@@ -602,7 +605,12 @@ fn a_window_of_older_messages_shows_in_place_of_the_newest_until_it_reaches_them
             .unwrap_or_default()
     };
     open.loaded(Load::Latest, shown(page(1000..1050)));
+    // Around a message among the newest shown, they're what shows around
+    // it, without asking.
+    assert!(open.reaches(1020) && open.reaches(1000));
+    assert!(!open.reaches(999));
     open.loaded(Load::Around(900), shown(page(875..925)));
+    assert!(!open.reaches(900), "not while a window shows");
     assert!(open.detached());
     assert!(!open.shown.complete, "a whole half before the snowflake");
     assert_eq!(ids(&open), (875..925).collect::<Vec<_>>());
@@ -664,6 +672,20 @@ fn a_window_of_older_messages_shows_in_place_of_the_newest_until_it_reaches_them
     fresh.loaded(Load::Later, shown(page(15..20)));
     assert!(!fresh.detached());
     assert_eq!(ids(&fresh), (5..20).collect::<Vec<_>>());
+
+    // Less than half a page from the snowflake on reaches the newest
+    // message, so it isn't a window, and the newest kept join it.
+    let mut opened = OpenChannel::new("discord:10:11").unwrap();
+    opened.loaded(Load::Latest, shown(page(100..150)));
+    opened.loaded(
+        Load::Around(130),
+        Page {
+            newest: true,
+            ..shown(page(105..140))
+        },
+    );
+    assert!(!opened.detached());
+    assert_eq!(ids(&opened), (100..150).collect::<Vec<_>>());
 
     // Closing lets the window go.
     fresh.loaded(Load::Latest, shown(page(100..150)));

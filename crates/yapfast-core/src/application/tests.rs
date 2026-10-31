@@ -5181,6 +5181,9 @@ fn the_new_divider_marks_the_first_unread_message_until_the_channel_is_left() {
     app.apply(unread_channel(true, 103));
     app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
     app.dispatch(Action::SelectRoom(general.into()));
+    // The backend answers the messages around the last read one from
+    // what it kept, which reaches it.
+    app.apply(window(general, chat::Direction::Around, true));
     assert_eq!(app.state.first_unread, None);
     // The view still at the end of what showed before reads nothing: the
     // divider isn't placed yet.
@@ -5231,6 +5234,9 @@ fn the_new_divider_marks_the_first_unread_message_until_the_channel_is_left() {
     assert_eq!(app.state.first_unread, None);
     assert!(!app.state.caught_up);
     app.dispatch(Action::SelectRoom(general.into()));
+    // The backend answers the messages around the last read one from
+    // what it kept, which reaches it.
+    app.apply(window(general, chat::Direction::Around, true));
     app.apply(Event::Timeline {
         room: general.into(),
         messages: timeline(discord_messages(95..=111, &[104])),
@@ -5260,6 +5266,9 @@ fn a_channel_whose_new_messages_dont_show_reads_once_its_newest_came() {
     app.apply(unread_channel(true, 103));
     app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
     app.dispatch(Action::SelectRoom(general.into()));
+    // The backend answers the messages around the last read one from
+    // what it kept, which reaches it.
+    app.apply(window(general, chat::Direction::Around, true));
     app.dispatch(Action::Reading(true));
     // What was kept on disk shows first; newer messages may come with the
     // newest page.
@@ -5289,6 +5298,9 @@ fn a_channel_whose_new_messages_dont_show_reads_once_its_newest_came() {
     app.dispatch(Action::SelectRoom("discord:10:22".into()));
     app.apply(unread_channel(true, 103));
     app.dispatch(Action::SelectRoom(general.into()));
+    // The backend answers the messages around the last read one from
+    // what it kept, which reaches it.
+    app.apply(window(general, chat::Direction::Around, true));
     app.dispatch(Action::Reading(true));
     app.apply(Event::Timeline {
         room: general.into(),
@@ -5323,13 +5335,18 @@ fn opening_a_channel_shows_the_messages_around_its_last_read_one() {
     let mut app = connected();
     app.apply(unread_channel(true, 50));
     app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
-    app.dispatch(Action::SelectRoom(general.into()));
-    let effects = show(&mut app, (100..110).collect());
+    let effects = app.dispatch(Action::SelectRoom(general.into()));
+    let open = effects.iter().position(
+        |effect| matches!(effect, Effect::Backend(Command::Open(room)) if room == general),
+    );
+    assert!(open.is_some(), "it opens");
     assert_eq!(
         around(&effects).as_deref(),
         Some("d:50"),
-        "every loaded message is unread, so one page around the last read one loads"
+        "nothing shows yet, so the messages around the last read one load with the newest"
     );
+    let effects = show(&mut app, (100..110).collect());
+    assert!(around(&effects).is_none(), "asked once");
     assert_eq!(app.state.first_unread, None);
     // Until the window comes, timelines are of what showed before.
     assert!(around(&show(&mut app, (100..111).collect())).is_none());
@@ -5366,8 +5383,8 @@ fn opening_a_channel_shows_the_messages_around_its_last_read_one() {
     // divider goes above the oldest loaded.
     app.dispatch(Action::SelectRoom("discord:10:22".into()));
     app.apply(unread_channel(true, 1));
-    app.dispatch(Action::SelectRoom(general.into()));
-    assert!(around(&show(&mut app, (1000..1010).collect())).is_some());
+    assert!(around(&app.dispatch(Action::SelectRoom(general.into()))).is_some());
+    show(&mut app, (1000..1010).collect());
     app.apply(window(general, chat::Direction::Around, false));
     assert!(around(&show(&mut app, (1000..1010).collect())).is_none());
     assert_eq!(app.state.first_unread.as_deref(), Some("d:1000"));
@@ -5469,6 +5486,9 @@ fn replies_to_this_account_are_highlighted_while_new_and_mentions_always() {
     app.apply(unread_channel(true, 103));
     app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
     app.dispatch(Action::SelectRoom(general.into()));
+    // The backend answers the messages around the last read one from
+    // what it kept, which reaches it.
+    app.apply(window(general, chat::Direction::Around, true));
     show(&mut app, "110");
     assert_eq!(app.state.first_unread.as_deref(), Some("d:104"));
     // A reply from the "New" divider down is highlighted, an older one
@@ -5483,6 +5503,9 @@ fn replies_to_this_account_are_highlighted_while_new_and_mentions_always() {
     app.dispatch(Action::SelectRoom("discord:10:22".into()));
     app.apply(unread_channel(false, 111));
     app.dispatch(Action::SelectRoom(general.into()));
+    // The backend answers the messages around the last read one from
+    // what it kept, which reaches it.
+    app.apply(window(general, chat::Direction::Around, true));
     show(&mut app, "111");
     assert_eq!(app.state.first_unread, None);
     assert_eq!(highlighted(&app, false), ["d:99"]);

@@ -308,7 +308,16 @@ pub fn command(
             });
         }
         Command::Around { room, item } => match discord::item_order(&item) {
-            Some(order) => channel.around(discord, done, order),
+            Some(order) => {
+                if !channel.around(discord, done, order) {
+                    let _ = events.send(Event::HistoryLoaded {
+                        room,
+                        direction: Direction::Around,
+                        history: channel.history(),
+                    });
+                    publish(channel, discord, done, events);
+                }
+            }
             None => {
                 let _ = events.send(Event::RoomError {
                     room: room.clone(),

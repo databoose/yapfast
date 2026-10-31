@@ -92,6 +92,9 @@ pub struct Page {
     /// it, or for a page after a snowflake, after it. For a page around a
     /// snowflake, the half before it was whole.
     pub full: bool,
+    /// A page around a snowflake reaches the channel's newest message: the
+    /// half from the snowflake on wasn't whole.
+    pub newest: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
