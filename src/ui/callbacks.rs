@@ -14,6 +14,7 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     // Deliver their requests in one batch after the current UI work.
     let pending = Rc::new(RefCell::new(HashSet::new()));
     let timer = Rc::new(slint::Timer::default());
+    let last = Rc::new(Cell::new(None));
     let state = Rc::downgrade(adapter);
     let weak = window.as_weak();
     window
@@ -28,7 +29,7 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
             let (pending, state, weak) = (pending.clone(), state.clone(), weak.clone());
             timer.start(
                 slint::TimerMode::SingleShot,
-                Duration::from_millis(50),
+                report_delay(&last),
                 move || {
                     let urls = pending.borrow_mut().drain().collect();
                     if let (Some(adapter), Some(window)) = (state.upgrade(), weak.upgrade()) {
@@ -41,6 +42,7 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
         }
     });
     let timer = Rc::new(slint::Timer::default());
+    let last = Rc::new(Cell::new(None));
     let state = Rc::downgrade(adapter);
     let weak = window.as_weak();
     window.on_media_viewport(move || {
@@ -50,7 +52,7 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
         let (state, weak) = (state.clone(), weak.clone());
         timer.start(
             slint::TimerMode::SingleShot,
-            Duration::from_millis(50),
+            report_delay(&last),
             move || {
                 let (Some(adapter), Some(window)) = (state.upgrade(), weak.upgrade()) else {
                     return;
@@ -87,6 +89,7 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     // The thread beside the open channel reports its rows in view the same
     // way, the latest of those a burst of scrolling reported.
     let timer = Rc::new(slint::Timer::default());
+    let last = Rc::new(Cell::new(None));
     let range = Rc::new(Cell::new((-1, -1)));
     let state = Rc::downgrade(adapter);
     let weak = window.as_weak();
@@ -98,7 +101,7 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
         let (state, weak, range) = (state.clone(), weak.clone(), range.clone());
         timer.start(
             slint::TimerMode::SingleShot,
-            Duration::from_millis(50),
+            report_delay(&last),
             move || {
                 let (Some(adapter), Some(window)) = (state.upgrade(), weak.upgrade()) else {
                     return;
@@ -2609,5 +2612,38 @@ fn discord_link_action(window: &YapfastWindow, route: discord::DiscordRoute) -> 
 fn open_web_page(link: &str) {
     if links::openable(link) {
         super::browser::open(link);
+    }
+}
+
+/// The least time between two reports of what's in view, or of the pictures
+/// asked for, so scrolling sends one report per this much.
+const REPORT_SPACING: Duration = Duration::from_millis(50);
+
+/// How long to wait before a report, noting it as made then: no time after
+/// a quiet spell, so a channel just shown asks for its previews and avatars
+/// at once, else until [`REPORT_SPACING`] after the last. Even no time
+/// gathers everything the current layout asks for.
+fn report_delay(last: &Cell<Option<std::time::Instant>>) -> Duration {
+    let now = std::time::Instant::now();
+    let delay = last.get().map_or(Duration::ZERO, |last| {
+        REPORT_SPACING.saturating_sub(now.saturating_duration_since(last))
+    });
+    last.set(Some(now + delay));
+    delay
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn reports_at_once_after_a_quiet_spell_and_spaced_while_busy() {
+        let last = Cell::new(None);
+        assert_eq!(report_delay(&last), Duration::ZERO);
+        let busy = report_delay(&last);
+        assert!(busy > Duration::from_millis(40) && busy <= REPORT_SPACING);
+        last.set(Some(Instant::now() - REPORT_SPACING));
+        assert_eq!(report_delay(&last), Duration::ZERO);
     }
 }

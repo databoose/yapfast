@@ -103,7 +103,8 @@ keeps them beside the window, following live events, and Matrix rebuilds
 its live timeline from the SDK's event cache. Neither loads them again. The UI reports visible item ids, with six rows of margin on
 each side, through `Action::VisibleMessages` and `Command::VisibleMessages`.
 Discord and Matrix download and decode previews for those items and release
-distant decoded handles. Reports are coalesced over 50 ms, reject old rooms,
+distant decoded handles. A report goes out at once after a quiet spell and at most every 50 ms
+while the view moves; reports reject old rooms,
 and refresh when temporary message ids become server event ids even if the
 row count stays the same. Discord's recent channels share an 8 MiB LRU cache
 of decoded preview pixels; closing a channel clears its own preview handles
