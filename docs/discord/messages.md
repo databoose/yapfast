@@ -412,10 +412,13 @@ so a deleted message's place shows, and Yapfast says it couldn't find the
 message. A jump into another channel opens that channel at the message.
 
 Scrolling down the window loads the 50 `after` its newest message, and up,
-the 50 `before` its oldest, a page at a time. Discord doesn't say how it
-splits a page around a snowflake, so Yapfast learns where the channel starts
-from a page before, and that the window reached the newest message from a
-short page after, or once it reaches the newest messages Yapfast kept.
+the 50 `before` its oldest, a page at a time. Discord sends at most half a
+page from before the snowflake, and as its client does, Yapfast takes fewer
+than that, less one (under 24), as the channel's start, so a window around
+the first unread message of a new channel asks for nothing before it.
+Otherwise it learns where the channel starts from a page before. It learns
+that the window reached the newest message from a short page after, or once
+it reaches the newest messages Yapfast kept.
 
 While the window shows, the channel's newest messages wait beside it, at
 most 200 as a closed channel keeps, and follow new messages, edits,

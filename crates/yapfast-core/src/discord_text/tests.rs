@@ -604,6 +604,7 @@ fn a_window_of_older_messages_shows_in_place_of_the_newest_until_it_reaches_them
     open.loaded(Load::Latest, shown(page(1000..1050)));
     open.loaded(Load::Around(900), shown(page(875..925)));
     assert!(open.detached());
+    assert!(!open.shown.complete, "a whole half before the snowflake");
     assert_eq!(ids(&open), (875..925).collect::<Vec<_>>());
     assert_eq!(newest(&open), (1000..1050).collect::<Vec<_>>(), "kept");
 
@@ -656,6 +657,10 @@ fn a_window_of_older_messages_shows_in_place_of_the_newest_until_it_reaches_them
     let mut fresh = OpenChannel::new("discord:10:11").unwrap();
     fresh.loaded(Load::Around(10), shown(page(5..15)));
     assert!(fresh.detached());
+    assert!(
+        fresh.shown.complete,
+        "too few before the snowflake: the start"
+    );
     fresh.loaded(Load::Later, shown(page(15..20)));
     assert!(!fresh.detached());
     assert_eq!(ids(&fresh), (5..20).collect::<Vec<_>>());
@@ -984,10 +989,12 @@ async fn a_jump_shows_the_messages_around_one_then_newer_pages_to_the_present() 
                 history,
                 ..
             } => {
+                // The window starts at the first message, which Discord
+                // tells by sending less than half a page from before it.
                 assert_eq!(
                     *history,
                     History::Loaded {
-                        start: false,
+                        start: true,
                         present: false
                     }
                 );
@@ -1031,7 +1038,7 @@ async fn a_jump_shows_the_messages_around_one_then_newer_pages_to_the_present() 
         pages += 1;
         if history
             != (History::Loaded {
-                start: false,
+                start: true,
                 present: false,
             })
             || pages > 5

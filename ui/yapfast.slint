@@ -1405,8 +1405,11 @@ export component YapfastWindow inherits Window {
     // until the first message. After a failure they wait for Retry.
     property <bool> wants-earlier: root.room-ready && !root.preview && !root.busy && !root.voice-panel
         && root.messages.length > 0 && !root.loading-history && !root.history-start && !root.history-failed
-        && -timeline.content-y < timeline.height;
-    changed wants-earlier => { if self.wants-earlier { root.earlier(); } }
+        && (root.jump-item == "" || root.jump-placed) && -timeline.content-y < timeline.height;
+    // Only once that holds for a moment, and not while a jump's row is still
+    // to be placed: a room opens with its list at the top until it moves to
+    // the newest message or the "New" divider.
+    Timer { interval: 50ms; running: root.wants-earlier; triggered => { root.earlier(); } }
     // And newer ones as a window of older messages nears its end.
     property <bool> wants-later: root.detached && root.room-ready && !root.preview && !root.busy
         && root.messages.length > 0 && !root.loading-later && !root.later-failed

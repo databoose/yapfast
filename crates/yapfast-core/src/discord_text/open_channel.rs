@@ -440,7 +440,6 @@ impl OpenChannel {
                 }
                 self.shown.started(&Page {
                     messages: vec![],
-                    full: true,
                     ..page
                 });
                 for message in page.messages {

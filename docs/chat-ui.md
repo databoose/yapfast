@@ -63,10 +63,12 @@ errors make it taller than the minimum window. SSO and OAuth are still pending.
   ONLINE and OFFLINE, with counts, avatars, status dots, role colours,
   custom statuses, and a red clock beside someone timed out. Yapfast subscribes to the list's
   first 100 rows while the channel is open, and Discord keeps them current.
-- Read live text messages. Earlier history loads as the timeline scrolls
-  within a screen of its top, a page at a time (30 events for Matrix, 50
-  messages for Discord), until the conversation's first message, which "This
-  is the start of #general." marks. While a page is on its way a pill above
+- Read live text messages. Earlier history loads once the timeline has
+  stayed within a screen of its top for 50 ms, a page at a time (30 events
+  for Matrix, 50 messages for Discord), until the conversation's first
+  message, which "This is the start of #general." marks. A room opening
+  shows its list at the top for a moment, before it moves to the newest
+  message or the "New" divider, and that moment loads nothing. While a page is on its way a pill above
   the oldest message says "Loading earlier messages..."; if it fails, the pill
   offers Retry, and pages load again only when asked. The messages shown
   stay where they are on screen as older ones go in above them, even when

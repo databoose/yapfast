@@ -1912,6 +1912,70 @@ fn the_quick_switcher_reaches_the_window() {
 }
 
 #[test]
+fn a_room_asks_for_earlier_messages_only_once_near_their_start() {
+    i_slint_backend_testing::init_no_event_loop();
+    let window = YapfastWindow::new().unwrap();
+    let asked = Rc::new(Cell::new(0));
+    window.on_earlier({
+        let asked = asked.clone();
+        move || asked.set(asked.get() + 1)
+    });
+    window.set_workspace(true);
+    window.set_room_selected(true);
+    window.show().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1120., 760.));
+    // A frame or so: the list lays its rows out as time moves on.
+    let settle = || {
+        for _ in 0..5 {
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(1));
+            slint::platform::update_timers_and_animations();
+            let _ = window.invoke_timeline_extent();
+        }
+    };
+    let rows = |count: usize| -> ModelRc<MessageRow> {
+        let rows: Vec<MessageRow> = (0..count)
+            .map(|index| MessageRow {
+                id: format!("m{index}").into(),
+                item: format!("i{index}").into(),
+                author: "Bob".into(),
+                body: format!("Message {index}").into(),
+                first: true,
+                ..Default::default()
+            })
+            .collect();
+        ModelRc::new(VecModel::from(rows))
+    };
+    let wait = || {
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(100));
+        settle();
+    };
+    // A room opens with its list at the top, then moves it to the newest
+    // message: that moment at the top isn't near its first loaded message.
+    window.set_room_ready(true);
+    for _ in 0..2 {
+        window.set_messages(rows(200));
+        settle();
+        window.invoke_scroll_to_latest();
+        settle();
+        wait();
+        assert_eq!(
+            asked.get(),
+            0,
+            "not at the newest message, far from the first"
+        );
+    }
+    // A room too short to fill the view wants more.
+    window.set_messages(rows(3));
+    settle();
+    window.invoke_scroll_to_latest();
+    wait();
+    assert_eq!(asked.get(), 1, "a short history asks for more");
+    window.hide().unwrap();
+}
+
+#[test]
 fn scrolling_up_leaves_the_latest_message() {
     i_slint_backend_testing::init_no_event_loop();
     let window = YapfastWindow::new().unwrap();

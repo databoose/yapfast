@@ -1105,6 +1105,7 @@ async fn reads_history_and_member_lists() {
         "nothing is before the first"
     );
     assert!(around.messages.len() >= 20 && around.messages.len() <= 26);
+    assert!(!around.full, "so it reaches the channel's start");
     let newest = around.messages.last().unwrap().id.clone();
     let after = discord
         .history(&guild, &general, Span::After(&newest))

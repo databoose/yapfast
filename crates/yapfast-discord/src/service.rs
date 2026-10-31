@@ -787,17 +787,30 @@ impl Discord {
 
     /// A page of a channel's messages.
     pub async fn history(&self, guild: &str, channel: &str, span: Span<'_>) -> Result<Page> {
+        let around = match span {
+            Span::Around(id) => id.parse::<u64>().ok(),
+            _ => None,
+        };
         let values = self.api.messages(channel, span).await?;
         // The open channel shows them again once their authors arrive.
         let (mut messages, _) = self.learn(guild, &values, false);
         messages.sort_by_key(Message::order);
+        let ids = || {
+            values
+                .iter()
+                .filter_map(|value| value["id"].as_str()?.parse::<u64>().ok())
+        };
+        let full = match around {
+            // Discord sends up to half a page from before the snowflake,
+            // and its client takes fewer than that, less one, as the
+            // channel's start.
+            Some(around) => ids().filter(|&id| id < around).count() + 1 >= PAGE.div_ceil(2),
+            None => values.len() >= PAGE,
+        };
         Ok(Page {
             messages,
-            oldest: values
-                .iter()
-                .filter_map(|value| value["id"].as_str()?.parse().ok())
-                .min(),
-            full: values.len() >= PAGE,
+            oldest: ids().min(),
+            full,
         })
     }
 
