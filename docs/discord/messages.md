@@ -206,7 +206,10 @@ an error.
   Super reactions aren't listed apart yet.
 - Messages support text, replies, edits, deletions, reactions, mentions and
   attachments. Up to ten files go with a message, uploaded to Discord's
-  storage first and then named in the message. Each file is limited as
+  storage first and then named in the message. As in Discord's client,
+  each file asks `POST /channels/{id}/attachments` for its upload URL and
+  then `PUT`s itself there, all files at once; if one fails, the others
+  are deleted. Each file is limited as
   Discord limits it: 20 MB without Nitro, 50 MB with
   Nitro Basic or the old Nitro Classic, and 500 MB with Nitro, by the
   account's `premium_type`. A server boosted to level 2 allows 50 MB and one

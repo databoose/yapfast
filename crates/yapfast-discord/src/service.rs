@@ -1109,30 +1109,39 @@ impl Discord {
     }
 
     /// Uploads files for a message in `channel`, given as their names and
-    /// contents; if one fails, the others are thrown away.
+    /// contents, all at once as Discord's client does; if one fails, the
+    /// others are thrown away.
     async fn upload(
         &self,
         channel: &str,
         files: Vec<(String, Vec<u8>)>,
     ) -> Result<Vec<crate::api::Upload>> {
-        let mut uploads = Vec::with_capacity(files.len());
-        for (name, data) in files {
-            match self.api.upload(channel, &name, data).await {
+        let results = futures_util::future::join_all(
+            files
+                .into_iter()
+                .map(|(name, data)| async move { self.api.upload(channel, &name, data).await }),
+        )
+        .await;
+        let mut uploads = Vec::with_capacity(results.len());
+        let mut failed = None;
+        for result in results {
+            match result {
                 Ok(upload) => uploads.push(upload),
-                Err(error) => {
-                    self.discard(&uploads).await;
-                    return Err(error);
-                }
+                Err(error) => failed = failed.or(Some(error)),
             }
         }
-        Ok(uploads)
+        match failed {
+            Some(error) => {
+                self.discard(&uploads).await;
+                Err(error)
+            }
+            None => Ok(uploads),
+        }
     }
 
     /// Throws away uploads no message took.
     async fn discard(&self, uploads: &[crate::api::Upload]) {
-        for upload in uploads {
-            let _ = self.api.discard(upload).await;
-        }
+        futures_util::future::join_all(uploads.iter().map(|upload| self.api.discard(upload))).await;
     }
 
     /// Posts in a server's forum, as Discord's client does: a post named
