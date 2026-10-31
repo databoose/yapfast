@@ -289,9 +289,9 @@ impl Api {
     }
 
     /// Reads the web client's current build number from its page, as a
-    /// browser loads that page before the client connects. Once a run is
-    /// enough; until then, and if the page can't be read, Yapfast sends the
-    /// last one it knew.
+    /// browser loads that page before the client connects, and keeps it on
+    /// disk for the next start. Once a run is enough; until then, and if the
+    /// page can't be read, Yapfast sends the last one it knew.
     pub async fn learn_build_number(&self) {
         /// The page sets it near the top; the whole page is about 75 KiB.
         const READ: usize = 256 << 10;
@@ -316,7 +316,12 @@ impl Api {
             anyhow::Ok(())
         };
         match tokio::time::timeout(std::time::Duration::from_secs(10), read).await {
-            Ok(Ok(())) if client::knows_build_number() => {}
+            Ok(Ok(())) if client::knows_build_number() => {
+                let number = client::known_build_number();
+                let _ =
+                    tokio::task::spawn_blocking(move || crate::cache::keep_build_number(number))
+                        .await;
+            }
             Ok(Ok(())) => tracing::warn!("Discord's web page gave no build number"),
             Ok(Err(error)) => tracing::warn!(%error, "could not read Discord's web page"),
             Err(_) => tracing::warn!("Discord's web page didn't load"),

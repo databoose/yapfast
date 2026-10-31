@@ -145,6 +145,11 @@ Yapfast starts from Discord as it last saw it, kept in the data directory by
   stale; the proxy's signature (`ex`, `is` and `hm`) isn't part of the key,
   so a picture signed again is found. Past 256 MiB the least recently shown
   go. Attachments' own files aren't kept.
+- `discord-build-number` holds the web client's build number as its page
+  last gave it, which Yapfast sends with every request and the gateway's
+  identify, as the web client does. A start with it kept connects at once
+  and reads the page meanwhile, keeping what it finds for the next start;
+  without it, the page is read before connecting.
 
 The files are readable only by the user and aren't encrypted. Each names its
 login by a SHA-256 hash of the token, so another linked account starts empty,
